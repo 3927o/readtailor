@@ -1,0 +1,235 @@
+<!-- @dsCard group="Overview" viewport="1200x2400" name="总览 · All Components" subtitle="一页看全 · 23 个组件 + 三套阅读主题" -->
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="styles.css" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="_ds_bundle.js"></script>
+<style>
+  body { margin: 0; background: var(--rt-bg); color: var(--rt-ink); }
+  a { color: var(--rt-green-deep); } a:hover { color: var(--rt-green); }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 56px 40px 100px; box-sizing: border-box; }
+  .head { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; margin-bottom: 8px; }
+  .brand { font-family: var(--rt-serif); font-size: 34px; font-weight: 600; letter-spacing: 0.24em; }
+  .sub { font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--rt-ink-3); }
+  .lede { font-family: var(--rt-serif); font-size: 15px; line-height: 2; color: var(--rt-ink-2); max-width: 42ch; margin: 0 0 48px; }
+  .sec { margin-top: 52px; }
+  .sechead { display: flex; align-items: center; gap: 14px; border-bottom: 1px dashed var(--rt-rule); padding-bottom: 10px; margin-bottom: 26px; }
+  .secnum { font-family: var(--rt-mono); font-size: 10px; letter-spacing: 0.2em; color: var(--rt-green); }
+  .sectitle { font-family: var(--rt-serif); font-size: 19px; font-weight: 600; letter-spacing: 0.06em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 22px; }
+  .cell { border: 1px solid var(--rt-rule); border-radius: 8px; background: var(--rt-bg-card); padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+  .cell.wide { grid-column: 1 / -1; }
+  .cell.half { grid-column: span 2; }
+  .clabel { font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3); }
+  .demo { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .srow { display: flex; align-items: center; justify-content: space-between; gap: 14px; font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-2); }
+  .shell { border: 1px solid var(--rt-rule); border-radius: 8px; overflow: hidden; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } .cell.half { grid-column: 1 / -1; } .wrap { padding: 40px 22px 80px; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+  const S = window.ReadTailorDesignSystem_39423e;
+  const { Button, Chip, Kicker, Toggle, Slider, Segmented, TextField, Toast, EmptyState,
+          BookCover, BookListItem, ShelfGrid, SearchField,
+          AnnotationCard, Mark, BriefCard,
+          Masthead, ProgressBar, NavDots, PhoneFrame, BottomNav, TOCList, ReaderToolbar } = S;
+
+  function Sec({ num, title, children }) {
+    return (
+      <div className="sec">
+        <div className="sechead"><span className="secnum">{num}</span><span className="sectitle">{title}</span></div>
+        <div className="grid">{children}</div>
+      </div>
+    );
+  }
+  function Cell({ label, children, cls = '' }) {
+    return <div className={'cell ' + cls}><div className="clabel">{label}</div>{children}</div>;
+  }
+
+  function Gallery() {
+    const [chip, setChip] = React.useState('deep');
+    const [night, setNight] = React.useState(false);
+    const [auto, setAuto] = React.useState(true);
+    const [fs, setFs] = React.useState(17);
+    const [theme, setTheme] = React.useState('sepia');
+    const [q, setQ] = React.useState('');
+    const [name, setName] = React.useState('');
+    const [tab, setTab] = React.useState('shelf');
+    const [cur, setCur] = React.useState('c1');
+    const [page, setPage] = React.useState(3);
+    const [gloss, setGloss] = React.useState(true);
+
+    return (
+      <div className="wrap">
+        <div className="head">
+          <div><div className="brand">裁读</div></div>
+          <div className="sub">Design System · All Components · 2026</div>
+        </div>
+        <p className="lede">一页看全 23 个组件与三套阅读主题。想看可交互的完整流程，去 <a href="templates/reader-app/ReaderApp.dc.html">阅读 App 模板</a>（书架 → 详情 → 阅读页）。</p>
+
+        {/* ── Core ── */}
+        <Sec num="01" title="Core · 基础控件">
+          <Cell label="Button · 三种变体">
+            <div className="demo">
+              <Button variant="primary">开始阅读</Button>
+              <Button variant="secondary">稍后</Button>
+              <Button variant="ghost">跳过</Button>
+            </div>
+          </Cell>
+          <Cell label="Chip · 选择 / 标签">
+            <div className="demo">
+              {[['deep','真正读懂'],['intro','入门']].map(([v,l]) => (
+                <Chip key={v} selected={chip===v} onClick={() => setChip(v)}>{l}</Chip>
+              ))}
+              <Chip serif>《罪与罚》</Chip>
+            </div>
+          </Cell>
+          <Cell label="Kicker"><Kicker>问题 · The Problem</Kicker></Cell>
+          <Cell label="Toggle · 设置开关">
+            <div className="srow">夜间自动切换 <Toggle checked={night} onChange={setNight} label="夜间" /></div>
+            <div className="srow">自动生成批注 <Toggle checked={auto} onChange={setAuto} label="批注" /></div>
+          </Cell>
+          <Cell label="Slider · 字号">
+            <Slider label="字号" min={14} max={24} value={fs} onChange={setFs} showValue format={v => v + 'px'} />
+          </Cell>
+          <Cell label="Segmented · 阅读主题">
+            <Segmented label="主题" value={theme} onChange={setTheme}
+              options={[{value:'paper',label:'纸白'},{value:'sepia',label:'纸黄'},{value:'night',label:'夜间'}]} />
+          </Cell>
+          <Cell label="TextField">
+            <TextField label="昵称" value={name} onChange={e => setName(e.target.value)} placeholder="怎么称呼你？" />
+          </Cell>
+          <Cell label="EmptyState">
+            <EmptyState title="书架还空着" style={{padding: '10px 4px'}}
+              action={<Button variant="secondary" size="sm">挑一本书</Button>}>
+              挑一本一直想读、却总读不完的书。
+            </EmptyState>
+          </Cell>
+        </Sec>
+
+        {/* ── Library ── */}
+        <Sec num="02" title="Library · 书库">
+          <Cell label="SearchField">
+            <SearchField value={q} onChange={e => setQ(e.target.value)} />
+          </Cell>
+          <Cell label="BookCover · 排版式封面" cls="half">
+            <div className="demo">
+              <BookCover size="sm" title="查拉图斯特拉如是说" author="Nietzsche" />
+              <BookCover title="存在与时间" author="Heidegger" />
+              <BookCover size="lg" title="理想国" author="Plato" />
+            </div>
+          </Cell>
+          <Cell label="BookListItem · 书架行" cls="wide">
+            <BookListItem title="查拉图斯特拉如是说" author="尼采" meta="读到 第一章" progress={8} onClick={() => {}} />
+            <BookListItem title="理想国" author="柏拉图" meta="读到 卷四" progress={36} onClick={() => {}} />
+          </Cell>
+          <Cell label="ShelfGrid · 封面网格" cls="wide">
+            <ShelfGrid min={96} gap={18}>
+              <BookCover size="sm" title="查拉图斯特拉如是说" author="Nietzsche" />
+              <BookCover size="sm" title="存在与时间" author="Heidegger" />
+              <BookCover size="sm" title="纯粹理性批判" author="Kant" />
+              <BookCover size="sm" title="理想国" author="Plato" />
+              <BookCover size="sm" title="忧郁的热带" author="Lévi-Strauss" />
+            </ShelfGrid>
+          </Cell>
+        </Sec>
+
+        {/* ── Reading ── */}
+        <Sec num="03" title="Reading · 阅读与批注">
+          <Cell label="Mark · 正文内注释锚点" cls="wide">
+            <p style={{margin:0, fontFamily:'var(--rt-serif)', fontSize:16, lineHeight:2.1, color:'var(--rt-ink)'}}>
+              查拉图斯特拉对太阳说：<Mark type="gloss" active={gloss} onActivate={() => setGloss(!gloss)}>你伟大的星球啊</Mark>，
+              假如没有你所照耀的<Mark type="fillin">人们</Mark>，你的幸福何在？我需要<Mark type="margin">伸出来的手</Mark>。
+            </p>
+          </Cell>
+          <Cell label="AnnotationCard · 导读 / 脉络 / 补全" cls="wide">
+            <AnnotationCard kind="lead" title="进山之前，先看一眼地图"
+              bullets={['这一章是全书的序幕：主角为什么下山。','记住一个画面：太阳需要被照耀的人。']} />
+            <AnnotationCard kind="margin" anchor="你伟大的星球啊" trigger="触发 · 点按正文虚线词">
+              这句对太阳说的话是全书第一个隐喻：给予者需要接受者。
+            </AnnotationCard>
+          </Cell>
+          <Cell label="BriefCard · 读前简报" cls="wide">
+            <BriefCard title="读《查拉图斯特拉如是说》之前"
+              sections={[
+                { label:'这是一本什么书', text:'尼采借一位下山的先知之口讲哲学——句子是诗，路要自己找。' },
+                { label:'为你准备的', prep:true, text:'我会在每章前给你一张小地图，在难句旁留一张便签。卡住不代表你不行。' },
+              ]}
+              terms={[{ term:'超人', gloss:'不是超级英雄，而是"自我超越"的人。' }]} />
+          </Cell>
+        </Sec>
+
+        {/* ── Chrome ── */}
+        <Sec num="04" title="Chrome · 外壳与导航">
+          <Cell label="Masthead" cls="wide">
+            <div className="shell"><Masthead fixed={false} issue={<span>BP · 2026</span>} /></div>
+          </Cell>
+          <Cell label="ReaderToolbar" cls="wide">
+            <div className="shell">
+              <ReaderToolbar fixed={false} title="查拉图斯特拉如是说" onBack={() => {}}
+                actions={[{glyph:'≡',label:'目录'},{glyph:'Aa',label:'设置'},{glyph:'✦',label:'AI'}]} />
+            </div>
+          </Cell>
+          <Cell label="ProgressBar">
+            <div style={{position:'relative', height:24}}><ProgressBar value={42} height={3} /></div>
+            <div style={{position:'relative', height:24}}><ProgressBar value={72} gradient height={3} /></div>
+          </Cell>
+          <Cell label="NavDots">
+            <div style={{position:'relative', height:40, display:'flex', alignItems:'center'}}>
+              <NavDots count={12} current={page} specialIndex={11} onJump={setPage} />
+            </div>
+          </Cell>
+          <Cell label="BottomNav" cls="half">
+            <div className="shell"><BottomNav fixed={false} value={tab} onChange={setTab} /></div>
+          </Cell>
+          <Cell label="TOCList" cls="half">
+            <div className="shell" style={{maxHeight:220, overflow:'auto'}}>
+              <TOCList current={cur} onSelect={setCur} chapters={[
+                { id:'pre', title:'查拉图斯特拉的前言', read:true },
+                { id:'c1', title:'三种变形' },
+                { id:'c2', title:'道德的讲座' },
+                { id:'c3', title:'背后世界论者' },
+              ]} />
+            </div>
+          </Cell>
+          <Cell label="PhoneFrame · 演示设备壳" cls="wide">
+            <div style={{display:'flex', justifyContent:'center'}}>
+              <PhoneFrame width={240} height={440}>
+                <div style={{padding:20, height:'100%', boxSizing:'border-box', display:'flex', flexDirection:'column', gap:12}}>
+                  <div style={{fontFamily:'var(--rt-serif)', fontSize:18, fontWeight:600, letterSpacing:'0.2em'}}>裁读</div>
+                  <BookListItem title="查拉图斯特拉如是说" author="尼采" progress={8} />
+                  <BookListItem title="理想国" author="柏拉图" progress={36} />
+                </div>
+              </PhoneFrame>
+            </div>
+          </Cell>
+        </Sec>
+
+        {/* ── Themes ── */}
+        <Sec num="05" title="Themes · 三套阅读主题">
+          {[['paper','纸白 · 默认'],['sepia','纸黄 · 护眼'],['night','夜间']].map(([t,l]) => (
+            <div key={t} className="cell" data-rt-theme={t === 'paper' ? undefined : t}
+                 style={{background:'var(--rt-bg)', borderColor:'var(--rt-rule)'}}>
+              <div className="clabel" style={{color:'var(--rt-ink-3)'}}>{l}</div>
+              <p style={{margin:0, fontFamily:'var(--rt-serif)', fontSize:15, lineHeight:2.05, color:'var(--rt-ink)'}}>
+                查拉图斯特拉三十岁时，离开故乡走进<span style={{color:'var(--rt-green-deep)', fontStyle:'italic'}}>山里</span>，享受精神与孤独。
+              </p>
+              <div style={{position:'relative', height:3}}><ProgressBar value={t==='night'?64:t==='sepia'?40:20} height={3} /></div>
+            </div>
+          ))}
+        </Sec>
+
+        <Toast visible accent>已为你整理好这一章</Toast>
+      </div>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<Gallery />);
+</script>
+</body>
+</html>

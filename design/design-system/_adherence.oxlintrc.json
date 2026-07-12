@@ -1,0 +1,414 @@
+{
+  "plugins": [
+    "react",
+    "import"
+  ],
+  "rules": {
+    "react/forbid-elements": [
+      "warn",
+      {
+        "forbid": []
+      }
+    ],
+    "no-restricted-imports": [
+      "warn",
+      {
+        "patterns": [
+          {
+            "group": [
+              "components/chrome/**",
+              "components/core/**",
+              "components/library/**",
+              "components/reading/**",
+              "ui_kits/reader/**"
+            ],
+            "message": "Import design-system components from 'index.js', not component internals."
+          }
+        ]
+      }
+    ],
+    "no-restricted-syntax": [
+      "warn",
+      {
+        "selector": "Literal[value=/#[0-9a-fA-F]{3,8}\\b/]",
+        "message": "Raw hex color — use a design-system color token via var()."
+      },
+      {
+        "selector": "Literal[value=/\\b\\d+px\\b/]",
+        "message": "Raw px value — use a design-system spacing token via var()."
+      },
+      {
+        "selector": "Literal[value=/font-family\\s*:\\s*(?!['\\\"]?(?:JetBrains Mono|Noto Sans SC|Noto Serif SC))/i]",
+        "message": "Font not provided by the design system. Available: JetBrains Mono, Noto Sans SC, Noto Serif SC."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='AnnotationCard'] > JSXAttribute > JSXIdentifier[name!=/^(?:kind|kicker|title|anchor|trigger|bullets|children|key|ref|className|style|children)$/]",
+        "message": "<AnnotationCard> doesn't accept that prop. Declared props: kind, kicker, title, anchor, trigger, bullets, children."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='BookCover'] > JSXAttribute > JSXIdentifier[name!=/^(?:title|author|src|size|key|ref|className|style|children)$/]",
+        "message": "<BookCover> doesn't accept that prop. Declared props: title, author, src, size."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='BookCover'] > JSXAttribute[name.name='size'] > Literal[value!=/^(?:sm|md|lg)$/]",
+        "message": "<BookCover> size must be one of 'sm' | 'md' | 'lg'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='BookListItem'] > JSXAttribute > JSXIdentifier[name!=/^(?:title|author|meta|progress|src|onClick|key|ref|className|style|children)$/]",
+        "message": "<BookListItem> doesn't accept that prop. Declared props: title, author, meta, progress, src, onClick."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='BottomNavItem'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|label|key|ref|className|style|children)$/]",
+        "message": "<BottomNavItem> doesn't accept that prop. Declared props: value, label."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='BriefSection'] > JSXAttribute > JSXIdentifier[name!=/^(?:label|text|prep|key|ref|className|style|children)$/]",
+        "message": "<BriefSection> doesn't accept that prop. Declared props: label, text, prep."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Button'] > JSXAttribute > JSXIdentifier[name!=/^(?:variant|size|children|key|ref|className|style|children)$/]",
+        "message": "<Button> doesn't accept that prop. Declared props: variant, size, children."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Chip'] > JSXAttribute > JSXIdentifier[name!=/^(?:selected|as|serif|children|key|ref|className|style|children)$/]",
+        "message": "<Chip> doesn't accept that prop. Declared props: selected, as, serif, children."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Chip'] > JSXAttribute[name.name='as'] > Literal[value!=/^(?:button|span)$/]",
+        "message": "<Chip> as must be one of 'button' | 'span'."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='EmptyState'] > JSXAttribute > JSXIdentifier[name!=/^(?:title|children|action|key|ref|className|style|children)$/]",
+        "message": "<EmptyState> doesn't accept that prop. Declared props: title, children, action."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Kicker'] > JSXAttribute > JSXIdentifier[name!=/^(?:as|center|children|key|ref|className|style|children)$/]",
+        "message": "<Kicker> doesn't accept that prop. Declared props: as, center, children."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Mark'] > JSXAttribute > JSXIdentifier[name!=/^(?:type|active|onActivate|children|key|ref|className|style|children)$/]",
+        "message": "<Mark> doesn't accept that prop. Declared props: type, active, onActivate, children."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Masthead'] > JSXAttribute > JSXIdentifier[name!=/^(?:brand|brandEn|issue|fixed|key|ref|className|style|children)$/]",
+        "message": "<Masthead> doesn't accept that prop. Declared props: brand, brandEn, issue, fixed."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='NavDots'] > JSXAttribute > JSXIdentifier[name!=/^(?:count|current|specialIndex|onJump|key|ref|className|style|children)$/]",
+        "message": "<NavDots> doesn't accept that prop. Declared props: count, current, specialIndex, onJump."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='PhoneFrame'] > JSXAttribute > JSXIdentifier[name!=/^(?:width|height|screenStyle|children|key|ref|className|style|children)$/]",
+        "message": "<PhoneFrame> doesn't accept that prop. Declared props: width, height, screenStyle, children."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='ProgressBar'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|gradient|height|key|ref|className|style|children)$/]",
+        "message": "<ProgressBar> doesn't accept that prop. Declared props: value, gradient, height."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='ReaderToolbarAction'] > JSXAttribute > JSXIdentifier[name!=/^(?:glyph|label|onClick|key|ref|className|style|children)$/]",
+        "message": "<ReaderToolbarAction> doesn't accept that prop. Declared props: glyph, label, onClick."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='SearchField'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|onChange|placeholder|onSubmit|inputStyle|key|ref|className|style|children)$/]",
+        "message": "<SearchField> doesn't accept that prop. Declared props: value, onChange, placeholder, onSubmit, inputStyle."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='SegmentedOption'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|label|key|ref|className|style|children)$/]",
+        "message": "<SegmentedOption> doesn't accept that prop. Declared props: value, label."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='ShelfGrid'] > JSXAttribute > JSXIdentifier[name!=/^(?:min|gap|children|key|ref|className|style|children)$/]",
+        "message": "<ShelfGrid> doesn't accept that prop. Declared props: min, gap, children."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Slider'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|min|max|step|onChange|label|showValue|format|disabled|key|ref|className|style|children)$/]",
+        "message": "<Slider> doesn't accept that prop. Declared props: value, min, max, step, onChange, label, showValue, format, disabled."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='TextField'] > JSXAttribute > JSXIdentifier[name!=/^(?:value|onChange|label|placeholder|error|multiline|rows|inputStyle|key|ref|className|style|children)$/]",
+        "message": "<TextField> doesn't accept that prop. Declared props: value, onChange, label, placeholder, error, multiline, rows, inputStyle."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Toast'] > JSXAttribute > JSXIdentifier[name!=/^(?:visible|accent|children|key|ref|className|style|children)$/]",
+        "message": "<Toast> doesn't accept that prop. Declared props: visible, accent, children."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='TOCChapter'] > JSXAttribute > JSXIdentifier[name!=/^(?:id|title|read|key|ref|className|style|children)$/]",
+        "message": "<TOCChapter> doesn't accept that prop. Declared props: id, title, read."
+      },
+      {
+        "selector": "JSXOpeningElement[name.name='Toggle'] > JSXAttribute > JSXIdentifier[name!=/^(?:checked|onChange|disabled|label|key|ref|className|style|children)$/]",
+        "message": "<Toggle> doesn't accept that prop. Declared props: checked, onChange, disabled, label."
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": [
+        "**/index.js"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    }
+  ],
+  "x-omelette": {
+    "components": {
+      "AnnotationCard": {
+        "replaces": []
+      },
+      "BookCover": {
+        "replaces": []
+      },
+      "BookListItem": {
+        "replaces": []
+      },
+      "BottomNavItem": {
+        "replaces": []
+      },
+      "BriefSection": {
+        "replaces": []
+      },
+      "Button": {
+        "replaces": []
+      },
+      "Chip": {
+        "replaces": []
+      },
+      "EmptyState": {
+        "replaces": []
+      },
+      "Kicker": {
+        "replaces": []
+      },
+      "Mark": {
+        "replaces": []
+      },
+      "Masthead": {
+        "replaces": []
+      },
+      "NavDots": {
+        "replaces": []
+      },
+      "PhoneFrame": {
+        "replaces": []
+      },
+      "ProgressBar": {
+        "replaces": []
+      },
+      "ReaderToolbarAction": {
+        "replaces": []
+      },
+      "SearchField": {
+        "replaces": []
+      },
+      "SegmentedOption": {
+        "replaces": []
+      },
+      "ShelfGrid": {
+        "replaces": []
+      },
+      "Slider": {
+        "replaces": []
+      },
+      "TextField": {
+        "replaces": []
+      },
+      "Toast": {
+        "replaces": []
+      },
+      "TOCChapter": {
+        "replaces": []
+      },
+      "Toggle": {
+        "replaces": []
+      }
+    },
+    "tokens": [
+      "--accent",
+      "--accent-strong",
+      "--accent-wash",
+      "--border-faint",
+      "--border-hairline",
+      "--ease",
+      "--ease-exit",
+      "--font-display",
+      "--font-label",
+      "--font-reading",
+      "--font-ui",
+      "--radius-card",
+      "--radius-pill",
+      "--radius-soft",
+      "--rt-accent-left",
+      "--rt-bg",
+      "--rt-bg-2",
+      "--rt-bg-card",
+      "--rt-char-reveal",
+      "--rt-char-stagger",
+      "--rt-demo",
+      "--rt-display-line-height",
+      "--rt-display-size",
+      "--rt-display-tracking",
+      "--rt-ease",
+      "--rt-ease-out",
+      "--rt-error",
+      "--rt-glass",
+      "--rt-green",
+      "--rt-green-deep",
+      "--rt-green-soft",
+      "--rt-hover",
+      "--rt-ink",
+      "--rt-ink-2",
+      "--rt-ink-3",
+      "--rt-label-size",
+      "--rt-label-tracking",
+      "--rt-label-transform",
+      "--rt-mark-fillin",
+      "--rt-mark-gloss",
+      "--rt-mark-margin",
+      "--rt-measure-demo",
+      "--rt-measure-letter",
+      "--rt-measure-narration",
+      "--rt-mono",
+      "--rt-radius-card",
+      "--rt-radius-phone",
+      "--rt-radius-pill",
+      "--rt-radius-screen",
+      "--rt-radius-soft",
+      "--rt-read",
+      "--rt-reading-indent",
+      "--rt-reading-line-height",
+      "--rt-reading-size",
+      "--rt-rule",
+      "--rt-rule-2",
+      "--rt-sans",
+      "--rt-scene-enter",
+      "--rt-scene-leave",
+      "--rt-serif",
+      "--rt-shadow-bubble",
+      "--rt-shadow-card",
+      "--rt-shadow-phone",
+      "--rt-shadow-pop",
+      "--rt-space-1",
+      "--rt-space-10",
+      "--rt-space-2",
+      "--rt-space-3",
+      "--rt-space-4",
+      "--rt-space-5",
+      "--rt-space-6",
+      "--rt-space-7",
+      "--rt-space-8",
+      "--rt-space-9",
+      "--rt-stage-padding",
+      "--rt-stage-padding-mobile",
+      "--rt-weight-bold",
+      "--rt-weight-med",
+      "--rt-weight-reg",
+      "--rt-weight-semi",
+      "--shadow-phone",
+      "--shadow-pop",
+      "--surface-card",
+      "--surface-page",
+      "--surface-sunken",
+      "--text-body",
+      "--text-muted",
+      "--text-strong"
+    ],
+    "tokenKinds": {
+      "--rt-bg": "color",
+      "--rt-bg-2": "color",
+      "--rt-bg-card": "color",
+      "--rt-ink": "color",
+      "--rt-ink-2": "color",
+      "--rt-ink-3": "color",
+      "--rt-green": "color",
+      "--rt-green-deep": "color",
+      "--rt-green-soft": "color",
+      "--rt-rule": "color",
+      "--rt-rule-2": "color",
+      "--rt-error": "color",
+      "--rt-mark-gloss": "color",
+      "--rt-mark-fillin": "color",
+      "--rt-mark-margin": "spacing",
+      "--surface-page": "color",
+      "--surface-sunken": "color",
+      "--surface-card": "color",
+      "--text-strong": "font",
+      "--text-body": "font",
+      "--text-muted": "font",
+      "--accent": "color",
+      "--accent-strong": "color",
+      "--accent-wash": "color",
+      "--border-hairline": "color",
+      "--border-faint": "color",
+      "--rt-serif": "font",
+      "--rt-read": "font",
+      "--rt-sans": "font",
+      "--rt-demo": "font",
+      "--rt-mono": "font",
+      "--rt-display-size": "spacing",
+      "--rt-display-line-height": "font",
+      "--rt-display-tracking": "font",
+      "--rt-reading-size": "spacing",
+      "--rt-reading-line-height": "font",
+      "--rt-reading-indent": "spacing",
+      "--rt-label-size": "spacing",
+      "--rt-label-tracking": "font",
+      "--rt-label-transform": "other",
+      "--rt-weight-reg": "font",
+      "--rt-weight-med": "font",
+      "--rt-weight-semi": "font",
+      "--rt-weight-bold": "font",
+      "--font-display": "font",
+      "--font-reading": "font",
+      "--font-ui": "font",
+      "--font-label": "font",
+      "--rt-space-1": "spacing",
+      "--rt-space-2": "spacing",
+      "--rt-space-3": "spacing",
+      "--rt-space-4": "spacing",
+      "--rt-space-5": "spacing",
+      "--rt-space-6": "spacing",
+      "--rt-space-7": "spacing",
+      "--rt-space-8": "spacing",
+      "--rt-space-9": "spacing",
+      "--rt-space-10": "spacing",
+      "--rt-stage-padding": "spacing",
+      "--rt-stage-padding-mobile": "spacing",
+      "--rt-measure-narration": "spacing",
+      "--rt-measure-demo": "spacing",
+      "--rt-measure-letter": "font",
+      "--rt-radius-card": "radius",
+      "--rt-radius-soft": "radius",
+      "--rt-radius-pill": "radius",
+      "--rt-radius-phone": "radius",
+      "--rt-radius-screen": "radius",
+      "--rt-accent-left": "color",
+      "--radius-card": "radius",
+      "--radius-soft": "radius",
+      "--radius-pill": "radius",
+      "--rt-ease": "other",
+      "--rt-ease-out": "other",
+      "--rt-char-reveal": "other",
+      "--rt-char-stagger": "other",
+      "--rt-scene-enter": "other",
+      "--rt-scene-leave": "other",
+      "--rt-hover": "other",
+      "--rt-shadow-phone": "shadow",
+      "--rt-shadow-bubble": "shadow",
+      "--rt-shadow-card": "shadow",
+      "--rt-shadow-pop": "shadow",
+      "--rt-glass": "other",
+      "--ease": "color",
+      "--ease-exit": "color",
+      "--shadow-phone": "shadow",
+      "--shadow-pop": "shadow"
+    },
+    "fontFamilies": [
+      "JetBrains Mono",
+      "Noto Sans SC",
+      "Noto Serif SC"
+    ]
+  }
+}

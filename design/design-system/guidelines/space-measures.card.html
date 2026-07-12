@@ -1,0 +1,23 @@
+<!-- @dsCard group="Spacing" viewport="700x180" name="Measures" subtitle="Text never fills the screen — narrow columns, lots of air" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; background: var(--rt-bg); padding: 22px 30px; font-family: var(--rt-mono); }
+  .stack { display: flex; flex-direction: column; gap: 13px; }
+  .line { display: flex; align-items: center; gap: 14px; }
+  .bar { height: 12px; background: var(--rt-green-soft); border-left: 2px solid var(--rt-green); border-radius: 0 3px 3px 0; }
+  .lab { font-size: 9px; letter-spacing: 0.08em; color: var(--rt-ink-3); white-space: nowrap; }
+  .lab b { color: var(--rt-ink); font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="stack">
+    <div class="line"><div class="bar" style="width:30%"></div><span class="lab"><b>narration</b> · 38ch</span></div>
+    <div class="line"><div class="bar" style="width:60%"></div><span class="lab"><b>letter / reading</b> · 720px</span></div>
+    <div class="line"><div class="bar" style="width:84%"></div><span class="lab"><b>demo split</b> · 1000px</span></div>
+  </div>
+</body>
+</html>

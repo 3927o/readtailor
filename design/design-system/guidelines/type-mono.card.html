@@ -1,0 +1,24 @@
+<!-- @dsCard group="Type" viewport="700x150" name="Mono Chrome · kickers" subtitle="JetBrains Mono — uppercase, wide-tracked, with a leading green rule" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; background: var(--rt-bg); padding: 28px 30px; }
+  .stack { display: flex; flex-direction: column; gap: 18px; }
+  .kicker { display: inline-flex; align-items: center; gap: 12px; font-family: var(--rt-mono); font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-green); }
+  .kicker::before { content:""; width: 28px; height: 1px; background: var(--rt-green); }
+  .issue { font-family: var(--rt-mono); font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--rt-ink-3); }
+  .issue .g { color: var(--rt-green); }
+  .meta { font-family: var(--rt-mono); font-size: 9.5px; letter-spacing: 0.1em; color: var(--rt-ink-3); }
+</style>
+</head>
+<body>
+  <div class="stack">
+    <span class="kicker">问题 · The Problem</span>
+    <span class="issue"><span class="g">BP</span> · 2026　　·　　ISSUE 01</span>
+    <span class="meta">tracking 0.12–0.22em · always uppercase</span>
+  </div>
+</body>
+</html>

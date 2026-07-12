@@ -1,0 +1,27 @@
+<!-- @dsCard group="Brand" viewport="700x180" name="Reader Mark Legend" subtitle="Three underline styles in the text — gloss · fill-in · margin" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; background: var(--rt-bg); padding: 26px 30px; }
+  .body { font-family: var(--rt-read); font-size: 16px; line-height: 1.95; color: var(--rt-ink); max-width: 600px; margin: 0 0 18px; }
+  .m { text-underline-offset: 4px; text-decoration-thickness: 1.5px; padding: 0 1px; }
+  .gloss  { text-decoration: underline dotted #2F6A52; }
+  .fillin { text-decoration: underline dashed #5b73a8; }
+  .margin { text-decoration: underline wavy #b08848; text-decoration-thickness: 1px; }
+  .legend { display: flex; gap: 22px; font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--rt-ink-3); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 20px; border-bottom: 2px; display: inline-block; }
+</style>
+</head>
+<body>
+  <p class="body">他在那里安享他的<span class="m gloss">智慧和孤独</span>，<span class="m fillin">十年不倦</span>。可是最后，他的<span class="m margin">心情变了</span>。</p>
+  <div class="legend">
+    <span><i style="border-bottom:2px dotted #2F6A52"></i> 释义 · gloss</span>
+    <span><i style="border-bottom:2px dashed #5b73a8"></i> 推理补全 · fill-in</span>
+    <span><i style="border-bottom:2px solid #b08848"></i> 脉络 · margin</span>
+  </div>
+</body>
+</html>

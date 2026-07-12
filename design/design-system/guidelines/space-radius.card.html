@@ -1,0 +1,26 @@
+<!-- @dsCard group="Spacing" viewport="700x190" name="Radius" subtitle="Signature asymmetry: square left (border lives there), rounded right" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; background: var(--rt-bg); padding: 24px 30px; font-family: var(--rt-mono); }
+  .row { display: flex; gap: 20px; align-items: flex-end; }
+  .col { display: flex; flex-direction: column; gap: 9px; align-items: flex-start; }
+  .box { width: 96px; height: 64px; background: var(--rt-green-soft); border: 1px solid var(--rt-rule); }
+  .card { border-left: 2px solid var(--rt-green); border-radius: 0 4px 4px 0; }
+  .soft { border-radius: 8px; }
+  .pill { width: 96px; height: 38px; border-radius: 999px; }
+  .v { font-size: 9px; letter-spacing: 0.08em; color: var(--rt-ink-3); }
+  .v b { color: var(--rt-ink); font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="col"><div class="box card"></div><div class="v"><b>card</b> · 0 4 4 0</div></div>
+    <div class="col"><div class="box soft"></div><div class="v"><b>soft</b> · 8px</div></div>
+    <div class="col"><div class="box pill"></div><div class="v"><b>pill</b> · 999px</div></div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,50 @@
+/* ───────────────────────────────────────────────────────────────────
+   ReadTailor 裁读 · Typography — the "two-voice" system
+   Three voices, each with a job:
+     1. SERIF (上元明朝 / Noto Serif SC) — the LETTER. Narration, headings,
+        body. Literary, modern Ming — NOT retro kai/楷.
+     2. SANS  (未来荧黑 / Noto Sans SC)  — the PRODUCT UI. Anything inside
+        the phone shell / interactive controls. Geometric, quiet.
+     3. MONO  (JetBrains Mono)          — editorial CHROME. Kickers, issue
+        lines, hints. ALWAYS uppercase + wide tracking.
+   ─────────────────────────────────────────────────────────────────── */
+:root {
+  /* ── families ── */
+  /* the LETTER voice — modern Ming serif (display + reading) */
+  --rt-serif: 'LanternMingA', 'Noto Serif SC', 'Songti SC', 'Source Han Serif SC', Georgia, serif; /* @kind font */
+  /* plain reading serif for long-form body (Noto Serif first, no display quirk) */
+  --rt-read:  'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', Georgia, serif; /* @kind font */
+  /* general sans */
+  --rt-sans:  'Noto Sans SC', 'PingFang SC', system-ui, sans-serif; /* @kind font */
+  /* the PRODUCT-UI voice — geometric sans (used inside the phone shell) */
+  --rt-demo:  'Glow Sans SC', 'Noto Sans SC', 'PingFang SC', system-ui, sans-serif; /* @kind font */
+  /* editorial chrome — mono, always UPPERCASE + tracked */
+  --rt-mono:  'JetBrains Mono', ui-monospace, monospace; /* @kind font */
+
+  /* ── display / narration (hero sentences) ── */
+  --rt-display-size:        clamp(28px, 3.4vw, 42px);
+  --rt-display-line-height: 1.55;
+  --rt-display-tracking:    -0.005em;   /* slightly tightened */
+
+  /* ── reading (in-app long-form body) ── */
+  --rt-reading-size:        18px;
+  --rt-reading-line-height: 1.95;       /* generous — book-like         */
+  --rt-reading-indent:      2em;        /* CN first-line indent          */
+
+  /* ── kicker / label (mono chrome) ── */
+  --rt-label-size:          10px;
+  --rt-label-tracking:      0.16em;     /* range 0.12em–0.22em           */
+  --rt-label-transform:     uppercase; /* @kind other */
+
+  /* ── weights ── */
+  --rt-weight-reg:    400;
+  --rt-weight-med:    500;
+  --rt-weight-semi:   600;
+  --rt-weight-bold:   700;
+
+  /* ── semantic aliases ── */
+  --font-display:  var(--rt-serif);
+  --font-reading:  var(--rt-read);
+  --font-ui:       var(--rt-demo);
+  --font-label:    var(--rt-mono);
+}

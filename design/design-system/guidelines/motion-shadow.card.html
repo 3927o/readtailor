@@ -1,0 +1,31 @@
+<!-- @dsCard group="Spacing" viewport="700x180" name="Shadow & Easing" subtitle="One ease-out curve; shadows used sparingly, soft and layered" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; background: var(--rt-bg); padding: 26px 30px; font-family: var(--rt-mono); }
+  .row { display: flex; gap: 26px; align-items: center; }
+  .card { width: 120px; height: 72px; background: var(--rt-bg-card); border-radius: 8px; }
+  .s-card { box-shadow: 0 6px 24px -16px rgba(20,40,30,0.25); border: 1px solid var(--rt-rule-2); }
+  .s-pop { box-shadow: 0 14px 34px -12px rgba(25,40,30,0.34), 0 2px 8px -4px rgba(0,0,0,0.12); }
+  .col { display: flex; flex-direction: column; gap: 10px; }
+  .v { font-size: 9px; letter-spacing: 0.08em; color: var(--rt-ink-3); }
+  .v b { color: var(--rt-ink); font-weight: 600; }
+  .ease { flex: 1; }
+  .curve { font-size: 11px; color: var(--rt-green-deep); }
+  .easelab { font-size: 9px; letter-spacing: 0.08em; color: var(--rt-ink-3); margin-top: 6px; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="col"><div class="card s-card"></div><div class="v"><b>shadow-card</b></div></div>
+    <div class="col"><div class="card s-pop"></div><div class="v"><b>shadow-pop</b></div></div>
+    <div class="ease">
+      <div class="curve">cubic-bezier(.2,.7,.2,1)</div>
+      <div class="easelab">primary ease — slow, soft, with lift · reveals fade + rise + deblur</div>
+    </div>
+  </div>
+</body>
+</html>

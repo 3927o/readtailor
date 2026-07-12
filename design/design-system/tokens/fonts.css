@@ -1,0 +1,22 @@
+/* ───────────────────────────────────────────────────────────────────
+   ReadTailor 裁读 · Webfonts
+   Two display webfonts come from ZeoSeven (subset-on-demand CDN):
+     · LanternMingA  上元明朝  — the "letter" voice (modern Ming serif)   id 419
+     · Glow Sans SC   未来荧黑  — the product-UI voice (geometric sans)     id 537
+   The chrome faces (Noto Serif SC, Noto Sans SC, JetBrains Mono) come
+   from Google Fonts.
+
+   NOTE: these are CDN-hosted webfonts, not local binaries. ZeoSeven
+   serves them as on-demand subsets, so there is nothing to vendor into
+   assets/. Consuming projects must be online for the two display faces
+   to load; the stacks fall back to Noto Serif SC / Noto Sans SC offline.
+   ─────────────────────────────────────────────────────────────────── */
+
+/* Google Fonts — Noto Serif SC, Noto Sans SC, JetBrains Mono */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
+
+/* ZeoSeven — 上元明朝 LanternMingA (display serif, the "letter" voice) */
+@import url('https://fontsapi.zeoseven.com/419/main/result.css');
+
+/* ZeoSeven — 未来荧黑 Glow Sans SC (geometric sans, the product-UI voice) */
+@import url('https://fontsapi.zeoseven.com/537/main/result.css');

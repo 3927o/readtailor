@@ -1,0 +1,25 @@
+<!-- @dsCard group="Colors" viewport="700x140" name="Rules & Status" subtitle="Hairlines, faint dashes, and the lone brick-red error" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; background: var(--rt-bg); font-family: var(--rt-mono); padding: 22px; }
+  .stack { display: flex; flex-direction: column; gap: 16px; }
+  .line { display: flex; align-items: center; gap: 16px; }
+  .lab { width: 130px; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--rt-ink-3); }
+  .bar { flex: 1; }
+  .err { display: inline-flex; align-items: center; gap: 12px; }
+  .err .dot { width: 14px; height: 14px; border-radius: 3px; background: #b4452f; }
+  .err .t { font-size: 11px; letter-spacing: 0.08em; color: var(--rt-ink-2); }
+</style>
+</head>
+<body>
+  <div class="stack">
+    <div class="line"><span class="lab">rule · 12%</span><div class="bar" style="border-top:1px solid var(--rt-rule)"></div></div>
+    <div class="line"><span class="lab">rule-2 · 6%</span><div class="bar" style="border-top:1px solid var(--rt-rule-2)"></div></div>
+    <div class="line"><span class="lab">error</span><span class="err"><span class="dot"></span><span class="t">#b4452f · form errors only, brick not bright</span></span></div>
+  </div>
+</body>
+</html>

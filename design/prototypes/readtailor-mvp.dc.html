@@ -1,0 +1,1780 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="../design-system/tokens/fonts.css">
+  <link rel="stylesheet" href="../design-system/tokens/colors.css">
+  <link rel="stylesheet" href="../design-system/tokens/typography.css">
+  <link rel="stylesheet" href="../design-system/tokens/spacing.css">
+  <link rel="stylesheet" href="../design-system/tokens/motion.css">
+  <link rel="stylesheet" href="../design-system/tokens/themes.css">
+  <link rel="stylesheet" href="../design-system/styles.css">
+  <script src="../design-system/_ds_bundle.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; background: var(--rt-bg); color: var(--rt-ink); }
+    * { box-sizing: border-box; }
+    a { color: var(--rt-green-deep); text-decoration: none; }
+    a:hover { color: var(--rt-green); }
+    ::selection { background: var(--rt-green-soft); }
+    @media (prefers-reduced-motion: no-preference) {
+      .rt-screen { animation: rtRise 400ms cubic-bezier(.2,.7,.2,1) both; }
+      @keyframes rtRise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+      .rt-fade { animation: rtFade 300ms cubic-bezier(.2,.7,.2,1) both; }
+      @keyframes rtFade { from { opacity: 0; } to { opacity: 1; } }
+    }
+    .rt-jumpitem:hover { background: var(--rt-green-soft); color: var(--rt-ink); }
+    .rt-chrome-hidden { transform: translateY(-103%); }
+    ::highlight(rt-hl) { background-color: var(--rt-green-soft); color: var(--rt-ink); text-decoration: underline; text-decoration-color: var(--rt-green); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    ::highlight(rt-hl-note) { background-color: rgba(176,136,72,0.18); color: var(--rt-ink); }
+    .rt-bbar { transform: translate(-50%, 0); }
+    .rt-bbar.rt-chrome-hidden-b { transform: translate(-50%, 160%); }
+    /* 一套代码两端：阅读器操作区按容器宽度分流 */
+    .rt-only-wide { display: none !important; }
+    @container (min-width: 721px) {
+      .rt-only-wide { display: flex !important; }
+      .rt-only-narrow { display: none !important; }
+      .rt-bbar { display: none !important; }
+    }
+    .rt-typing { display: inline-flex; gap: 5px; align-items: center; }
+    .rt-typing span { width: 5px; height: 5px; border-radius: 999px; background: var(--rt-green); opacity: 0.3; animation: rtDot 1s ease-in-out infinite; }
+    .rt-typing span:nth-child(2) { animation-delay: 160ms; } .rt-typing span:nth-child(3) { animation-delay: 320ms; }
+    @keyframes rtDot { 0%, 100% { opacity: 0.25; transform: none; } 40% { opacity: 1; transform: translateY(-2px); } }
+    .rt-iv-turn { animation: rtIvRise 460ms cubic-bezier(.2,.7,.2,1) both; }
+    .rt-iv-hist { animation: rtIvHist 400ms cubic-bezier(.2,.7,.2,1) both; }
+    .rt-q-reveal { animation: rtIvRise 440ms cubic-bezier(.2,.7,.2,1) both; }
+    @keyframes rtIvRise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+    @keyframes rtIvHist { from { opacity: 0; transform: translateY(6px); } to { opacity: 0.5; transform: none; } }
+    @keyframes rtChar { from { opacity: 0; transform: translateY(0.24em); filter: blur(2px); } to { opacity: 1; transform: translateY(0); filter: blur(0); } }
+    /* 一套代码适配两端：窄容器（手机 / 壳内）时，流程确认 CTA 吸底 */
+    @container (max-width: 600px) {
+      .rt-cta-bar { position: sticky; bottom: 0; z-index: 30; background: linear-gradient(to top, var(--rt-bg) 76%, rgba(250,250,246,0)); padding: 12px 0 calc(14px + env(safe-area-inset-bottom, 0px)); margin-bottom: -40px; }
+    }
+  </style>
+</helmet>
+
+<div data-rt-root="1" style="min-height: 100vh; background: var(--rt-bg); color: var(--rt-ink); font-family: var(--rt-demo); container-type: inline-size">
+
+  <!-- ═══════════ TOP BAR (阅读器内隐藏，沉浸阅读) ═══════════ -->
+  <sc-if value="{{ showMasthead }}" hint-placeholder-val="{{ true }}">
+  <header style="position: sticky; top: 0; z-index: 60; backdrop-filter: saturate(150%) blur(10px); -webkit-backdrop-filter: saturate(150%) blur(10px); background: rgba(250,250,246,0.82); border-bottom: 1px solid var(--rt-rule)">
+    <div style="max-width: 1100px; margin: 0 auto; padding: 0 24px; height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px">
+      <div onClick="{{ goHome }}" style="display: flex; align-items: baseline; gap: 10px; cursor: pointer; flex: none; white-space: nowrap">
+        <span style="font-family: var(--rt-serif); font-size: 19px; font-weight: 600; letter-spacing: 0.22em">裁读</span>
+        <span class="rt-submark" style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--rt-ink-3)">· ReadTailor ·</span>
+      </div>
+      <nav style="display: flex; align-items: center; gap: 4px; font-family: var(--rt-mono); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase">
+        <sc-if value="{{ isAuthed }}" hint-placeholder-val="{{ false }}">
+          <sc-for list="{{ navLinks }}" as="n" hint-placeholder-count="3">
+            <button onClick="{{ n.go }}" style="border: none; background: transparent; cursor: pointer; font: inherit; letter-spacing: inherit; text-transform: inherit; padding: 8px 10px; color: {{ n.color }}" style-hover="color: var(--rt-ink)">{{ n.label }}</button>
+          </sc-for>
+        </sc-if>
+        <div style="position: relative">
+          <button onClick="{{ toggleJump }}" style="border: 1px solid var(--rt-rule); background: transparent; cursor: pointer; font: inherit; letter-spacing: 0.14em; text-transform: uppercase; padding: 7px 11px; border-radius: 999px; color: var(--rt-ink-2); display: flex; align-items: center; gap: 6px" style-hover="border-color: var(--rt-green); color: var(--rt-green)">流程 <span style="font-size: 8px">▾</span></button>
+          <sc-if value="{{ jumpOpen }}" hint-placeholder-val="{{ false }}">
+            <div class="rt-fade" style="position: absolute; right: 0; top: 40px; width: 240px; background: var(--rt-bg-card); border: 1px solid var(--rt-rule); border-radius: 10px; box-shadow: 0 12px 34px -18px rgba(20,40,30,0.4); padding: 8px; z-index: 70">
+              <div style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-ink-3); padding: 6px 10px 8px">原型 · 跳到任意阶段</div>
+              <sc-for list="{{ jumpItems }}" as="j" hint-placeholder-count="10">
+                <button class="rt-jumpitem" onClick="{{ j.go }}" style="display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: none; background: {{ j.bg }}; cursor: pointer; padding: 8px 10px; border-radius: 6px; color: var(--rt-ink-2)">
+                  <span style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.1em; color: var(--rt-ink-3); width: 20px">{{ j.num }}</span>
+                  <span style="font-family: var(--rt-demo); font-size: 12.5px">{{ j.label }}</span>
+                </button>
+              </sc-for>
+            </div>
+          </sc-if>
+        </div>
+      </nav>
+    </div>
+  </header>
+  </sc-if>
+
+  <!-- ═══════════ 1 · 登录 ═══════════ -->
+  <sc-if value="{{ isLogin }}" hint-placeholder-val="{{ true }}">
+    <div class="rt-screen" data-screen-label="01 登录 Login" style="min-height: calc(100vh - 58px); display: flex; align-items: center; justify-content: center; padding: 40px 24px">
+      <div style="width: 100%; max-width: 400px; text-align: center">
+        <div style="font-family: var(--rt-serif); font-size: 44px; font-weight: 600; letter-spacing: 0.24em; margin-left: 0.24em">裁读</div>
+        <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.28em; text-transform: uppercase; color: var(--rt-ink-3); margin-top: 12px">ReadTailor · Read, Tailored</div>
+        <p style="font-family: var(--rt-serif); font-size: 16px; line-height: 2.2; color: var(--rt-ink-2); margin: 40px auto 44px; max-width: 30ch; text-wrap: pretty">你好，我的朋友。<br>把一本一直读不完的书交给我。<br>我不替你读，我陪你，直到你读完它。</p>
+        <button onClick="{{ signIn }}" style="width: 100%; max-width: 320px; display: inline-flex; align-items: center; justify-content: center; gap: 12px; min-height: 52px; padding: 0 22px; border: 1px solid var(--rt-rule); border-radius: 999px; background: var(--rt-bg-card); cursor: pointer; font-family: var(--rt-demo); font-size: 14.5px; color: var(--rt-ink); transition: border-color 160ms, box-shadow 160ms" style-hover="border-color: var(--rt-green); box-shadow: 0 6px 20px -14px rgba(20,40,30,0.5)">
+          <span style="font-family: var(--rt-mono); font-weight: 700; font-size: 15px">G</span>
+          使用 Google 继续
+        </button>
+        <div style="font-family: var(--rt-mono); font-size: 8.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rt-ink-3); margin-top: 20px; line-height: 1.9">首发仅支持 Google 登录<br>国内登录方式后续补充</div>
+        <div style="margin-top: 64px; font-family: var(--rt-serif); font-size: 12px; color: var(--rt-ink-3); letter-spacing: 0.06em">—— ReadTailor · 裁读 / 2026</div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ═══════════ 2 · 简版长期画像 ═══════════ -->
+  <sc-if value="{{ isOnboarding }}" hint-placeholder-val="{{ false }}">
+    <div class="rt-screen" data-screen-label="02 简版长期画像 Onboarding" style="max-width: 620px; margin: 0 auto; padding: 56px 24px 96px">
+      <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-ink-3); display: flex; align-items: center; gap: 12px">
+        <span>建立画像 · {{ obStepLabel }}</span>
+        <span style="flex: 1; border-top: 1px dashed var(--rt-rule)"></span>
+      </div>
+      <h1 style="font-family: var(--rt-serif); font-size: 27px; font-weight: 600; line-height: 1.5; letter-spacing: 0.02em; margin: 22px 0 8px; text-wrap: pretty">{{ obQ.q }}</h1>
+      <p style="font-family: var(--rt-serif); font-size: 14.5px; line-height: 1.9; color: var(--rt-ink-3); margin: 0 0 30px; max-width: 34ch">{{ obQ.hint }}</p>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 10px; max-width: 520px">
+        <sc-for list="{{ obQ.options }}" as="opt" hint-placeholder-count="5">
+          <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Chip" selected="{{ opt.selected }}" onClick="{{ opt.toggle }}" hint-size="96px,38px">{{ opt.label }}</x-import>
+        </sc-for>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 18px; margin-top: 40px">
+        <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Button" variant="primary" size="lg" onClick="{{ obNext }}" hint-size="130px,46px">{{ obCta }}</x-import>
+        <sc-if value="{{ obCanSkip }}" hint-placeholder-val="{{ true }}">
+          <button onClick="{{ obNext }}" style="border: none; background: transparent; cursor: pointer; font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-3); min-height: 44px" style-hover="color: var(--rt-ink)">跳过这题</button>
+        </sc-if>
+      </div>
+      <p style="font-family: var(--rt-serif); font-size: 12.5px; color: var(--rt-ink-3); margin-top: 44px; line-height: 1.9; max-width: 36ch">这只是个开始。之后每本书的访谈和你问我的问题，都会悄悄帮我把画像补得更准——你不必再回答一次。</p>
+    </div>
+  </sc-if>
+
+  <!-- ═══════════ 3 · 书架 ═══════════ -->
+  <sc-if value="{{ isShelf }}" hint-placeholder-val="{{ false }}">
+    <div class="rt-screen" data-screen-label="03 书架 Shelf" style="max-width: 680px; margin: 0 auto; padding: 44px 24px 110px">
+      <header style="display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 26px">
+        <div>
+          <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 8px">你的书架 · Your Shelf</div>
+          <h1 style="font-family: var(--rt-serif); font-size: 26px; font-weight: 600; letter-spacing: 0.04em; margin: 0">在读与想读</h1>
+        </div>
+        <button onClick="{{ goUpload }}" style="display: inline-flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 16px; border: 1px solid var(--rt-green); border-radius: 999px; background: transparent; cursor: pointer; font-family: var(--rt-demo); font-size: 13px; color: var(--rt-green-deep); white-space: nowrap" style-hover="background: var(--rt-green-soft)">＋ 上传 EPUB</button>
+      </header>
+
+      <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.SearchField" value="{{ query }}" onChange="{{ setQuery }}" hint-size="100%,40px" style="max-width: 420px; margin-bottom: 30px"></x-import>
+
+      <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3); border-bottom: 1px dashed var(--rt-rule); padding-bottom: 8px; margin-bottom: 4px">{{ shelfCount }}</div>
+
+      <sc-for list="{{ shelfBooks }}" as="b" hint-placeholder-count="3">
+        <div style="position: relative">
+          <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.BookListItem" title="{{ b.title }}" author="{{ b.author }}" meta="{{ b.meta }}" progress="{{ b.progress }}" onClick="{{ b.open }}" hint-size="100%,86px"></x-import>
+          <span style="position: absolute; right: 2px; top: 14px; font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; color: {{ b.badgeColor }}; border: 1px solid {{ b.badgeBorder }}; border-radius: 999px; padding: 3px 8px; background: {{ b.badgeBg }}">{{ b.badge }}</span>
+        </div>
+      </sc-for>
+
+      <div style="margin-top: 44px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px dashed var(--rt-rule); padding-top: 20px">
+        <span style="font-family: var(--rt-serif); font-size: 12.5px; color: var(--rt-ink-3); letter-spacing: 0.06em">—— 读完一本，胜过收藏一百本。</span>
+        <button onClick="{{ goDeleted }}" style="border: none; background: transparent; cursor: pointer; font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rt-ink-3); min-height: 40px" style-hover="color: var(--rt-ink-2)">最近删除 ›</button>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ═══════════ 4 · 上传 + 规范化进度 ═══════════ -->
+  <sc-if value="{{ isUpload }}" hint-placeholder-val="{{ false }}">
+    <div class="rt-screen" data-screen-label="04 上传·规范化 Upload" style="max-width: 640px; margin: 0 auto; padding: 48px 24px 96px">
+      <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-ink-3); display: flex; align-items: center; gap: 12px; margin-bottom: 20px"><span>上传书籍 · Add a Book</span><span style="flex: 1; border-top: 1px dashed var(--rt-rule)"></span></div>
+
+      <sc-if value="{{ normIdle }}" hint-placeholder-val="{{ true }}">
+        <h1 style="font-family: var(--rt-serif); font-size: 27px; font-weight: 600; letter-spacing: 0.03em; margin: 0 0 12px">上传一本 EPUB</h1>
+        <p style="font-family: var(--rt-serif); font-size: 14.5px; line-height: 2; color: var(--rt-ink-3); margin: 0 0 28px; max-width: 40ch">同一个 EPUB 文件如果别人处理过，会直接复用，几秒就好；没处理过，我会为它单独规范化——这一步是异步的，你可以先去做别的。</p>
+        <button onClick="{{ startNorm }}" style="width: 100%; border: 1.5px dashed var(--rt-rule); border-radius: 12px; background: var(--rt-bg-card); cursor: pointer; padding: 44px 24px; text-align: center; transition: border-color 160ms, background 160ms" style-hover="border-color: var(--rt-green); background: var(--rt-green-soft)">
+          <div style="font-family: var(--rt-serif); font-size: 17px; color: var(--rt-ink); margin-bottom: 8px">选择 EPUB 文件</div>
+          <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-ink-3)">或拖放到此处 · EPUB ONLY</div>
+        </button>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 20px">
+          <span style="font-family: var(--rt-serif); font-size: 12.5px; color: var(--rt-ink-3); line-height: 1.8; max-width: 34ch">首发只收 EPUB。PDF、扫描件、加密或 DRM 的版本会统一进入“无法处理”状态。</span>
+          <button onClick="{{ startFail }}" style="border: none; background: transparent; cursor: pointer; font-family: var(--rt-mono); font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--rt-ink-3); white-space: nowrap; min-height: 40px" style-hover="color: var(--rt-error)">模拟无法处理 ›</button>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ normStarted }}" hint-placeholder-val="{{ false }}">
+        <h1 style="font-family: var(--rt-serif); font-size: 24px; font-weight: 600; letter-spacing: 0.03em; margin: 0 0 6px">《人类简史》· 规范化</h1>
+        <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 30px">{{ normFingerprint }}</div>
+
+        <div style="display: flex; flex-direction: column; gap: 2px">
+          <sc-for list="{{ normSteps }}" as="st" hint-placeholder-count="6">
+            <div style="display: flex; gap: 16px; padding: 4px 0">
+              <div style="display: flex; flex-direction: column; align-items: center; width: 22px">
+                <sc-if value="{{ st.isDone }}" hint-placeholder-val="{{ false }}"><div style="width: 22px; height: 22px; border-radius: 999px; background: var(--rt-green); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; flex: none">✓</div></sc-if>
+                <sc-if value="{{ st.isActive }}" hint-placeholder-val="{{ true }}"><div style="width: 22px; height: 22px; border-radius: 999px; border: 2px solid var(--rt-green); box-sizing: border-box; display: flex; align-items: center; justify-content: center; flex: none"><div style="width: 8px; height: 8px; border-radius: 999px; background: var(--rt-green); animation: rtFade 900ms ease-in-out infinite alternate"></div></div></sc-if>
+                <sc-if value="{{ st.isFailed }}" hint-placeholder-val="{{ false }}"><div style="width: 22px; height: 22px; border-radius: 999px; background: var(--rt-error); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; flex: none">×</div></sc-if>
+                <div style="flex: 1; width: 1.5px; background: {{ st.railColor }}; margin-top: 2px; min-height: 20px"></div>
+              </div>
+              <div style="padding-bottom: 14px; opacity: {{ st.dim }}">
+                <div style="font-family: var(--rt-mono); font-size: 8.5px; letter-spacing: 0.18em; text-transform: uppercase; color: {{ st.labelColor }}; margin-bottom: 3px">{{ st.num }} · {{ st.label }} · {{ st.cn }}</div>
+                <div style="font-family: var(--rt-serif); font-size: 13.5px; line-height: 1.75; color: var(--rt-ink-2); max-width: 44ch">{{ st.desc }}</div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+
+        <sc-if value="{{ normRunning }}" hint-placeholder-val="{{ true }}">
+          <div style="margin-top: 14px; font-family: var(--rt-serif); font-size: 12.5px; color: var(--rt-ink-3); line-height: 1.9">进度只在站内展示，首发不发邮件通知。你可以先离开，处理完这本书会出现在书架。</div>
+        </sc-if>
+        <sc-if value="{{ normReady }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top: 22px; background: var(--rt-green-soft); border-left: 2px solid var(--rt-green); border-radius: 0 4px 4px 0; padding: 18px 20px">
+            <div style="font-family: var(--rt-serif); font-size: 15px; color: var(--rt-ink); margin-bottom: 6px">规范化完成，已通过 nb-1.0 校验。</div>
+            <div style="font-family: var(--rt-serif); font-size: 13px; color: var(--rt-ink-2); line-height: 1.85">这本书的规范化包可以被所有人复用；你的画像、访谈和进度都是另一层，只属于你。</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 16px; margin-top: 26px">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Button" variant="primary" size="lg" onClick="{{ goInterviewNew }}" hint-size="150px,46px">先聊几句，再开始</x-import>
+            <button onClick="{{ toShelfFromUpload }}" style="border: none; background: transparent; cursor: pointer; font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-3); min-height: 44px" style-hover="color: var(--rt-ink)">返回书架</button>
+          </div>
+        </sc-if>
+        <sc-if value="{{ normFailed }}" hint-placeholder-val="{{ false }}">
+          <div style="margin-top: 22px; border: 1px solid var(--rt-error); border-radius: 8px; padding: 18px 20px">
+            <div style="font-family: var(--rt-serif); font-size: 15px; color: var(--rt-error); margin-bottom: 6px">该版本暂时无法处理。</div>
+            <div style="font-family: var(--rt-serif); font-size: 13px; color: var(--rt-ink-2); line-height: 1.85">可能是加密、DRM，或结构无法解包。你可以换一个版本重新上传，或稍后重试；首发暂不提供人工处理。</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 16px; margin-top: 26px">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Button" variant="secondary" size="lg" onClick="{{ retryNorm }}" hint-size="120px,46px">重新尝试</x-import>
+            <button onClick="{{ toShelfFromUpload }}" style="border: none; background: transparent; cursor: pointer; font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-3); min-height: 44px" style-hover="color: var(--rt-ink)">返回书架</button>
+          </div>
+        </sc-if>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <!-- ═══════════ 5 · 单本书访谈（对话式 · AI 判断信息足够） ═══════════ -->
+  <sc-if value="{{ isInterview }}" hint-placeholder-val="{{ false }}">
+    <div class="rt-screen" data-screen-label="05 单本书访谈 Interview" style="min-height: calc(100vh - 58px); display: flex; flex-direction: column">
+      <span style="position: sticky; top: 58px; z-index: 30; display: block; height: 2px; background: var(--rt-rule)"><span style="display: block; height: 100%; width: {{ ivPct }}; background: var(--rt-green); transition: width 420ms cubic-bezier(.2,.7,.2,1)"></span></span>
+      <div style="position: sticky; top: 60px; z-index: 20; display: flex; align-items: center; justify-content: space-between; padding: 15px 24px 13px; background: color-mix(in srgb, var(--rt-bg) 84%, transparent); backdrop-filter: saturate(150%) blur(10px); -webkit-backdrop-filter: saturate(150%) blur(10px); border-bottom: 1px solid var(--rt-rule)">
+        <span style="display: inline-flex; align-items: center; gap: 11px; font-family: var(--rt-mono); font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-green)"><span style="width: 24px; height: 1px; background: var(--rt-green)"></span>认识你 · A Conversation</span>
+        <span style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-ink-3)">信息充足度 {{ ivSuffLabel }}</span>
+      </div>
+      <div style="flex: 1; width: 100%; max-width: 620px; margin: 0 auto; box-sizing: border-box; padding: 28px 24px 24px">
+
+        <sc-for list="{{ ivHistory }}" as="h" hint-placeholder-count="0">
+          <div class="rt-iv-hist" style="margin-bottom: 22px">
+            <p style="margin: 0 0 9px; font-family: var(--rt-serif); font-size: 14px; line-height: 1.6; color: var(--rt-ink-2)">{{ h.q }}</p>
+            <div style="display: flex; justify-content: flex-end">
+              <span style="max-width: 80%; font-family: var(--rt-serif); font-style: italic; font-size: 14.5px; line-height: 1.55; color: var(--rt-green-deep); text-align: right"><span style="color: var(--rt-ink-3); font-style: normal; margin-right: 7px">——</span>{{ h.a }}</span>
+            </div>
+          </div>
+        </sc-for>
+
+        <div key="{{ ivKey }}" class="rt-iv-turn">
+          <sc-if value="{{ ivHasAck }}" hint-placeholder-val="{{ false }}">
+            <p style="margin: 0 0 14px; font-family: var(--rt-serif); font-style: italic; font-size: 14.5px; line-height: 1.6; color: var(--rt-green-deep)">{{ ivAckEl }}</p>
+          </sc-if>
+          <sc-if value="{{ ivTyping }}" hint-placeholder-val="{{ false }}">
+            <div class="rt-typing" aria-label="正在输入…" style="animation: rtFade 320ms cubic-bezier(.2,.7,.2,1) both; animation-delay: {{ ivDotsDelay }}; padding: 6px 0 8px"><span></span><span></span><span></span></div>
+          </sc-if>
+          <sc-if value="{{ ivShowQ }}" hint-placeholder-val="{{ true }}">
+            <h2 style="margin: 0 0 9px; font-family: var(--rt-serif); font-size: 23px; font-weight: 600; line-height: 1.55; letter-spacing: 0.01em; color: var(--rt-ink); text-wrap: pretty">{{ ivQEl }}</h2>
+            <p class="rt-q-reveal" style="margin: 0; font-family: var(--rt-serif); font-size: 13.5px; line-height: 1.8; color: var(--rt-ink-3); max-width: 34ch; animation-delay: {{ ivHintDelay }}">{{ ivQ.hint }}</p>
+            <div style="margin-top: 20px">
+              <div style="display: flex; flex-direction: column; gap: 2px">
+                <sc-for list="{{ ivQ.options }}" as="opt" hint-placeholder-count="4">
+                  <button onClick="{{ opt.pick }}" style="display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left; border: none; background: transparent; cursor: pointer; padding: 7px 2px; font-family: var(--rt-serif); font-size: 16.5px; line-height: 1.45; color: var(--rt-ink); transition: color 140ms; animation: rtIvRise 420ms cubic-bezier(.2,.7,.2,1) both; animation-delay: {{ opt.delay }}" style-hover="color: var(--rt-green-deep)" style-active="color: var(--rt-green-deep)"><span style="color: var(--rt-ink-3); font-size: 14px; flex: none">↳</span><span>{{ opt.label }}</span></button>
+                </sc-for>
+              </div>
+              <div style="display: flex; align-items: baseline; gap: 9px; margin-top: 14px; padding: 7px 2px; animation: rtIvRise 420ms cubic-bezier(.2,.7,.2,1) both; animation-delay: {{ ivFreeDelay }}">
+                <span style="color: var(--rt-ink-3); font-size: 14px; flex: none; font-family: var(--rt-serif)">↳</span>
+                <textarea value="{{ ivInput }}" onChange="{{ setIvInput }}" placeholder="或者，自己说两句…" rows="1" style="flex: 1; box-sizing: border-box; min-height: 30px; max-height: 108px; resize: none; border: none; border-bottom: 1.5px dashed var(--rt-rule); border-radius: 0; background: transparent; padding: 2px 2px 6px; font-family: var(--rt-serif); font-size: 15.5px; line-height: 1.5; color: var(--rt-ink); outline: none"></textarea>
+                <button onClick="{{ ivSubmitText }}" aria-label="发送" style="flex: none; align-self: center; width: 32px; height: 32px; border: none; border-radius: 999px; background: transparent; cursor: pointer; color: {{ ivSendColor }}; font-size: 17px">→</button>
+              </div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ ivConcluding }}" hint-placeholder-val="{{ false }}">
+            <h2 style="margin: 0 0 12px; font-family: var(--rt-serif); font-size: 23px; font-weight: 600; line-height: 1.55; letter-spacing: 0.01em; color: var(--rt-ink); text-wrap: pretty">{{ ivDoneEl }}</h2>
+            <p class="rt-q-reveal" style="margin: 0 0 26px; font-family: var(--rt-serif); font-size: 13.5px; line-height: 1.8; color: var(--rt-ink-3); max-width: 34ch; animation-delay: 1000ms">再问下去就是负担了。接下来交给我。</p>
+            <div class="rt-fade" style="display: flex; align-items: center; gap: 12px; animation-delay: 1400ms">
+              <div class="rt-typing" style="padding: 6px 0 8px"><span></span><span></span><span></span></div>
+              <span style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-green-deep)">正在生成读前简报 · Brief</span>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+      <sc-if value="{{ ivShowNote }}" hint-placeholder-val="{{ true }}">
+        <div style="padding: 0 24px 20px; text-align: center; font-family: var(--rt-serif); font-size: 11.5px; color: var(--rt-ink-3); letter-spacing: 0.02em">问几个由我判断——信息够了，我就不再多问。</div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <!-- ═══════════ 6 · 读前简报 ═══════════ -->
+  <sc-if value="{{ isBrief }}" hint-placeholder-val="{{ false }}">
+    <div class="rt-screen" data-screen-label="06 读前简报 Brief" style="max-width: 720px; margin: 0 auto; padding: 48px 24px 96px">
+      <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-ink-3); display: flex; align-items: center; gap: 12px; margin-bottom: 24px"><span>读前简报 · Before You Read</span><span style="flex: 1; border-top: 1px dashed var(--rt-rule)"></span></div>
+
+      <sc-if value="{{ briefGen }}" hint-placeholder-val="{{ false }}">
+        <div class="rt-fade" style="padding: 90px 0 50px; text-align: center">
+          <div style="display: flex; justify-content: center"><div class="rt-typing"><span></span><span></span><span></span></div></div>
+          <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-green-deep); margin: 12px 0 14px">Generating · 读前简报</div>
+          <p style="font-family: var(--rt-serif); font-size: 14px; line-height: 2; color: var(--rt-ink-3); margin: 0 auto; max-width: 28ch">访谈的信息够了。我正把它写成一封读之前的信。</p>
+        </div>
+      </sc-if>
+      <sc-if value="{{ briefReady }}" hint-placeholder-val="{{ true }}">
+        <div class="rt-fade">
+          <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.BriefCard" title="{{ briefTitle }}" sections="{{ briefSections }}" terms="{{ briefTerms }}" hint-size="100%,420px"></x-import>
+
+          <p style="font-family: var(--rt-serif); font-size: 12.5px; color: var(--rt-ink-3); margin: 22px 0 0; line-height: 1.9">进入阅读后，你随时可以从目录或书籍菜单重新打开这封信。</p>
+
+          <div class="rt-cta-bar" style="margin-top: 30px">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Button" variant="primary" size="lg" onClick="{{ briefToStrategy }}" hint-size="200px,46px">看我打算怎么处理这本书</x-import>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <!-- ═══════════ 7 · 处理方式草稿（确认 / 反馈循环） ═══════════ -->
+  <sc-if value="{{ isStrategy }}" hint-placeholder-val="{{ false }}">
+    <div class="rt-screen" data-screen-label="07 处理方式草稿 Strategy" style="max-width: 760px; margin: 0 auto; padding: 44px 24px 110px">
+      <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-ink-3); display: flex; align-items: center; gap: 12px; margin-bottom: 22px"><span>处理方式 · 草稿 · Draft</span><span style="flex: 1; border-top: 1px dashed var(--rt-rule)"></span><span style="color: var(--rt-green-deep)">{{ stratVersionLabel }}</span></div>
+
+      <sc-if value="{{ stratDrafting }}" hint-placeholder-val="{{ false }}">
+        <div class="rt-fade" style="padding: 90px 0 50px; text-align: center">
+          <div style="display: flex; justify-content: center"><div class="rt-typing"><span></span><span></span><span></span></div></div>
+          <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-green-deep); margin: 12px 0 14px">{{ stratDraftingLabel }}</div>
+          <p style="font-family: var(--rt-serif); font-size: 14px; line-height: 2; color: var(--rt-ink-3); margin: 0 auto; max-width: 30ch">我在把访谈里听到的，写成这本书的文字处理方式和结构化策略。</p>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ stratReady }}" hint-placeholder-val="{{ true }}">
+        <div class="rt-fade">
+          <sc-if value="{{ stratFromTrial }}" hint-placeholder-val="{{ false }}">
+            <div style="background: var(--rt-green-soft); border-left: 2px solid var(--rt-green); border-radius: 0 4px 4px 0; padding: 13px 16px; margin-bottom: 20px; font-family: var(--rt-serif); font-size: 13.5px; line-height: 1.85; color: var(--rt-ink); max-width: 52ch">这一版吸收了你在试读样章里提的意见。确认后，我会重新挑节点、重新生成样章。</div>
+          </sc-if>
+          <h1 style="font-family: var(--rt-serif); font-size: 26px; font-weight: 600; line-height: 1.5; letter-spacing: 0.02em; margin: 0 0 18px; text-wrap: pretty">{{ trialStrategy.title }}</h1>
+          <div style="display: flex; flex-direction: column; gap: 12px; max-width: 46ch">
+            <sc-for list="{{ trialStrategy.lines }}" as="ln" hint-placeholder-count="3">
+              <p style="font-family: var(--rt-serif); font-size: 15px; line-height: 2; color: var(--rt-ink-2); margin: 0">{{ ln }}</p>
+            </sc-for>
+          </div>
+
+          <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3); border-bottom: 1px dashed var(--rt-rule); padding-bottom: 8px; margin: 36px 0 2px">结构化策略 · 全书将按此生成</div>
+          <div style="display: flex; flex-direction: column; max-width: 620px">
+            <sc-for list="{{ stratParams }}" as="p" hint-placeholder-count="5">
+              <div style="display: flex; gap: 18px; padding: 13px 2px; border-bottom: 1px solid var(--rt-rule); align-items: baseline">
+                <span style="flex: none; width: 76px; font-family: var(--rt-mono); font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--rt-ink-3)">{{ p.k }}</span>
+                <span style="font-family: var(--rt-serif); font-size: 14px; line-height: 1.8; color: var(--rt-ink)">{{ p.v }}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="margin-top: 32px; border-top: 1px dashed var(--rt-rule); padding-top: 24px; max-width: 620px">
+            <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 12px">草稿有问题？直接告诉我 · 还能改 {{ stratRoundsLeft }} 次</div>
+            <textarea value="{{ stratFeedback }}" onChange="{{ setStratFeedback }}" placeholder="比如：导读别超过三句／注释再密一点／术语保留原文写法" style="width: 100%; box-sizing: border-box; min-height: 84px; resize: vertical; border: 1px solid var(--rt-rule); border-radius: 8px; background: var(--rt-bg-card); padding: 12px 14px; font-family: var(--rt-demo); font-size: 13.5px; line-height: 1.7; color: var(--rt-ink); outline: none"></textarea>
+            <div class="rt-cta-bar" style="display: flex; align-items: center; gap: 16px; margin-top: 20px; flex-wrap: wrap">
+              <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Button" variant="primary" size="lg" onClick="{{ stratConfirm }}" hint-size="230px,46px">没问题——去挑三个节点试读</x-import>
+              <button onClick="{{ stratRedraft }}" style="border: 1px solid var(--rt-rule); background: transparent; cursor: pointer; border-radius: 999px; min-height: 46px; padding: 0 20px; font-family: var(--rt-demo); font-size: 13.5px; color: {{ stratSendColor }}; transition: all 160ms" style-hover="border-color: var(--rt-green)">提交反馈，重新起草</button>
+            </div>
+            <p style="font-family: var(--rt-serif); font-size: 12px; color: var(--rt-ink-3); margin: 20px 0 0; line-height: 1.9; max-width: 44ch">反馈只改处理方式，不动原文。改到你说“没问题”为止；你确认后，我才去挑试读节点、生成样章。</p>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <!-- ═══════════ 8 · 三个试读样章（确认 / 退回循环） ═══════════ -->
+  <sc-if value="{{ isTrial }}" hint-placeholder-val="{{ false }}">
+    <div class="rt-screen" data-screen-label="08 试读样章 Trial" style="max-width: 760px; margin: 0 auto; padding: 44px 24px 110px">
+      <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-ink-3); display: flex; align-items: center; gap: 12px; margin-bottom: 22px"><span>三个试读样章 · Trial Samples</span><span style="flex: 1; border-top: 1px dashed var(--rt-rule)"></span><span style="color: var(--rt-green-deep)">{{ trialVersionLabel }}</span></div>
+
+      <sc-if value="{{ trialPicking }}" hint-placeholder-val="{{ false }}">
+        <p style="font-family: var(--rt-serif); font-size: 14.5px; line-height: 2; color: var(--rt-ink-2); margin: 0 0 24px; max-width: 40ch">处理方式定了。我从全书里挑三个位置——一个门槛、一个典型、一个最难——用它们检验这套方式。</p>
+        <sc-for list="{{ pickedNodes }}" as="pn" hint-placeholder-count="0">
+          <div class="rt-fade" style="border: 1px solid var(--rt-rule); border-radius: 12px; background: var(--rt-bg-card); padding: 15px 18px; margin-bottom: 10px; max-width: 620px">
+            <div style="display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px">
+              <span style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rt-green-deep)">{{ pn.num }} · {{ pn.tag }}</span>
+              <span style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rt-ink-3)">已选定</span>
+            </div>
+            <div style="font-family: var(--rt-serif); font-size: 15.5px; color: var(--rt-ink); margin-bottom: 5px">{{ pn.node }}</div>
+            <div style="font-family: var(--rt-serif); font-style: italic; font-size: 12.5px; line-height: 1.8; color: var(--rt-ink-3)">{{ pn.why }}</div>
+          </div>
+        </sc-for>
+        <sc-if value="{{ trialSampling }}" hint-placeholder-val="{{ false }}">
+          <div class="rt-fade" style="display: flex; align-items: center; gap: 12px; padding: 16px 2px 0">
+            <div class="rt-typing"><span></span><span></span><span></span></div>
+            <span style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-green-deep)">正在按处理方式生成三个样章…</span>
+          </div>
+        </sc-if>
+      </sc-if>
+
+      <sc-if value="{{ trialReady }}" hint-placeholder-val="{{ true }}">
+        <div class="rt-fade">
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px">
+            <sc-for list="{{ trialSamples }}" as="sm" hint-placeholder-count="3">
+              <button onClick="{{ sm.pick }}" style="border: 1px solid {{ sm.borderColor }}; background: {{ sm.bgColor }}; cursor: pointer; border-radius: 999px; padding: 8px 15px; text-align: left; transition: all 160ms" style-hover="border-color: var(--rt-green)">
+                <span style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rt-green-deep); display: block; margin-bottom: 2px">{{ sm.tag }}</span>
+                <span style="font-family: var(--rt-demo); font-size: 12.5px; color: var(--rt-ink)">{{ sm.node }}</span>
+              </button>
+            </sc-for>
+          </div>
+
+          <div style="border: 1px solid var(--rt-rule); border-radius: 12px; background: var(--rt-bg-card); padding: 24px 26px; box-shadow: 0 6px 24px -16px rgba(20,40,30,0.25)">
+            <div style="font-family: var(--rt-mono); font-size: 8.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 4px">{{ trialCurrent.node }}</div>
+            <div style="font-family: var(--rt-serif); font-size: 12.5px; color: var(--rt-ink-3); line-height: 1.8; margin-bottom: 18px; font-style: italic">为什么选它 · {{ trialCurrent.why }}</div>
+            <div style="background: var(--rt-green-soft); border-left: 2px solid var(--rt-green); border-radius: 0 4px 4px 0; padding: 14px 16px; margin-bottom: 18px">
+              <div style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-green-deep); margin-bottom: 7px">章节导读 · 裁读</div>
+              <div style="font-family: var(--rt-serif); font-size: 14px; line-height: 1.95; color: var(--rt-ink)">{{ trialCurrent.lead }}</div>
+            </div>
+            <div style="font-family: var(--rt-serif); font-size: 15px; line-height: 2.05; color: var(--rt-ink); text-indent: 2em">{{ trialCurrent.body }}</div>
+          </div>
+
+          <div style="margin-top: 30px; border-top: 1px dashed var(--rt-rule); padding-top: 24px">
+            <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 12px">样章不对味？· 反馈会退回处理方式 · 还能改 {{ stratRoundsLeft }} 次</div>
+            <textarea value="{{ trialFeedback }}" onChange="{{ setTrialFeedback }}" placeholder="比如：导读再短一点／术语别翻译得太浅／第三个样章太难，先别放这么难的" style="width: 100%; box-sizing: border-box; min-height: 84px; resize: vertical; border: 1px solid var(--rt-rule); border-radius: 8px; background: var(--rt-bg-card); padding: 12px 14px; font-family: var(--rt-demo); font-size: 13.5px; line-height: 1.7; color: var(--rt-ink); outline: none"></textarea>
+            <div class="rt-cta-bar" style="display: flex; align-items: center; gap: 16px; margin-top: 20px; flex-wrap: wrap">
+              <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Button" variant="primary" size="lg" onClick="{{ trialConfirm }}" hint-size="250px,46px">样章可以——采用并进入正式阅读</x-import>
+              <button onClick="{{ trialSendBack }}" style="border: 1px solid var(--rt-rule); background: transparent; cursor: pointer; border-radius: 999px; min-height: 46px; padding: 0 20px; font-family: var(--rt-demo); font-size: 13.5px; color: {{ trialSendColor }}; transition: all 160ms" style-hover="border-color: var(--rt-green)">提交反馈，退回重新起草</button>
+            </div>
+            <p style="font-family: var(--rt-serif); font-size: 12px; color: var(--rt-ink-3); margin: 20px 0 0; line-height: 1.9; max-width: 44ch">提交后回到处理方式草稿：我先改方式，你确认，再重新挑节点、重新生成样章。必须你点“采用”，才会开始正式阅读。</p>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <!-- ═══════════ 9 · 正式阅读器 ═══════════ -->
+  <sc-if value="{{ isReader }}" hint-placeholder-val="{{ false }}">
+    <div class="rt-screen" data-screen-label="09 阅读器 Reader" data-rt-theme="{{ theme }}" style="min-height: 100vh; background: var(--rt-bg); color: var(--rt-ink); transition: background 240ms">
+      <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.ProgressBar" value="{{ readProgress }}" hint-size="100%,2px" style="position: fixed; top: 0; left: 0; right: 0; z-index: 47"></x-import>
+      <div class="{{ chromeCls }}" style="position: fixed; top: 0; left: 0; right: 0; z-index: 46; transition: transform 300ms cubic-bezier(.2,.7,.2,1)">
+        <header style="display: flex; align-items: center; gap: 6px; padding: 0 8px; padding-top: env(safe-area-inset-top, 0px); min-height: 52px; box-sizing: border-box; border-bottom: 1px solid var(--rt-rule-2); background: color-mix(in srgb, var(--rt-bg) 86%, transparent); backdrop-filter: saturate(150%) blur(10px); -webkit-backdrop-filter: saturate(150%) blur(10px)">
+          <button onClick="{{ exitReader }}" aria-label="返回" style="display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; border: none; background: transparent; cursor: pointer; font-family: var(--rt-serif); font-size: 18px; color: var(--rt-ink-2); padding: 0" style-hover="color: var(--rt-ink)">‹</button>
+          <div style="flex: 1; min-width: 0; font-family: var(--rt-serif); font-size: 14px; font-weight: 500; letter-spacing: 0.06em; color: var(--rt-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{ readerTitle }}</div>
+          <!-- 窄（手机）：顶栏只放搜索 / 简报，其余交给拇指底栏 -->
+          <div class="rt-only-narrow" style="display: flex; align-items: center; gap: 2px">
+            <sc-for list="{{ topActions }}" as="a" hint-placeholder-count="2">
+              <button onClick="{{ a.onClick }}" aria-label="{{ a.label }}" title="{{ a.label }}" style="display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; border: none; background: transparent; cursor: pointer; color: {{ a.tint }}; padding: 0" style-hover="color: var(--rt-ink)">{{ a.glyph }}</button>
+            </sc-for>
+          </div>
+          <!-- 宽（桌面）：全部操作回到顶栏右侧，不用悬浮底栏 -->
+          <div class="rt-only-wide" style="display: none; align-items: center; gap: 1px">
+            <sc-for list="{{ deskActions }}" as="a" hint-placeholder-count="6">
+              <button onClick="{{ a.onClick }}" aria-label="{{ a.label }}" title="{{ a.label }}" style="display: inline-flex; align-items: center; gap: 7px; min-height: 38px; padding: 0 12px; border: none; border-radius: 999px; background: transparent; cursor: pointer; font-family: var(--rt-demo); font-size: 12.5px; color: var(--rt-ink-2); white-space: nowrap; transition: background 160ms, color 160ms" style-hover="background: var(--rt-green-soft); color: var(--rt-ink)"><span style="display: inline-flex; font-size: 14px; color: {{ a.tint }}">{{ a.glyph }}</span>{{ a.label }}</button>
+            </sc-for>
+          </div>
+        </header>
+      </div>
+
+      <!-- 底部操作栏：仅手机（窄容器），拇指可及，随沉浸模式隐藏 -->
+      <div class="{{ chromeBCls }}" style="position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 46; transition: transform 300ms cubic-bezier(.2,.7,.2,1)">
+        <div style="display: flex; align-items: center; gap: 2px; border: 1px solid var(--rt-rule); border-radius: 999px; background: color-mix(in srgb, var(--rt-bg-card) 88%, transparent); backdrop-filter: saturate(150%) blur(10px); -webkit-backdrop-filter: saturate(150%) blur(10px); box-shadow: 0 10px 30px -16px rgba(20,40,30,0.4); padding: 4px 6px">
+          <sc-for list="{{ toolbarActions }}" as="a" hint-placeholder-count="3">
+            <button onClick="{{ a.onClick }}" aria-label="{{ a.label }}" style="display: inline-flex; align-items: center; gap: 7px; min-height: 44px; padding: 0 15px; border: none; border-radius: 999px; background: transparent; cursor: pointer; font-family: var(--rt-demo); font-size: 12.5px; color: var(--rt-ink-2); white-space: nowrap; transition: background 160ms, color 160ms" style-hover="background: var(--rt-green-soft); color: var(--rt-ink)"><span style="font-size: 14px; color: {{ a.tint }}">{{ a.glyph }}</span>{{ a.label }}</button>
+          </sc-for>
+        </div>
+      </div>
+
+      <article data-rt-article="1" onClick="{{ revealChrome }}" style="max-width: {{ articleMax }}; margin: 0 auto; padding: 84px 24px 150px; box-sizing: border-box">
+        <div style="display: flex; align-items: center; gap: 12px; font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 12px"><span>第一部 · 前言 · Prologue</span><span style="flex: 1; border-top: 1px dashed var(--rt-rule)"></span><span style="color: var(--rt-green-deep)">本章 {{ readPctLabel }}</span></div>
+        <div style="display: flex; align-items: center; gap: 7px; font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 22px"><span style="color: var(--rt-green); font-size: 9px">◷</span>{{ remainLabel }}</div>
+        <h2 style="margin: 0 0 26px; font-family: var(--rt-serif); font-size: 25px; font-weight: 600; letter-spacing: 0.05em">查拉图斯特拉的前言</h2>
+
+        <!-- 章节导读 (默认展开, 可收起) -->
+        <div style="margin-bottom: 30px">
+          <button onClick="{{ toggleLead }}" style="display: flex; align-items: center; justify-content: space-between; width: 100%; border: none; background: transparent; cursor: pointer; padding: 0 0 10px; font-family: var(--rt-mono); font-size: 8.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-green-deep)"><span>章节导读 · 裁读 · 进入前先看一眼</span><span style="font-size: 11px">{{ leadLabel }}</span></button>
+          <sc-if value="{{ leadOpen }}" hint-placeholder-val="{{ true }}">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.AnnotationCard" kind="lead" title="进山之前，先看一眼地图" bullets="{{ leadBullets }}" hint-size="100%,150px"></x-import>
+          </sc-if>
+        </div>
+
+        <div data-rt-body="1" style="font-family: {{ bodyFont }}; font-size: {{ fontPx }}; line-height: {{ lineH }}; text-align: {{ bodyAlign }}; color: var(--rt-ink); display: flex; flex-direction: column; gap: 1.4em">
+          <div style="display: flex; align-items: center; justify-content: center; gap: 18px; margin: 0.2em 0 0.4em"><span style="width: 40px; border-top: 1px solid var(--rt-rule)"></span><span style="font-family: var(--rt-mono); font-size: 10px; letter-spacing: 0.34em; color: var(--rt-ink-3)">§ 一</span><span style="width: 40px; border-top: 1px solid var(--rt-rule)"></span></div>
+          <p style="margin: 0">查拉图斯特拉三十岁的时候，离开了他的故乡和故乡的湖，走进山里。在山上，他享受着自己的精神与孤独，十年不倦。<sup onClick="{{ openFn }}" style="cursor: pointer; color: var(--rt-mark-margin); font-family: var(--rt-mono); font-size: 0.6em; padding: 0 2px" style-hover="background: rgba(176,136,72,0.14)">[1]</sup></p>
+          <p style="margin: 0">但最终，他的心改变了。一天清晨，他与朝霞一同醒来，走到太阳面前，对它说：<span onClick="{{ openGloss }}" style="border-bottom: 1px dotted var(--rt-mark-gloss); cursor: pointer; color: var(--rt-green-deep); background: {{ glossBg }}" style-hover="background: var(--rt-green-soft)">你伟大的星球啊</span>，假如没有你所照耀的人们，你的幸福何在？</p>
+
+          <sc-if value="{{ glossActive }}" hint-placeholder-val="{{ false }}">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.AnnotationCard" kind="margin" anchor="你伟大的星球啊" trigger="裁读注 · 点按正文中的虚线词" hint-size="100%,120px">这是全书的第一个隐喻：给予者需要接受者。查拉图斯特拉像太阳一样“满溢”，所以要下山，把智慧分给人们。</x-import>
+          </sc-if>
+          <sc-if value="{{ fnActive }}" hint-placeholder-val="{{ false }}">
+            <div style="background: var(--rt-bg-2); border-left: 2px solid var(--rt-mark-margin); border-radius: 0 4px 4px 0; padding: 14px 16px">
+              <div style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-mark-margin); margin-bottom: 7px">[1] 原书注 · 译者</div>
+              <div style="font-family: var(--rt-serif); font-size: 13.5px; line-height: 1.9; color: var(--rt-ink-2)">尼采写作此书于 1883–1885 年间，分四部。此处“山”“湖”均取自其在瑞士锡尔斯-玛利亚的居所一带景致。</div>
+            </div>
+          </sc-if>
+
+          <p style="margin: 0">十年来，你在这里升上我的洞穴：假如没有我、我的鹰和我的蛇，你会厌倦你的光和这条路吧。</p>
+          <p style="margin: 0">看啊，我厌倦了我的智慧，像蜜蜂采了过多的蜜。我需要伸出来的手。</p>
+          <p style="margin: 0">我要馈赠，我要分发，直到人群中的智者重新乐于自己的愚昧，贫者重新乐于自己的富足。</p>
+          <p style="margin: 0">为此我必须降到深处：就像你在夜晚所做的那样——沉到海的后面，把光也带给下面的世界，你这极其富裕的星球啊！</p>
+          <p style="margin: 0">我必须像你一样<span onClick="{{ openUnter }}" style="border-bottom: 1px dotted var(--rt-mark-gloss); cursor: pointer; color: var(--rt-green-deep); background: {{ unterBg }}" style-hover="background: var(--rt-green-soft)">下山（没落）</span>——照人们的说法，我要走向没落了。</p>
+
+          <sc-if value="{{ unterActive }}" hint-placeholder-val="{{ false }}">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.AnnotationCard" kind="margin" anchor="下山（没落）" trigger="裁读注 · 一词双关" hint-size="100%,120px">德语 Untergang 一词双关：既是太阳的“落山”，也是人的“没落、毁灭”。查拉图斯特拉把自己的下山称作没落——他清楚这趟路多半会失败，仍然要走。这个词在全书会反复回来。</x-import>
+          </sc-if>
+
+          <p style="margin: 0">——查拉图斯特拉的下山，就这样开始了。</p>
+
+          <div style="display: flex; align-items: center; justify-content: center; gap: 18px; margin: 0.8em 0 0.4em"><span style="width: 40px; border-top: 1px solid var(--rt-rule)"></span><span style="font-family: var(--rt-mono); font-size: 10px; letter-spacing: 0.34em; color: var(--rt-ink-3)">§ 二</span><span style="width: 40px; border-top: 1px solid var(--rt-rule)"></span></div>
+
+          <p style="margin: 0">查拉图斯特拉独自走下山来，没有遇见任何人。可当他走进森林，一位白发的圣者忽然站在他面前——老人刚从他的茅屋里出来，到林中寻找草根。</p>
+          <p style="margin: 0">圣者对查拉图斯特拉说：这个漫游者对我并不陌生：许多年前他曾从此经过。他叫查拉图斯特拉；可是他变了。那时你把你的灰烬背进山里：今天你要把你的火带进谷里去吗？</p>
+
+          <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.AnnotationCard" kind="fillin" trigger="裁读 · 推理补全 · 原文未明说的一层" hint-size="100%,110px">换句话说：十年前他带着幻灭（灰烬）上山，如今带着新的信念（火）下山。圣者一眼看出他“变了”——这句问话，正是第一节“智慧满了要分出去”的回声。</x-import>
+
+          <p style="margin: 0">圣者笑着说：我做歌，唱歌；做歌时我笑、我哭、我低吟——我以此赞美神。可是你，你给我们带来什么礼物呢？</p>
+          <p style="margin: 0">当查拉图斯特拉独自继续赶路时，他在心里这样说：这怎么可能！这位老圣者在他的森林里，竟还没有听说——<span onClick="{{ openGod }}" style="border-bottom: 1px dotted var(--rt-mark-gloss); cursor: pointer; color: var(--rt-green-deep); background: {{ godBg }}" style-hover="background: var(--rt-green-soft)">神死了</span>！</p>
+
+          <sc-if value="{{ godActive }}" hint-placeholder-val="{{ false }}">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.AnnotationCard" kind="margin" anchor="神死了" trigger="裁读注 · 全书最著名的一句，第一次出现" hint-size="100%,130px">先别把它当口号。在叙事里它只是一个消息：旧的意义来源（神）已经失效，只有远离人群的圣者还不知道。整本书要回答的是下一个问题——神死了之后，人靠什么活。</x-import>
+          </sc-if>
+
+          <div style="display: flex; align-items: center; justify-content: center; gap: 18px; margin: 0.8em 0 0.4em"><span style="width: 40px; border-top: 1px solid var(--rt-rule)"></span><span style="font-family: var(--rt-mono); font-size: 10px; letter-spacing: 0.34em; color: var(--rt-ink-3)">§ 三</span><span style="width: 40px; border-top: 1px solid var(--rt-rule)"></span></div>
+
+          <p style="margin: 0">查拉图斯特拉来到森林边最近的市镇，看见许多人聚集在市场上：因为有人预告过，将有一个走索者在此表演。</p>
+          <p style="margin: 0">查拉图斯特拉对众人这样说：我教你们<span onClick="{{ openUber }}" style="border-bottom: 1px dotted var(--rt-mark-gloss); cursor: pointer; color: var(--rt-green-deep); background: {{ uberBg }}" style-hover="background: var(--rt-green-soft)">超人</span>。人是应当被克服的东西。为了克服他，你们做过什么呢？</p>
+
+          <sc-if value="{{ uberActive }}" hint-placeholder-val="{{ false }}">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.AnnotationCard" kind="margin" anchor="超人" trigger="裁读注 · 按你的访谈：术语第一次出现，给贴上下文的释义" hint-size="100%,130px">Übermensch，直译“越过人的人”——不是漫画英雄，而是“不再需要神来给生活定意义、自己创造价值的人”。在这一段里，它是对市场上众人的挑衅：你们只想舒服地做“人”。</x-import>
+          </sc-if>
+
+          <p style="margin: 0">至今一切生物都创造过超越自己的东西：难道你们想做这大潮的落潮，宁愿退回兽类，也不肯克服人吗？</p>
+          <p style="margin: 0">人是一根系在兽与超人之间的绳索——一根悬在深渊上的绳索。走过去是危险的，停在中途是危险的，回头看是危险的，战栗和站住不动，都是危险的。</p>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 14px; margin: 34px 0 30px"><span style="flex: 1; border-top: 1px dashed var(--rt-rule)"></span><span style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-ink-3)">本节结束</span><span style="flex: 1; border-top: 1px dashed var(--rt-rule)"></span></div>
+
+        <!-- 节后助读 (默认展开) -->
+        <div>
+          <button onClick="{{ toggleAfter }}" style="display: flex; align-items: center; justify-content: space-between; width: 100%; border: none; background: transparent; cursor: pointer; padding: 0 0 10px; font-family: var(--rt-mono); font-size: 8.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-green-deep)"><span>节后助读 · 裁读 · 读完回头看</span><span style="font-size: 11px">{{ afterLabel }}</span></button>
+          <sc-if value="{{ afterOpen }}" hint-placeholder-val="{{ true }}">
+            <div style="background: var(--rt-green-soft); border-left: 2px solid var(--rt-green); border-radius: 0 4px 4px 0; padding: 16px 18px">
+              <div style="font-family: var(--rt-serif); font-size: 14px; line-height: 2; color: var(--rt-ink)">如果这一节你只带走一句话，那就是：<span style="color: var(--rt-green-deep); font-style: italic">“智慧满了，就要分出去。”</span> 下山不是牺牲，是溢出——记住这个基调，后面查拉图斯特拉对市场、对信徒的态度，都从这里长出来。</div>
+            </div>
+          </sc-if>
+        </div>
+
+        <button onClick="{{ goNextChapter }}" style="display: block; width: 100%; text-align: left; margin-top: 36px; border: 1px solid var(--rt-rule); border-radius: 10px; background: var(--rt-bg-card); cursor: pointer; padding: 18px 20px; transition: border-color 160ms, box-shadow 160ms" style-hover="border-color: var(--rt-green); box-shadow: 0 6px 20px -14px rgba(20,40,30,0.4)">
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 14px">
+            <div style="min-width: 0">
+              <div style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-green-deep); margin-bottom: 7px">下一节 · Next</div>
+              <div style="font-family: var(--rt-serif); font-size: 17px; font-weight: 600; color: var(--rt-ink)">三种变形</div>
+              <div style="font-family: var(--rt-serif); font-size: 12.5px; color: var(--rt-ink-3); margin-top: 5px">骆驼、狮子与孩子——全书的方法论，导读已按你的偏好备好</div>
+            </div>
+            <span style="font-family: var(--rt-serif); font-size: 20px; color: var(--rt-ink-3); flex: none">›</span>
+          </div>
+        </button>
+
+        <div style="margin-top: 32px; text-align: center; font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--rt-ink-3)">· 前言 一—三 / 22 ·</div>
+      </article>
+
+      <!-- 回到上次位置 -->
+      <sc-if value="{{ resumeVisible }}" hint-placeholder-val="{{ false }}">
+        <button class="rt-fade" onClick="{{ resumeGo }}" style="position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 44; display: inline-flex; align-items: center; gap: 10px; border: 1px solid var(--rt-rule); border-radius: 999px; background: var(--rt-bg-card); box-shadow: 0 10px 30px -16px rgba(20,40,30,0.4); cursor: pointer; padding: 11px 18px; font-family: var(--rt-demo); font-size: 12.5px; color: var(--rt-ink); white-space: nowrap" style-hover="border-color: var(--rt-green)"><span style="color: var(--rt-green); font-size: 13px">↳</span> 回到上次读到的位置 <span style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.12em; color: var(--rt-ink-3)">{{ resumePctLabel }}</span></button>
+      </sc-if>
+
+      <!-- 底部渐隐：正文溶进纸面 -->
+      <div aria-hidden="true" style="position: fixed; left: 0; right: 0; bottom: 0; height: 72px; z-index: 30; pointer-events: none; background: linear-gradient(to top, var(--rt-bg) 12%, transparent)"></div>
+
+      <!-- 读前简报（阅读中随时重看） -->
+      <sc-if value="{{ briefOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeSheets }}" style="position: fixed; inset: 0; z-index: 48; background: rgba(10,10,9,0.18)"></div>
+        <div data-screen-label="读前简报（阅读中）" style="position: fixed; left: 50%; transform: translateX(-50%); bottom: 0; width: min(560px, 100%); max-height: 78vh; overflow-y: auto; box-sizing: border-box; z-index: 50; background: var(--rt-bg-card); border: 1px solid var(--rt-rule); border-bottom: none; border-radius: 14px 14px 0 0; box-shadow: 0 -6px 24px -16px rgba(20,40,30,0.25); padding: 22px 24px 30px">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px"><span style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3)">读前简报 · 地图随时在</span><button onClick="{{ closeSheets }}" aria-label="关闭" style="border: none; background: transparent; cursor: pointer; font-size: 15px; color: var(--rt-ink-3); min-width: 44px; min-height: 32px" style-hover="color: var(--rt-ink)">×</button></div>
+          <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.BriefCard" title="{{ briefTitle }}" sections="{{ briefSections }}" terms="{{ briefTerms }}" hint-size="100%,420px"></x-import>
+        </div>
+      </sc-if>
+
+      <!-- Aa 设置 -->
+      <sc-if value="{{ aaOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeSheets }}" style="position: fixed; inset: 0; z-index: 48; background: rgba(10,10,9,0.18)"></div>
+        <div data-screen-label="Aa 阅读设置" style="position: fixed; left: 50%; transform: translateX(-50%); bottom: 0; width: min(560px, 100%); box-sizing: border-box; z-index: 50; background: var(--rt-bg-card); border: 1px solid var(--rt-rule); border-bottom: none; border-radius: 14px 14px 0 0; box-shadow: 0 -6px 24px -16px rgba(20,40,30,0.25); padding: 22px 24px 30px">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px"><span style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3)">阅读设置 · Aa</span><button onClick="{{ closeSheets }}" aria-label="关闭" style="border: none; background: transparent; cursor: pointer; font-size: 15px; color: var(--rt-ink-3); min-width: 44px; min-height: 32px" style-hover="color: var(--rt-ink)">×</button></div>
+          <div style="display: flex; flex-direction: column; gap: 22px">
+            <div style="display: flex; align-items: center; gap: 16px"><span style="font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-2); min-width: 42px">字号</span><x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Slider" label="字号" min="{{ fontMin }}" max="{{ fontMax }}" value="{{ fontSize }}" onChange="{{ setFontSize }}" showValue="{{ true }}" format="{{ fmtPx }}" hint-size="100%,24px" style="flex: 1"></x-import></div>
+            <div style="display: flex; align-items: center; gap: 16px"><span style="font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-2); min-width: 42px">行距</span><x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Slider" label="行距" min="{{ lhMin }}" max="{{ lhMax }}" step="{{ lhStep }}" value="{{ lineH }}" onChange="{{ setLineH }}" showValue="{{ true }}" format="{{ fmtLh }}" hint-size="100%,24px" style="flex: 1"></x-import></div>
+            <div style="display: flex; align-items: center; gap: 16px"><span style="font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-2); min-width: 42px">字体</span><x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Segmented" label="正文字体" value="{{ bodyFace }}" onChange="{{ setBodyFace }}" options="{{ faceOptions }}" hint-size="180px,34px"></x-import></div>
+            <div style="display: flex; align-items: center; gap: 16px"><span style="font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-2); min-width: 42px">边距</span><x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Segmented" label="页边距" value="{{ margin }}" onChange="{{ setMargin }}" options="{{ marginOptions }}" hint-size="180px,34px"></x-import></div>
+            <div style="display: flex; align-items: center; gap: 16px"><span style="font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-2); min-width: 42px">对齐</span><x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Segmented" label="段落对齐" value="{{ bodyAlign }}" onChange="{{ setAlign }}" options="{{ alignOptions }}" hint-size="150px,34px"></x-import></div>
+            <div style="display: flex; align-items: center; gap: 16px"><span style="font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-2); min-width: 42px">主题</span><x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Segmented" label="阅读主题" value="{{ theme }}" onChange="{{ setTheme }}" options="{{ themeOptions }}" hint-size="220px,34px"></x-import></div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- 目录 -->
+      <sc-if value="{{ tocOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeSheets }}" style="position: fixed; inset: 0; z-index: 48; background: rgba(10,10,9,0.18)"></div>
+        <div data-screen-label="目录 TOC" style="position: fixed; top: 0; bottom: 0; left: 0; width: min(340px, 86vw); z-index: 50; background: var(--rt-bg-card); border-right: 1px solid var(--rt-rule); box-shadow: 6px 0 24px -16px rgba(20,40,30,0.25); display: flex; flex-direction: column">
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 18px 18px 8px"><span style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3)">目录 · Contents</span><button onClick="{{ closeSheets }}" aria-label="关闭" style="border: none; background: transparent; cursor: pointer; font-size: 15px; color: var(--rt-ink-3); min-width: 44px; min-height: 32px" style-hover="color: var(--rt-ink)">×</button></div>
+          <div style="padding: 0 18px 10px; font-family: var(--rt-serif); font-size: 12px; color: var(--rt-ink-3); line-height: 1.7">进度只算原文位置，导读、注释、助读都不计入。</div>
+          <div style="flex: 1; overflow-y: auto; padding: 0 10px 20px">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.TOCList" chapters="{{ chapters }}" current="{{ currentChapter }}" onSelect="{{ selectChapter }}" hint-size="100%,300px"></x-import>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- 划线浮层：划线 / 想法 / 问 AI -->
+      <sc-if value="{{ selMenu }}" hint-placeholder-val="{{ false }}">
+        <div style="{{ selMenuStyle }}; display: inline-flex; align-items: stretch; border-radius: 999px; background: var(--rt-ink); box-shadow: 0 8px 22px -10px rgba(10,10,9,0.5); overflow: hidden; white-space: nowrap">
+          <button onClick="{{ hlSelection }}" style="border: none; background: transparent; color: var(--rt-bg); cursor: pointer; padding: 9px 14px; font-family: var(--rt-demo); font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px" style-hover="background: rgba(255,255,255,0.1)"><span style="color: #9fd3b6">▁</span>划线</button>
+          <span style="width: 1px; background: rgba(255,255,255,0.16)"></span>
+          <button onClick="{{ noteSelection }}" style="border: none; background: transparent; color: var(--rt-bg); cursor: pointer; padding: 9px 14px; font-family: var(--rt-demo); font-size: 12.5px" style-hover="background: rgba(255,255,255,0.1)">写想法</button>
+          <span style="width: 1px; background: rgba(255,255,255,0.16)"></span>
+          <button onClick="{{ askSelection }}" style="border: none; background: transparent; color: var(--rt-bg); cursor: pointer; padding: 9px 14px; font-family: var(--rt-demo); font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px" style-hover="background: rgba(255,255,255,0.1)"><span style="color: #9fd3b6">✦</span>问 AI</button>
+        </div>
+      </sc-if>
+
+      <!-- 写想法输入 -->
+      <sc-if value="{{ noteDraft }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ cancelNote }}" style="position: fixed; inset: 0; z-index: 58; background: rgba(10,10,9,0.2)"></div>
+        <div class="rt-fade" data-screen-label="写想法" style="position: fixed; left: 50%; transform: translateX(-50%); bottom: 0; width: min(560px, 100%); box-sizing: border-box; z-index: 60; background: var(--rt-bg-card); border: 1px solid var(--rt-rule); border-bottom: none; border-radius: 14px 14px 0 0; box-shadow: 0 -6px 24px -16px rgba(20,40,30,0.25); padding: 20px 22px calc(24px + env(safe-area-inset-bottom, 0px))">
+          <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-green-deep); margin-bottom: 12px">写想法 · 记在这句话旁边</div>
+          <div style="border-left: 2px solid var(--rt-green); border-radius: 0 4px 4px 0; background: var(--rt-green-soft); padding: 10px 14px; font-family: var(--rt-serif); font-size: 13px; line-height: 1.8; color: var(--rt-ink-2); margin-bottom: 14px">{{ noteQuote }}</div>
+          <textarea value="{{ noteText }}" onChange="{{ setNoteText }}" placeholder="这句让你想到什么？" style="width: 100%; box-sizing: border-box; min-height: 90px; resize: none; border: 1px solid var(--rt-rule); border-radius: 10px; background: var(--rt-bg); padding: 12px 14px; font-family: var(--rt-serif); font-size: 14px; line-height: 1.8; color: var(--rt-ink); outline: none"></textarea>
+          <div style="display: flex; align-items: center; gap: 12px; margin-top: 14px">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Button" variant="primary" onClick="{{ saveNote }}" hint-size="110px,44px">存下想法</x-import>
+            <button onClick="{{ cancelNote }}" style="border: none; background: transparent; cursor: pointer; font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-3); min-height: 44px" style-hover="color: var(--rt-ink)">取消</button>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- 笔记本：划线与想法 -->
+      <sc-if value="{{ notebookOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeSheets }}" style="position: fixed; inset: 0; z-index: 48; background: rgba(10,10,9,0.18)"></div>
+        <aside data-screen-label="笔记本 Notebook" style="position: fixed; top: 0; bottom: 0; right: 0; width: min(400px, 92vw); z-index: 50; background: var(--rt-bg-card); border-left: 1px solid var(--rt-rule); box-shadow: -8px 0 30px -18px rgba(20,40,30,0.4); display: flex; flex-direction: column">
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 14px; border-bottom: 1px solid var(--rt-rule)"><div style="display: flex; align-items: baseline; gap: 8px"><span style="font-family: var(--rt-demo); font-size: 15px; font-weight: 600; color: var(--rt-ink)">笔记本</span><span style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-ink-3)">{{ noteCountLabel }}</span></div><button onClick="{{ closeSheets }}" aria-label="关闭" style="border: none; background: transparent; cursor: pointer; font-size: 16px; color: var(--rt-ink-3); min-width: 40px; min-height: 32px" style-hover="color: var(--rt-ink)">×</button></div>
+          <div style="flex: 1; overflow-y: auto; padding: 8px 10px 24px">
+            <sc-if value="{{ hasNotes }}" hint-placeholder-val="{{ false }}">
+              <sc-for list="{{ noteList }}" as="n" hint-placeholder-count="3">
+                <div style="padding: 14px 12px; border-bottom: 1px solid var(--rt-rule)">
+                  <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px"><span style="font-family: var(--rt-mono); font-size: 7.5px; letter-spacing: 0.14em; text-transform: uppercase; color: {{ n.tagColor }}">{{ n.tag }} · {{ n.where }}</span><button onClick="{{ n.remove }}" aria-label="删除" style="border: none; background: transparent; cursor: pointer; font-size: 13px; color: var(--rt-ink-3); min-width: 32px; min-height: 28px" style-hover="color: var(--rt-error)">×</button></div>
+                  <button onClick="{{ n.jump }}" style="display: block; width: 100%; text-align: left; border: none; border-left: 2px solid {{ n.edge }}; border-radius: 0 4px 4px 0; background: {{ n.bg }}; cursor: pointer; padding: 8px 12px; font-family: var(--rt-serif); font-size: 13px; line-height: 1.85; color: var(--rt-ink)" style-hover="filter: brightness(0.98)">{{ n.text }}</button>
+                  <sc-if value="{{ n.hasNote }}" hint-placeholder-val="{{ false }}"><div style="font-family: var(--rt-serif); font-size: 13px; line-height: 1.8; color: var(--rt-ink-2); margin-top: 8px; padding-left: 12px">— {{ n.note }}</div></sc-if>
+                </div>
+              </sc-for>
+            </sc-if>
+            <sc-if value="{{ notesEmpty }}" hint-placeholder-val="{{ true }}">
+              <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.EmptyState" title="还没有划线" hint-size="100%,200px">选中正文里的句子，就能划线或写下想法。它们会安静地留在这里。</x-import>
+            </sc-if>
+          </div>
+        </aside>
+      </sc-if>
+
+      <!-- 全文搜索 -->
+      <sc-if value="{{ searchOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeSheets }}" style="position: fixed; inset: 0; z-index: 48; background: rgba(10,10,9,0.18)"></div>
+        <div data-screen-label="全文搜索 Search" style="position: fixed; top: 0; left: 50%; transform: translateX(-50%); width: min(560px, 100%); max-height: 100vh; box-sizing: border-box; z-index: 50; background: var(--rt-bg-card); border: 1px solid var(--rt-rule); border-top: none; border-radius: 0 0 14px 14px; box-shadow: 0 8px 30px -18px rgba(20,40,30,0.4); display: flex; flex-direction: column">
+          <div style="display: flex; align-items: center; gap: 12px; padding: 16px 20px 12px; border-bottom: 1px solid var(--rt-rule)">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.SearchField" value="{{ searchQuery }}" onChange="{{ setSearchQuery }}" placeholder="搜正文、注释、想法…" hint-size="100%,40px" style="flex: 1"></x-import>
+            <button onClick="{{ closeSheets }}" aria-label="关闭" style="border: none; background: transparent; cursor: pointer; font-size: 15px; color: var(--rt-ink-3); min-width: 40px; min-height: 32px" style-hover="color: var(--rt-ink)">×</button>
+          </div>
+          <div style="flex: 1; overflow-y: auto; max-height: 70vh; padding: 6px 10px 20px">
+            <sc-if value="{{ hasSearchHits }}" hint-placeholder-val="{{ false }}">
+              <div style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-ink-3); padding: 10px 12px 6px">{{ searchCountLabel }}</div>
+              <sc-for list="{{ searchHits }}" as="h" hint-placeholder-count="3">
+                <button onClick="{{ h.jump }}" style="display: block; width: 100%; text-align: left; border: none; background: transparent; cursor: pointer; padding: 12px 12px; border-radius: 8px; border-bottom: 1px solid var(--rt-rule)" style-hover="background: var(--rt-green-soft)">
+                  <div style="font-family: var(--rt-mono); font-size: 7.5px; letter-spacing: 0.14em; text-transform: uppercase; color: {{ h.locColor }}; margin-bottom: 6px">{{ h.loc }}</div>
+                  <div style="font-family: var(--rt-serif); font-size: 13.5px; line-height: 1.85; color: var(--rt-ink-2)"><span>{{ h.pre }}</span><mark style="background: var(--rt-green-soft); color: var(--rt-green-deep); border-radius: 2px; padding: 0 1px">{{ h.hit }}</mark><span>{{ h.post }}</span></div>
+                </button>
+              </sc-for>
+            </sc-if>
+            <sc-if value="{{ searchNoHits }}" hint-placeholder-val="{{ false }}">
+              <div style="padding: 30px 16px; text-align: center; font-family: var(--rt-serif); font-size: 13px; color: var(--rt-ink-3); line-height: 1.9">没有找到“{{ searchQuery }}”<br>换个词，或试试书名里的关键概念。</div>
+            </sc-if>
+            <sc-if value="{{ searchIdle }}" hint-placeholder-val="{{ true }}">
+              <div style="padding: 24px 16px; font-family: var(--rt-serif); font-size: 12.5px; color: var(--rt-ink-3); line-height: 2">试试搜：<span style="color: var(--rt-green-deep)">没落</span> · <span style="color: var(--rt-green-deep)">超人</span> · <span style="color: var(--rt-green-deep)">神死了</span><br>搜索会同时检索正文、裁读注释和你的想法。</div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- 问 AI 侧栏 (screen 9) -->
+      <sc-if value="{{ askOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeAsk }}" style="position: fixed; inset: 0; z-index: 58; background: rgba(10,10,9,0.2)"></div>
+        <aside class="rt-fade" data-screen-label="10 问 AI Ask" style="position: fixed; top: 0; bottom: 0; right: 0; width: min(440px, 100%); z-index: 60; background: var(--rt-bg-card); border-left: 1px solid var(--rt-rule); box-shadow: -8px 0 30px -18px rgba(20,40,30,0.4); display: flex; flex-direction: column">
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 18px 20px 14px; border-bottom: 1px solid var(--rt-rule)">
+            <div style="display: flex; align-items: baseline; gap: 8px"><span style="color: var(--rt-green); font-size: 14px">✦</span><span style="font-family: var(--rt-demo); font-size: 15px; font-weight: 600; color: var(--rt-ink)">问 AI</span><span style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-ink-3)">独立会话</span></div>
+            <div style="display: flex; align-items: center; gap: 2px">
+              <button onClick="{{ toggleAskHistory }}" aria-label="对话历史" title="对话历史" style="border: none; background: transparent; cursor: pointer; font-family: var(--rt-mono); font-size: 20px; line-height: 1; color: var(--rt-ink-3); min-width: 44px; min-height: 40px" style-hover="color: var(--rt-ink)">◷</button>
+              <button onClick="{{ closeAsk }}" aria-label="关闭" style="border: none; background: transparent; cursor: pointer; font-size: 16px; color: var(--rt-ink-3); min-width: 40px; min-height: 32px" style-hover="color: var(--rt-ink)">×</button>
+            </div>
+          </div>
+
+          <sc-if value="{{ askHistoryOpen }}" hint-placeholder-val="{{ false }}">
+            <div class="rt-fade" style="flex: 1; min-height: 0; display: flex; flex-direction: column">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px 12px; border-bottom: 1px solid var(--rt-rule)">
+                <div><div style="font-family: var(--rt-demo); font-size: 15px; font-weight: 600; color: var(--rt-ink)">本书对话</div><div style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rt-ink-3); margin-top: 3px">{{ askHistoryCount }}</div></div>
+                <button onClick="{{ newAskSession }}" style="border: 1px solid var(--rt-green); border-radius: 999px; background: transparent; cursor: pointer; min-height: 36px; padding: 0 13px; font-family: var(--rt-demo); font-size: 12px; color: var(--rt-green-deep)" style-hover="background: var(--rt-green-soft)">＋ 新问题</button>
+              </div>
+              <div style="flex: 1; overflow-y: auto; padding: 4px 10px 20px">
+                <sc-for list="{{ askHistoryItems }}" as="session" hint-placeholder-count="3">
+                  <button onClick="{{ session.switchTo }}" style="display: block; width: 100%; text-align: left; border: none; border-bottom: 1px solid var(--rt-rule); background: {{ session.bg }}; cursor: pointer; padding: 15px 12px; border-radius: 6px">
+                    <div style="font-family: var(--rt-serif); font-size: 14px; line-height: 1.55; color: var(--rt-ink); margin-bottom: 6px">{{ session.title }}</div>
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px"><span style="font-family: var(--rt-mono); font-size: 7.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--rt-ink-3)">{{ session.contextLabel }}</span><span style="font-family: var(--rt-mono); font-size: 7.5px; color: {{ session.timeColor }}">{{ session.when }}</span></div>
+                  </button>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ askHistoryClosed }}" hint-placeholder-val="{{ true }}">
+          <div style="padding: 12px 20px; background: var(--rt-green-soft); border-bottom: 1px solid var(--rt-rule)">
+            <div style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-green-deep); margin-bottom: 4px">{{ askContextLabel }}</div>
+            <div style="font-family: var(--rt-serif); font-size: 13px; line-height: 1.7; color: var(--rt-ink-2)">{{ askContextText }}</div>
+          </div>
+
+          <div style="flex: 1; overflow-y: auto; padding: 20px">
+            <sc-for list="{{ askTurns }}" as="turn" hint-placeholder-count="2">
+              <div style="margin-bottom: 18px; display: flex; flex-direction: column; align-items: {{ turn.align }}">
+                <div style="font-family: var(--rt-mono); font-size: 7.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 5px">{{ turn.who }}</div>
+                <div style="max-width: 88%; font-family: {{ turn.font }}; font-size: {{ turn.size }}; line-height: 1.9; color: {{ turn.color }}; background: {{ turn.bg }}; border-radius: 10px; padding: {{ turn.pad }}">{{ turn.text }}</div>
+              </div>
+            </sc-for>
+            <sc-if value="{{ strategySuggest }}" hint-placeholder-val="{{ false }}">
+              <div class="rt-fade" style="border: 1px solid var(--rt-green); border-radius: 8px; padding: 14px 16px; margin: 2px 0 20px; background: var(--rt-bg-card)">
+                <div style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--rt-green-deep); margin-bottom: 8px">Agent 已调用工具 · 等你确认</div>
+                <div style="font-family: var(--rt-serif); font-size: 13.5px; line-height: 1.85; color: var(--rt-ink); margin-bottom: 8px">把后续内容调整为：多解释隐喻之间的联系，减少已经能从上下文理解的术语释义。</div>
+                <div style="font-family: var(--rt-serif); font-size: 12px; line-height: 1.75; color: var(--rt-ink-3); margin-bottom: 14px">确认后立即更新本书处理方式；如果不准确，直接反馈，Agent 会在当前对话里修订后重新提交。</div>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap">
+                  <button onClick="{{ confirmStrategyChange }}" style="border: none; border-radius: 999px; background: var(--rt-green); color: #fff; cursor: pointer; padding: 8px 16px; font-family: var(--rt-demo); font-size: 12.5px" style-hover="background: var(--rt-green-deep)">确认调整</button>
+                  <button onClick="{{ feedbackStrategyChange }}" style="border: 1px solid var(--rt-rule); border-radius: 999px; background: transparent; color: var(--rt-ink-2); cursor: pointer; padding: 8px 16px; font-family: var(--rt-demo); font-size: 12.5px" style-hover="border-color: var(--rt-green)">反馈</button>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+
+          <sc-if value="{{ hasAsk }}" hint-placeholder-val="{{ true }}">
+            <div style="border-top: 1px solid var(--rt-rule); padding: 14px 20px">
+              <div style="display: flex; gap: 10px; align-items: flex-end">
+                <textarea value="{{ askInput }}" onChange="{{ setAskInput }}" placeholder="继续追问…" style="flex: 1; box-sizing: border-box; min-height: 42px; max-height: 120px; resize: none; border: 1px solid var(--rt-rule); border-radius: 10px; background: var(--rt-bg); padding: 11px 13px; font-family: var(--rt-demo); font-size: 13px; line-height: 1.6; color: var(--rt-ink); outline: none"></textarea>
+                <button onClick="{{ askFollow }}" aria-label="发送" style="flex: none; width: 42px; height: 42px; border: none; border-radius: 999px; background: var(--rt-green); color: #fff; cursor: pointer; font-size: 16px" style-hover="background: var(--rt-green-deep)">↑</button>
+              </div>
+              <div style="font-family: var(--rt-serif); font-size: 11px; color: var(--rt-ink-3); margin-top: 9px; line-height: 1.7">每个新问题都是一次独立会话，可按需检索全书（包括你还没读到的部分）。</div>
+            </div>
+          </sc-if>
+          </sc-if>
+        </aside>
+      </sc-if>
+
+    </div>
+  </sc-if>
+
+  <!-- ═══════════ 12 · 阅读统计 ═══════════ -->
+  <sc-if value="{{ isStats }}" hint-placeholder-val="{{ false }}">
+    <div class="rt-screen" data-screen-label="12 阅读统计 Stats" style="max-width: 680px; margin: 0 auto; padding: 44px 24px 96px">
+      <button onClick="{{ goHome }}" style="display: inline-flex; align-items: center; gap: 8px; min-height: 40px; border: none; background: transparent; cursor: pointer; font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-2); padding: 0; margin-bottom: 20px" style-hover="color: var(--rt-ink)">‹ 书架</button>
+      <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 8px">阅读统计 · Reading Stats</div>
+      <h1 style="font-family: var(--rt-serif); font-size: 26px; font-weight: 600; letter-spacing: 0.03em; margin: 0 0 10px">你走过的路</h1>
+      <p style="font-family: var(--rt-serif); font-size: 13.5px; line-height: 1.95; color: var(--rt-ink-3); margin: 0 0 32px; max-width: 40ch">不比昨天多读了多少，只想让你看见：你一直在往前走。</p>
+
+      <!-- 大数字：连续天数 -->
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--rt-rule); border: 1px solid var(--rt-rule); border-radius: 12px; overflow: hidden; margin-bottom: 30px">
+        <sc-for list="{{ statCards }}" as="c" hint-placeholder-count="3">
+          <div style="background: var(--rt-bg-card); padding: 20px 14px; text-align: center">
+            <div style="font-family: var(--rt-serif); font-size: 30px; font-weight: 600; color: var(--rt-ink); line-height: 1.1">{{ c.value }}</div>
+            <div style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--rt-ink-3); margin-top: 8px">{{ c.label }}</div>
+          </div>
+        </sc-for>
+      </div>
+
+      <!-- 近 7 天 -->
+      <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3); border-bottom: 1px dashed var(--rt-rule); padding-bottom: 8px; margin-bottom: 18px">近七天 · 每天分钟数</div>
+      <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; height: 130px; margin-bottom: 6px">
+        <sc-for list="{{ weekBars }}" as="b" hint-placeholder-count="7">
+          <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 8px; height: 100%; justify-content: flex-end">
+            <span style="font-family: var(--rt-mono); font-size: 8px; color: {{ b.numColor }}">{{ b.mins }}</span>
+            <div style="width: 100%; max-width: 26px; height: {{ b.h }}; min-height: 3px; border-radius: 4px 4px 0 0; background: {{ b.fill }}; transition: height 400ms cubic-bezier(.2,.7,.2,1)"></div>
+            <span style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.06em; color: var(--rt-ink-3)">{{ b.day }}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <!-- 在读书目进度 -->
+      <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3); border-bottom: 1px dashed var(--rt-rule); padding-bottom: 8px; margin: 34px 0 8px">在读 · 进度</div>
+      <sc-for list="{{ statBooks }}" as="b" hint-placeholder-count="2">
+        <div style="padding: 16px 0; border-bottom: 1px solid var(--rt-rule)">
+          <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px"><span style="font-family: var(--rt-serif); font-size: 15px; color: var(--rt-ink)">{{ b.title }}</span><span style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.1em; color: var(--rt-ink-3)">{{ b.pctLabel }} · 约剩 {{ b.remain }}</span></div>
+          <div style="height: 4px; border-radius: 999px; background: var(--rt-bg-2); overflow: hidden"><div style="height: 100%; width: {{ b.pctW }}; background: var(--rt-green); border-radius: 999px"></div></div>
+        </div>
+      </sc-for>
+
+      <p style="font-family: var(--rt-serif); font-size: 12px; color: var(--rt-ink-3); margin: 28px 0 0; line-height: 1.9">阅读速度按你实际停留的时长估算，越读越准。</p>
+    </div>
+  </sc-if>
+
+  <!-- ═══════════ 11 · 最近删除 ═══════════ -->
+  <sc-if value="{{ isDeleted }}" hint-placeholder-val="{{ false }}">
+    <div class="rt-screen" data-screen-label="11 最近删除 Deleted" style="max-width: 640px; margin: 0 auto; padding: 44px 24px 96px">
+      <button onClick="{{ goHome }}" style="display: inline-flex; align-items: center; gap: 8px; min-height: 40px; border: none; background: transparent; cursor: pointer; font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-2); padding: 0; margin-bottom: 20px" style-hover="color: var(--rt-ink)">‹ 书架</button>
+      <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 8px">最近删除 · Recently Deleted</div>
+      <h1 style="font-family: var(--rt-serif); font-size: 26px; font-weight: 600; letter-spacing: 0.03em; margin: 0 0 12px">最近删除</h1>
+      <p style="font-family: var(--rt-serif); font-size: 13.5px; line-height: 1.95; color: var(--rt-ink-3); margin: 0 0 30px; max-width: 42ch">删除的书会在这里保留 30 天，随时可以恢复。到期后，只清理你和这本书相关的访谈、处理方式、进度和问答——共享的规范化书籍包不受影响。</p>
+
+      <sc-for list="{{ deletedBooks }}" as="d" hint-placeholder-count="2">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--rt-rule)">
+          <div style="min-width: 0">
+            <div style="font-family: var(--rt-serif); font-size: 16px; color: var(--rt-ink); margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{ d.title }}</div>
+            <div style="font-family: var(--rt-mono); font-size: 8.5px; letter-spacing: 0.12em; text-transform: uppercase; color: {{ d.metaColor }}">{{ d.meta }}</div>
+          </div>
+          <button onClick="{{ d.restore }}" style="flex: none; border: 1px solid var(--rt-green); border-radius: 999px; background: transparent; cursor: pointer; min-height: 40px; padding: 0 16px; font-family: var(--rt-demo); font-size: 12.5px; color: var(--rt-green-deep)" style-hover="background: var(--rt-green-soft)">恢复</button>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+
+  <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Toast" visible="{{ toastVisible }}" hint-size="160px,40px">{{ toastText }}</x-import>
+
+  <sc-if value="{{ jumpOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ toggleJump }}" style="position: fixed; inset: 0; z-index: 55"></div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = {
+    view: 'login',
+    jumpOpen: false,
+    // onboarding
+    obStep: 0,
+    obAnswers: { genres: [], guide: null, time: null },
+    // shelf
+    query: '',
+    activeBookId: null,
+    toastVisible: false,
+    toastText: '',
+    // upload / normalize
+    normStep: -1,          // -1 idle, 0..5 running, 6 ready
+    normFailed: false,
+    // interview
+    ivIndex: 0,
+    ivAnswers: {},
+    ivInput: '',
+    ivTyping: false,
+    // trial
+    trialTab: 0,
+    trialRound: 0,         // regen count (initial=0, max 5)
+    trialFeedback: '',
+    trialVariant: 0,       // which strategy variant text
+    trialPhase: 'ready',   // picking | sampling | ready
+    trialPicked: 3,
+    ivSuff: 0,
+    ivConcluding: false,
+    briefGen: false,
+    stratVersion: 1,
+    stratFeedback: '',
+    stratDrafting: false,
+    stratFromTrial: false,
+    // reader
+    theme: 'paper',
+    fontSize: 18,
+    chapterId: 'pre',
+    aaOpen: false,
+    tocOpen: false,
+    askOpen: false,
+    leadOpen: true,
+    afterOpen: true,
+    openMarkId: null,
+    lineH: 2.2,
+    chromeHidden: false,
+    readPct: 0,
+    resumePos: null,
+    briefOpen: false,
+    // 划线笔记 / 搜索 / 排版
+    highlights: [],
+    noteDraft: null,       // {text, where, noteText}
+    notebookOpen: false,
+    searchOpen: false,
+    searchQuery: '',
+    bodyFace: 'serif',     // serif | sans
+    margin: 'mid',         // narrow | mid | wide
+    bodyAlign: 'left',     // left | justify
+    // ask AI
+    askContext: null,      // {kind:'selection'|'screen', text, para}
+    askSessions: [],       // [{id, context, turns:[{role,text}]}]
+    askInput: '',
+    askActiveId: null,
+    askHistoryOpen: false,
+    strategySuggest: false,
+    strategyFeedbackPending: false,
+    selMenu: null,        // {text, x, y}
+  };
+
+  componentDidMount() {
+    this._onUp = () => {
+      if (this.state.view !== 'reader' || this.state.askOpen || this.state.noteDraft || this.state.notebookOpen || this.state.searchOpen || this.state.aaOpen || this.state.tocOpen || this.state.briefOpen) return;
+      const sel = window.getSelection();
+      const text = sel ? String(sel).trim() : '';
+      if (!text || text.length < 2) { if (this.state.selMenu) this.setState({ selMenu: null }); return; }
+      let node = sel.anchorNode;
+      let inBody = false;
+      while (node) { if (node.getAttribute && node.getAttribute('data-rt-body') === '1') { inBody = true; break; } node = node.parentNode; }
+      if (!inBody) return;
+      const rect = sel.getRangeAt(0).getBoundingClientRect();
+      this.setState({ selMenu: { text, x: rect.left + rect.width / 2, y: rect.top - 8 } });
+    };
+    document.addEventListener('mouseup', this._onUp);
+    document.addEventListener('touchend', this._onUp);
+    // 滚动阅读：进度、沉浸式工具栏、位置记忆（capture 同时覆盖 window 与手机壳内滚动容器）
+    this._onScroll = (e) => {
+      if (this.state.view !== 'reader') return;
+      const art = document.querySelector('[data-rt-article="1"]');
+      if (!art) return;
+      let t = e.target;
+      if (t === document || t === document.documentElement || t === document.body) t = document.scrollingElement || document.documentElement;
+      if (!t || !t.contains || !t.contains(art)) return;
+      this._scroller = t;
+      const max = t.scrollHeight - t.clientHeight;
+      const y = t.scrollTop;
+      const pct = max > 80 ? Math.max(0, Math.min(100, Math.round((y / max) * 100))) : 0;
+      const dy = y - (this._ly == null ? y : this._ly);
+      this._ly = y;
+      const st = this.state, patch = {};
+      if (pct !== st.readPct) patch.readPct = pct;
+      if (dy > 4 && y > 180 && !st.chromeHidden && !st.aaOpen && !st.tocOpen && !st.askOpen && !st.briefOpen && !st.selMenu) patch.chromeHidden = true;
+      else if ((dy < -4 || y < 120) && st.chromeHidden) patch.chromeHidden = false;
+      if (st.resumePos && y > 420) patch.resumePos = null;
+      if (Object.keys(patch).length) this.setState(patch);
+      clearTimeout(this._sp);
+      this._sp = setTimeout(() => { try { localStorage.setItem('rt-reader-pos', JSON.stringify({ y: y, pct: pct, ts: Date.now() })); } catch (err) {} }, 400);
+    };
+    document.addEventListener('scroll', this._onScroll, true);
+    // 阅读时长累计（每秒一跳，不触发 render，定时落盘）
+    try { this._days = JSON.parse(localStorage.getItem('rt-read-days') || '{}'); } catch (e) { this._days = {}; }
+    try { this.setState({ highlights: JSON.parse(localStorage.getItem('rt-highlights') || '[]') }); } catch (e) {}
+    this._tick = setInterval(() => {
+      if (this.state.view !== 'reader') return;
+      const k = this.today();
+      this._days[k] = (this._days[k] || 0) + 1;
+      if (!this._daySave) this._daySave = setTimeout(() => { this._daySave = null; try { localStorage.setItem('rt-read-days', JSON.stringify(this._days)); } catch (e) {} }, 5000);
+    }, 1000);
+    this.paintHighlights();
+  }
+  today() { const d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
+  componentWillUnmount() {
+    document.removeEventListener('mouseup', this._onUp);
+    document.removeEventListener('touchend', this._onUp);
+    document.removeEventListener('scroll', this._onScroll, true);
+    clearInterval(this._tick); clearTimeout(this._daySave);
+    clearInterval(this._nt); clearInterval(this._tp); clearTimeout(this._t); clearTimeout(this._iv); clearTimeout(this._ivc); clearTimeout(this._bg); clearTimeout(this._sd); clearTimeout(this._ts); clearTimeout(this._sp);
+  }
+
+  componentDidUpdate() {
+    const pv = this._pv, pi = this._pi;
+    this._pv = this.state.view; this._pi = this.state.ivIndex;
+    if (this.state.view === 'interview' && (pv !== 'interview' || pi !== this.state.ivIndex)) {
+      this.ivArm();
+    }
+    if (this.state.view === 'reader' && pv !== 'reader') {
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem('rt-reader-pos') || 'null'); } catch (err) {}
+      this._ly = 0;
+      this.setState({ chromeHidden: false, readPct: 0, resumePos: (saved && saved.y > 600) ? saved : null });
+    }
+    if (this.state.view === 'reader') this.paintHighlights();
+  }
+  paintHighlights() {
+    if (typeof CSS === 'undefined' || !CSS.highlights || typeof Highlight === 'undefined') return;
+    CSS.highlights.delete('rt-hl'); CSS.highlights.delete('rt-hl-note');
+    const body = document.querySelector('[data-rt-body="1"]');
+    const hls = this.state.highlights || [];
+    if (!body || !hls.length) return;
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    const nodes = [], starts = []; let full = '', node;
+    while ((node = walker.nextNode())) { starts.push(full.length); nodes.push(node); full += node.nodeValue; }
+    const plain = [], noted = [];
+    for (const h of hls) {
+      const idx = full.indexOf(h.text);
+      if (idx === -1) continue;
+      const r = this.makeRange(nodes, starts, idx, h.text.length);
+      if (r) (h.note ? noted : plain).push(r);
+    }
+    try { if (plain.length) CSS.highlights.set('rt-hl', new Highlight(...plain)); } catch (e) {}
+    try { if (noted.length) CSS.highlights.set('rt-hl-note', new Highlight(...noted)); } catch (e) {}
+  }
+  makeRange(nodes, starts, start, len) {
+    const end = start + len; let sN, sO, eN, eO;
+    for (let i = 0; i < nodes.length; i++) {
+      const ns = starts[i], ne = ns + nodes[i].nodeValue.length;
+      if (sN == null && start >= ns && start < ne) { sN = nodes[i]; sO = start - ns; }
+      if (end > ns && end <= ne) { eN = nodes[i]; eO = end - ns; break; }
+    }
+    if (!sN || !eN) return null;
+    const r = document.createRange();
+    try { r.setStart(sN, sO); r.setEnd(eN, eO); } catch (e) { return null; }
+    return r;
+  }
+  addHighlight(text, note) {
+    const h = { id: 'h' + Date.now(), text: text, note: note || '', where: '前言', ts: Date.now() };
+    this.setState(st => {
+      const highlights = [h, ...st.highlights.filter(x => !(x.text === text && !x.note))];
+      try { localStorage.setItem('rt-highlights', JSON.stringify(highlights)); } catch (e) {}
+      return { highlights };
+    }, () => this.paintHighlights());
+  }
+  removeHighlight(id) {
+    this.setState(st => {
+      const highlights = st.highlights.filter(x => x.id !== id);
+      try { localStorage.setItem('rt-highlights', JSON.stringify(highlights)); } catch (e) {}
+      return { highlights };
+    }, () => this.paintHighlights());
+  }
+  scrollToText(text) {
+    const body = document.querySelector('[data-rt-body="1"]');
+    if (!body) return false;
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (node.nodeValue && node.nodeValue.indexOf(text.slice(0, 12)) !== -1) {
+        let el = node.parentElement;
+        const sc = this._scroller || this.findScroller();
+        const isDoc = sc === document.scrollingElement || sc === document.documentElement || sc === document.body;
+        const rect = el.getBoundingClientRect();
+        const cur = isDoc ? (window.pageYOffset || document.documentElement.scrollTop) : sc.scrollTop;
+        const top = cur + rect.top - 96;
+        this.smoothTo(Math.max(0, top));
+        return true;
+      }
+    }
+    return false;
+  }
+  findScroller() {
+    let el = document.querySelector('[data-rt-article="1"]') || document.querySelector('[data-rt-root="1"]');
+    while (el) {
+      const o = el.scrollHeight > el.clientHeight + 8 ? getComputedStyle(el).overflowY : '';
+      if (o === 'auto' || o === 'scroll') return el;
+      el = el.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+  smoothTo(top) {
+    const sc = this._scroller || this.findScroller();
+    const isDoc = sc === document.scrollingElement || sc === document.documentElement || sc === document.body;
+    try {
+      if (isDoc) window.scrollTo({ top: top, behavior: 'smooth' });
+      else sc.scrollTo({ top: top, behavior: 'smooth' });
+    } catch (err) { sc.scrollTop = top; }
+  }
+  ivArm() {
+    if (this.state.ivConcluding) return;
+    clearTimeout(this._iv);
+    this.setState({ ivTyping: true });
+    this._iv = setTimeout(() => this.setState({ ivTyping: false }), this.state.ivIndex > 0 ? 1700 : 950);
+  }
+  ivChars(text, base) {
+    let t = base || 0; const out = [];
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      out.push(React.createElement('span', { key: i, style: { display: 'inline-block', animation: 'rtChar 620ms cubic-bezier(.2,.7,.2,1) both', animationDelay: t + 'ms' } }, ch));
+      t += 68;
+      if ('，。？！、；：…—'.includes(ch)) t += 280;
+    }
+    return { el: React.createElement('span', null, out), end: t };
+  }
+
+  obQuestions = [
+    { key: 'genres', multi: true, q: '你平时读什么最多？', hint: '随便选几个，帮我大致认识你。', options: ['文学小说','社科','哲学思想','科学技术','历史传记','艺术设计'] },
+    { key: 'guide', multi: false, q: '遇到难懂的书，你更希望我怎么陪你？', hint: '这决定我介入的方式和分寸。', options: ['先给我整体地图','逐句在旁边陪着我','只在我卡住时出现'] },
+    { key: 'time', multi: false, q: '你大概能投入多少时间？', hint: '我会据此安排节奏，不让你有负担。', options: ['碎片时间为主','每天半小时','大段安静时间'] },
+  ];
+
+  books = [
+    { id: 'zara', title: '查拉图斯特拉如是说', author: '尼采', authorLine: 'NIETZSCHE · 1883', status: 'active_reading', progress: 8, tags: ['哲学','需要向导','22 章'] },
+    { id: 'being', title: '存在与时间', author: '海德格尔', authorLine: 'HEIDEGGER · 1927', status: 'on_shelf', progress: 0, tags: ['哲学','很硬','需要耐心'] },
+    { id: 'republic', title: '理想国', author: '柏拉图', authorLine: 'PLATO · C. 375 BC', status: 'active_reading', progress: 36, tags: ['对话体','入门友好'] },
+  ];
+
+  statusMeta = {
+    on_shelf:              { badge: '待访谈',  meta: '未开始 · 先聊几句',  color: 'var(--rt-green-deep)', border: 'var(--rt-green)', bg: 'var(--rt-green-soft)' },
+    interviewing:          { badge: '访谈中',  meta: '访谈进行中',        color: 'var(--rt-green-deep)', border: 'var(--rt-green)', bg: 'var(--rt-green-soft)' },
+    briefing_ready:        { badge: '简报就绪', meta: '读前简报已备好',     color: 'var(--rt-green-deep)', border: 'var(--rt-green)', bg: 'var(--rt-green-soft)' },
+    trial_review:          { badge: '试读中',  meta: '试读样章等你确认',   color: 'var(--rt-green-deep)', border: 'var(--rt-green)', bg: 'var(--rt-green-soft)' },
+    awaiting_confirmation: { badge: '待确认',  meta: '处理方式草稿等你确认', color: 'var(--rt-green-deep)', border: 'var(--rt-green)', bg: 'var(--rt-green-soft)' },
+    active_reading:        { badge: '在读',    meta: '',                 color: 'var(--rt-ink-3)',      border: 'var(--rt-rule)',  bg: 'transparent' },
+    normalizing:           { badge: '规范化中', meta: '正在处理这个版本',   color: 'var(--rt-ink-3)',      border: 'var(--rt-rule)',  bg: 'transparent' },
+    failed:                { badge: '处理失败', meta: '该版本暂时无法处理', color: 'var(--rt-error)',      border: 'var(--rt-error)', bg: 'transparent' },
+  };
+
+  normSteps = [
+    { key: 'uploaded',      label: 'UPLOADED',      cn: '已上传',   desc: '接收文件，准备处理。' },
+    { key: 'fingerprinting',label: 'FINGERPRINT',   cn: '指纹校验', desc: '计算 EPUB 的 SHA-256，检查是否已有可复用的规范化书籍包。' },
+    { key: 'queued',        label: 'QUEUED',        cn: '排队中',   desc: '未命中复用，创建规范化任务，进入队列。' },
+    { key: 'normalizing',   label: 'NORMALIZING',   cn: '规范化中', desc: 'Coding Agent 阅读解包内容与 nb-1.0 规范，编写并运行本书 normalize.py。' },
+    { key: 'validating',    label: 'VALIDATING',    cn: '双层校验', desc: '以源 EPUB 为基线运行 nb_check / nb_linter：字符召回、图片守恒、注释与目录对账。' },
+    { key: 'ready',         label: 'READY',         cn: '已就绪',   desc: '校验通过，生成共享 book_profile.json，发布规范化书籍包。' },
+  ];
+
+  ivQuestions = [
+    { q: '你为什么想读《存在与时间》？', hint: '知道你的目的，我才知道该把你带向哪里。', opts: ['一直想啃下来','研究 / 课程需要','被人推荐','对“存在”这个问题好奇'] },
+    { q: '你对海德格尔和现象学了解多少？', hint: '我据此决定要不要先补背景。', opts: ['几乎没有','读过一点介绍','读过相关著作','比较熟悉'] },
+    { q: '你希望读到什么程度？', hint: '这决定我讲多深、陪多久。', opts: ['大致知道它在讲什么','能跟上主要论证','能自己复述给别人','做研究级的理解'] },
+    { q: '你最担心自己会卡在哪里？', hint: '我会把力气优先花在这些地方。', opts: ['术语太多','句子太绕','缺少背景','坚持不下来'] },
+    { q: '每次大概能读多久？', hint: '我据此切分节奏，不给你负担。', opts: ['15 分钟以内','半小时左右','一小时以上'] },
+    { q: '你更希望我多解释，还是尽量少打扰？', hint: '决定注释的密度。', opts: ['多解释，宁细勿漏','适中就好','尽量少，别打断我'] },
+  ];
+
+  trialStrategies = [
+    { title: '像一位耐心的向导，而不是翻译机',
+      lines: ['你想“能跟上主要论证”，又担心术语和长句——所以我会在每节前先给你一张地图，把这一节要建立的那一个核心区分说清楚。',
+              '术语第一次出现时，我在原文旁给出贴着上下文的释义，而不是词典定义；海德格尔生造的词，我会点明他为什么要这样造。',
+              '最难的推理跳跃处，我补一句“换句话说”，但绝不改写原文——原文永远在，补全只在旁边。'] },
+    { title: '先搭好脚手架，再让你独立走',
+      lines: ['考虑到你担心“坚持不下来”，我把每节的导读压到三句以内，重点是先给你一个能抓住的画面，让你有进入的勇气。',
+              '注释更克制：只在真正会挡路的术语和长句上出现，把“读顺”放在“读全”之前。',
+              '节后助读会问你一个小问题，帮你确认自己确实跟上了，而不是滑过去。'] },
+  ];
+
+  stratParamsBase = [
+    [['导读', '每节开头给一张“地图”，≤ 4 句，先立本节唯一的核心区分'],
+     ['注释密度', '中高 · 出现在术语首现与长难句处'],
+     ['术语', '贴上下文释义，不给词典定义；生造词点明造词动机'],
+     ['补全', '只在推理跳跃处补一句“换句话说”，原文永远保留'],
+     ['节奏', '每天一小节 · 约 25 分钟']],
+    [['导读', '压到 ≤ 3 句，先给一个能抓住的画面'],
+     ['注释密度', '低 · 只在真正挡路的地方出现'],
+     ['术语', '“读顺”优先于“读全”，深讲后置到节后'],
+     ['补全', '不打断正文，疑难移到节后助读'],
+     ['节奏', '每天一小节 · 约 15 分钟 · 节后一个小问题确认跟上']],
+  ];
+
+  trialSamplesBase = [
+    { tag: '进入门槛', node: '导论 · 第一节', why: '全书最抽象的开场——如果这里不给脚手架，多数人会在前十页放弃。',
+      lead: '这一节只做一件事：说清“为什么‘存在’这个问题值得重新问一遍”。别被“存在的意义”吓到，它问的其实是——当我们说任何东西“是”什么时，那个“是”指的到底是什么。',
+      body: '“存在”这个概念是最普遍的，但也正因为如此，它最晦暗。当我们说“天空是蓝的”“我是快乐的”，我们都用到了“是”——却从没问过这个“是”本身。' },
+    { tag: '典型内容', node: '第二章 · 在世界之中存在', why: '全书最有代表性的一章，也最贴日常生活——用它检验注释密度和导读口吻最准。',
+      lead: '这是全书最好用的一章：把抽象的“存在”落到你每天的生活里。记住一个词——“上手”：锤子在你顺手用它时，你根本不会“看”它，你只是在用。',
+      body: '我们首先遇到的从不是孤立的“物”。我们遇到的是用具——为了钉钉子而有的锤子，为了写字而有的笔。世界是一张互相指引的意义之网。' },
+    { tag: '高难度', node: '第六章 · 操心与时间性', why: '全书最难的推理都堆在这里——这套处理方式若扛得住它，其余章节都不在话下。',
+      lead: '这一节最硬，我会陪得最紧。核心只有一句：人的存在，本质上是“时间性”的——你总是已经从过去而来、向着将来筹划、在当下行动。慢慢来。',
+      body: '此在的存在整体，我们把它把握为“操心”。而使操心得以可能的，是时间性——它不是钟表的时间，而是此在自身到时的方式。' },
+  ];
+
+  chapters = [
+    { id: 'pre', title: '查拉图斯特拉的前言', read: false },
+    { id: 'c1', title: '三种变形' },
+    { id: 'c2', title: '道德的讲座' },
+    { id: 'c3', title: '背后世界论者' },
+    { id: 'c4', title: '轻蔑肉体者' },
+  ];
+
+  // 全文搜索语料（前言原文 + 裁读注释；其余章节为占位）
+  searchCorpus = [
+    { loc: '前言 · §一', kind: 'text', text: '查拉图斯特拉三十岁的时候，离开了他的故乡和故乡的湖，走进山里。在山上，他享受着自己的精神与孤独，十年不倦。' },
+    { loc: '前言 · §一', kind: 'text', text: '但最终，他的心改变了。一天清晨，他与朝霞一同醒来，走到太阳面前，对它说：你伟大的星球啊，假如没有你所照耀的人们，你的幸福何在？' },
+    { loc: '前言 · §一', kind: 'text', text: '看啊，我厌倦了我的智慧，像蜜蜂采了过多的蜜。我需要伸出来的手。' },
+    { loc: '前言 · §一', kind: 'text', text: '我必须像你一样下山（没落）——照人们的说法，我要走向没落了。' },
+    { loc: '裁读注 · 没落', kind: 'note', text: '德语 Untergang 一词双关：既是太阳的“落山”，也是人的“没落、毁灭”。这个词在全书会反复回来。' },
+    { loc: '前言 · §二', kind: 'text', text: '当查拉图斯特拉独自继续赶路时，他在心里这样说：这怎么可能！这位老圣者在他的森林里，竟还没有听说——神死了！' },
+    { loc: '裁读注 · 神死了', kind: 'note', text: '先别把它当口号。在叙事里它只是一个消息：旧的意义来源（神）已经失效，只有远离人群的圣者还不知道。' },
+    { loc: '前言 · §三', kind: 'text', text: '查拉图斯特拉对众人这样说：我教你们超人。人是应当被克服的东西。为了克服他，你们做过什么呢？' },
+    { loc: '裁读注 · 超人', kind: 'note', text: 'Übermensch，直译“越过人的人”——不是漫画英雄，而是“不再需要神来给生活定意义、自己创造价值的人”。' },
+    { loc: '前言 · §三', kind: 'text', text: '人是一根系在兽与超人之间的绳索——一根悬在深渊上的绳索。走过去是危险的，停在中途是危险的。' },
+  ];
+
+  toast(text) {
+    clearTimeout(this._t);
+    this.setState({ toastVisible: true, toastText: text });
+    this._t = setTimeout(() => this.setState({ toastVisible: false }), 2200);
+  }
+
+  go(view) {
+    if (view === 'ask') {
+      this.setState((st) => {
+        const base = { view: 'reader', activeBookId: 'zara', jumpOpen: false, askOpen: true };
+        if (st.askSessions.length === 0) {
+          const id = 'q' + Date.now();
+          const context = { kind: 'selection', text: '你伟大的星球啊', para: '前言 · 第二段' };
+          const turns = [
+            { role: 'user', text: '这句“你伟大的星球啊”是什么意思？' },
+            { role: 'ai', text: this.mockAnswer('selection', '你伟大的星球啊') },
+            { role: 'user', text: '我对这些隐喻更感兴趣。后面可以少解释一点术语，多帮我串起隐喻之间的联系。' },
+            { role: 'ai', text: '明白。这个偏好会影响后续整本书的陪读方式，我已经调用处理方式调整工具，提交了一项变更。' },
+          ];
+          const current = { id, title: '太阳为什么需要被照耀者？', when: '刚刚', context, turns, hasProposal: true };
+          const older = [
+            { id: 'q-history-1', title: '“神死了”在这里是什么语气？', when: '昨天', context: { kind: 'selection', text: '神死了', para: '前言 · 第二节' }, hasProposal: false, turns: [{ role: 'user', text: '“神死了”在这里是什么语气？' }, { role: 'ai', text: '这里首先是叙事中的一个发现，不是面向读者喊出的口号。查拉图斯特拉意识到，旧意义已经失效，但森林里的圣者还不知道。' }] },
+            { id: 'q-history-2', title: '超人是不是强者崇拜？', when: '3 天前', context: { kind: 'selection', text: '我教你们超人', para: '前言 · 第三节' }, hasProposal: false, turns: [{ role: 'user', text: '超人是不是强者崇拜？' }, { role: 'ai', text: '不完全是。这里的重点不是支配别人，而是一个人能否在旧价值失效后创造自己的价值。' }] },
+          ];
+          return { ...base, askContext: context, askActiveId: id, askSessions: [current, ...older], strategySuggest: true, askHistoryOpen: false };
+        }
+        const active = st.askSessions.find(se => se.id === st.askActiveId) || st.askSessions[0];
+        return { ...base, askContext: active.context, askActiveId: active.id, strategySuggest: !!active.hasProposal, askHistoryOpen: false };
+      });
+      window.scrollTo(0, 0);
+      return;
+    }
+    const patch = { view, jumpOpen: false };
+    if (['interview', 'brief', 'strategy', 'trial'].includes(view) && !this.state.activeBookId) patch.activeBookId = 'being';
+    this.setState(patch);
+    window.scrollTo(0, 0);
+  }
+
+  metaFor(b) {
+    const m = this.statusMeta[b.status] || {};
+    if (b.status === 'active_reading') {
+      const ch = b.progress >= 36 ? '卷四' : '前言';
+      return '读到 ' + ch + ' · ' + b.progress + '%';
+    }
+    return m.meta;
+  }
+
+  openBook(b) {
+    const map = {
+      on_shelf: 'interview', interviewing: 'interview',
+      briefing_ready: 'brief', trial_review: 'trial', awaiting_confirmation: 'strategy',
+      active_reading: 'reader', normalizing: 'upload', failed: 'upload',
+    };
+    this.setState({ activeBookId: b.id, view: map[b.status] || 'reader', jumpOpen: false });
+    window.scrollTo(0, 0);
+  }
+
+  startNormalize(failMode) {
+    clearInterval(this._nt);
+    this.setState({ view: 'upload', normStep: 0, normFailed: false, jumpOpen: false });
+    window.scrollTo(0, 0);
+    const failAt = failMode ? 3 : 99;
+    this._nt = setInterval(() => {
+      this.setState((st) => {
+        if (st.normStep >= failAt) { clearInterval(this._nt); return { normFailed: true }; }
+        if (st.normStep >= 5) { clearInterval(this._nt); return { normStep: 6 }; }
+        return { normStep: st.normStep + 1 };
+      });
+    }, 1050);
+  }
+
+  addNormalizedBook() {
+    if (!this.books.find(b => b.id === 'sapiens')) {
+      this.books.unshift({ id: 'sapiens', title: '人类简史', author: '尤瓦尔·赫拉利', authorLine: 'HARARI · 2011', status: 'on_shelf', progress: 0, tags: ['历史','社科','刚上传'] });
+    }
+    this.setState({ activeBookId: 'sapiens', view: 'interview', ivIndex: 0, ivAnswers: {}, ivInput: '', ivSuff: 0, ivConcluding: false, stratVersion: 1, trialRound: 0, trialVariant: 0, trialPhase: 'ready', trialPicked: 3 });
+    window.scrollTo(0, 0);
+    this.toast('《人类简史》已加入书架');
+  }
+
+  ivFinish() {
+    const b = this.books.find(x => x.id === this.state.activeBookId);
+    if (b) b.status = 'briefing_ready';
+    this.setState({ view: 'brief', briefGen: true, ivConcluding: false, ivTyping: false });
+    window.scrollTo(0, 0);
+    clearTimeout(this._bg);
+    this._bg = setTimeout(() => { this.setState({ briefGen: false }); this.toast('读前简报已生成 · 长期画像已更新'); }, 1900);
+  }
+
+  ivStep(answer, isText) {
+    const idx = this.state.ivIndex;
+    const gain = (isText ? 30 : 18) + (idx === 0 ? 6 : 0);
+    const suff = Math.min(100, this.state.ivSuff + gain);
+    const answered = idx + 1;
+    const enough = (suff >= 78 && answered >= 3) || answered >= this.ivQuestions.length;
+    if (enough) {
+      this.setState(st => ({ ivAnswers: { ...st.ivAnswers, [idx]: answer }, ivSuff: 100, ivConcluding: true, ivTyping: false, ivInput: '' }));
+      clearTimeout(this._ivc);
+      this._ivc = setTimeout(() => this.ivFinish(), 3200);
+    } else {
+      this.setState(st => ({ ivAnswers: { ...st.ivAnswers, [idx]: answer }, ivSuff: suff, ivIndex: idx + 1, ivInput: '' }));
+      window.scrollTo(0, 0);
+    }
+  }
+  ivPick(label) { this.ivStep(label, false); }
+  ivSubmitText() { const t = this.state.ivInput.trim(); if (!t) return; this.ivStep(t, true); }
+
+  goStrategy(fromTrial) {
+    const b = this.books.find(x => x.id === this.state.activeBookId);
+    if (b && ['briefing_ready', 'trial_review'].includes(b.status)) b.status = 'awaiting_confirmation';
+    this.setState({ view: 'strategy', stratDrafting: true, stratFromTrial: !!fromTrial, jumpOpen: false });
+    window.scrollTo(0, 0);
+    clearTimeout(this._sd);
+    this._sd = setTimeout(() => this.setState({ stratDrafting: false }), fromTrial ? 1900 : 1500);
+  }
+
+  stratRedraft() {
+    const t = this.state.stratFeedback.trim();
+    if (!t || this.state.stratDrafting) return;
+    if (this.state.trialRound >= 5) { this.toast('已达 5 轮反馈上限'); return; }
+    this.setState(st => ({ stratDrafting: true, trialRound: st.trialRound + 1, stratVersion: st.stratVersion + 1, stratFeedback: '', stratFromTrial: false, trialVariant: (st.trialVariant + 1) % 2 }));
+    clearTimeout(this._sd);
+    this._sd = setTimeout(() => { this.setState({ stratDrafting: false }); this.toast('已根据你的反馈重新起草'); }, 1700);
+  }
+
+  stratConfirm() {
+    const b = this.books.find(x => x.id === this.state.activeBookId);
+    if (b && ['on_shelf', 'interviewing', 'briefing_ready', 'awaiting_confirmation'].includes(b.status)) b.status = 'trial_review';
+    this.setState({ view: 'trial', trialPhase: 'picking', trialPicked: 0, trialTab: 0, trialFeedback: '' });
+    window.scrollTo(0, 0);
+    clearInterval(this._tp); clearTimeout(this._ts);
+    this._tp = setInterval(() => {
+      this.setState(st => {
+        if (st.trialPicked >= 3) {
+          clearInterval(this._tp);
+          this._ts = setTimeout(() => this.setState({ trialPhase: 'ready' }), 1700);
+          return { trialPhase: 'sampling' };
+        }
+        return { trialPicked: st.trialPicked + 1 };
+      });
+    }, 800);
+  }
+
+  trialSendBack() {
+    const t = this.state.trialFeedback.trim();
+    if (!t) return;
+    if (this.state.trialRound >= 5) { this.toast('已达 5 轮反馈上限'); return; }
+    this.setState(st => ({ trialRound: st.trialRound + 1, trialFeedback: '', stratVersion: st.stratVersion + 1, trialVariant: (st.trialVariant + 1) % 2 }));
+    this.goStrategy(true);
+  }
+
+  trialConfirm() {
+    const b = this.books.find(x => x.id === this.state.activeBookId);
+    if (b) { b.status = 'active_reading'; b.progress = 2; }
+    // reader demo content is the canonical 查拉图斯特拉 sample
+    this.setState({ view: 'reader', activeBookId: 'zara', chapterId: 'pre', aaOpen: false, tocOpen: false, askOpen: false });
+    window.scrollTo(0, 0);
+    this.toast('已采用处理方式 · 首个节点已就绪');
+  }
+
+  askFrom(kind, text, para) {
+    const id = 'q' + Date.now();
+    const context = { kind, text, para };
+    const turns = [{ role: 'user', text: text && kind === 'selection' ? '这句“' + text + '”是什么意思？' : (text || '') }];
+    turns.push({ role: 'ai', text: this.mockAnswer(kind, text) });
+    this.setState((st) => ({
+      askOpen: true, askContext: context, askActiveId: id, askHistoryOpen: false,
+      askSessions: [{ id, title: turns[0].text, when: '刚刚', context, turns, hasProposal: false }, ...st.askSessions],
+      strategySuggest: false,
+    }));
+  }
+
+  mockAnswer(kind, text) {
+    if (kind === 'selection' && text && text.includes('星球')) {
+      return '这是全书的第一个隐喻。查拉图斯特拉对太阳说话，是把自己比作太阳：光再多，若无人接受，也没有意义。所以他要下山——“给予”本身需要“接受者”。你不必现在就完全消化，记住这个画面就够了。';
+    }
+    return '好问题。简单说：这里尼采在用“太阳—人”的关系，讲“智慧必须被分享才有价值”。他不是在写天文，是在写一种冲动——满溢了，就想倒出来。要我顺着往后的段落帮你串一条线吗？';
+  }
+
+  askFollow() {
+    const t = this.state.askInput.trim();
+    if (!t) return;
+    this.setState((st) => {
+      const revisingStrategy = st.strategyFeedbackPending;
+      const shouldSuggest = revisingStrategy || /(术语|解释|注释|导读|太多|太少|更想|偏好)/.test(t);
+      const sessions = st.askSessions.map(se => se.id === st.askActiveId
+        ? { ...se, title: se.title === '新问题' ? t : se.title, hasProposal: shouldSuggest ? true : se.hasProposal, turns: [...se.turns, { role: 'user', text: t }, { role: 'ai', text: revisingStrategy ? '明白。我已经按你的反馈修订了处理方式，并再次调用工具提交确认。' : (shouldSuggest ? '你刚才表达的是一个会影响后续阅读的稳定偏好。我已经调用处理方式调整工具，提交了一项变更。' : '可以。往后三段里，他反复说自己“厌倦了智慧”，像蜜蜂采了过多的蜜——这都是同一个意思的变奏：过剩必须流出。') }] }
+        : se);
+      return { askSessions: sessions, askInput: '', strategySuggest: shouldSuggest ? true : st.strategySuggest, strategyFeedbackPending: false };
+    });
+  }
+
+  confirmStrategyChange() {
+    this.setState((st) => ({ strategySuggest: false, strategyFeedbackPending: false, askSessions: st.askSessions.map(se => se.id === st.askActiveId ? { ...se, hasProposal: false } : se) }));
+    this.toast('处理方式已更新 · 后续内容按新方式生成');
+  }
+
+  feedbackStrategyChange() {
+    this.setState((st) => {
+      const sessions = st.askSessions.map(se => se.id === st.askActiveId
+        ? { ...se, hasProposal: false, turns: [...se.turns, { role: 'ai', text: '可以，直接告诉我这条调整哪里不合适。我会在当前对话里修订后重新提交。' }] }
+        : se);
+      return { askSessions: sessions, strategySuggest: false, strategyFeedbackPending: true };
+    });
+  }
+
+  newAskSession() {
+    const id = 'q' + Date.now();
+    const context = { kind: 'screen', text: '', para: '当前屏幕' };
+    const session = { id, title: '新问题', when: '刚刚', context, hasProposal: false, turns: [{ role: 'ai', text: '关于当前这一页，你想问什么？' }] };
+    this.setState(st => ({ askSessions: [session, ...st.askSessions], askActiveId: id, askContext: context, askHistoryOpen: false, strategySuggest: false, strategyFeedbackPending: false, askInput: '' }));
+  }
+
+  renderVals() {
+    const s = this.state;
+    const authed = s.view !== 'login';
+    const stages = [
+      ['01','登录','login'], ['02','简版画像','onboarding'], ['03','书架','shelf'],
+      ['04','上传 · 规范化','upload'], ['05','单本书访谈','interview'], ['06','读前简报','brief'],
+      ['07','处理方式 · 草稿','strategy'], ['08','三个试读样章','trial'], ['09','阅读器','reader'], ['10','问 AI','ask'], ['11','最近删除','deleted'], ['12','阅读统计','stats'],
+    ];
+
+    // onboarding
+    const obQ = this.obQuestions[s.obStep] || this.obQuestions[0];
+    const ans = s.obAnswers[obQ.key];
+    const obOptions = obQ.options.map((label) => {
+      const selected = obQ.multi ? (ans || []).includes(label) : ans === label;
+      return { label, selected, toggle: () => {
+        this.setState((st) => {
+          const a = { ...st.obAnswers };
+          if (obQ.multi) { const arr = a[obQ.key] || []; a[obQ.key] = arr.includes(label) ? arr.filter(x => x !== label) : [...arr, label]; }
+          else { a[obQ.key] = label; }
+          return { obAnswers: a };
+        });
+      }};
+    });
+    const isLast = s.obStep >= this.obQuestions.length - 1;
+
+    const shelfList = this.books
+      .filter(b => !s.query || b.title.includes(s.query) || b.author.includes(s.query))
+      .map(b => { const m = this.statusMeta[b.status] || {}; return {
+        ...b, meta: this.metaFor(b), open: () => this.openBook(b),
+        badge: m.badge, badgeColor: m.color, badgeBorder: m.border, badgeBg: m.bg,
+      }; });
+
+    return {
+      isAuthed: authed,
+      isLogin: s.view === 'login',
+      isOnboarding: s.view === 'onboarding',
+      isShelf: s.view === 'shelf',
+
+      goHome: () => this.go(authed ? 'shelf' : 'login'),
+      signIn: () => { this.go('onboarding'); },
+      navLinks: [
+        { label: '书架', go: () => this.go('shelf'), color: s.view === 'shelf' ? 'var(--rt-green-deep)' : 'var(--rt-ink-3)' },
+        { label: '统计', go: () => this.go('stats'), color: s.view === 'stats' ? 'var(--rt-green-deep)' : 'var(--rt-ink-3)' },
+        { label: '我的偏好', go: () => this.toast('“我的阅读偏好”页 · 稍后接入'), color: 'var(--rt-ink-3)' },
+      ],
+
+      jumpOpen: s.jumpOpen,
+      toggleJump: () => this.setState(st => ({ jumpOpen: !st.jumpOpen })),
+      jumpItems: stages.map(([num, label, v]) => ({
+        num, label, go: () => this.go(v),
+        bg: s.view === v ? 'var(--rt-green-soft)' : 'transparent',
+      })),
+
+      // onboarding
+      obStepLabel: String(s.obStep + 1).padStart(2, '0') + ' / ' + String(this.obQuestions.length).padStart(2, '0'),
+      obQ: { q: obQ.q, hint: obQ.hint, options: obOptions },
+      obCta: isLast ? '生成我的画像' : '下一步',
+      obCanSkip: !isLast,
+      obNext: () => {
+        if (isLast) { this.setState({ view: 'shelf', obStep: 0 }); window.scrollTo(0,0); this.toast('简版画像已生成 · 欢迎回来'); }
+        else this.setState(st => ({ obStep: st.obStep + 1 }));
+      },
+
+      // shelf
+      query: s.query,
+      setQuery: (e) => this.setState({ query: e.target.value }),
+      shelfBooks: shelfList,
+      shelfCount: '共 ' + shelfList.length + ' 本 · ' + shelfList.filter(b => b.status === 'active_reading').length + ' 本在读',
+      goUpload: () => this.go('upload'),
+      goDeleted: () => this.go('deleted'),
+
+      isUpload: s.view === 'upload',
+      isInterview: s.view === 'interview',
+      isBrief: s.view === 'brief',
+      isTrial: s.view === 'trial',
+      isReader: s.view === 'reader',
+      showMasthead: s.view !== 'reader',
+      isDeleted: s.view === 'deleted',
+      isStats: s.view === 'stats',
+
+      // ── 4 · upload / normalize ──
+      normSteps: this.normSteps.map((step, i) => {
+        let state = 'pending';
+        if (s.normFailed && i === s.normStep) state = 'failed';
+        else if (s.normStep === 6 || i < s.normStep) state = 'done';
+        else if (i === s.normStep) state = 'active';
+        const done = state === 'done';
+        return { ...step, state, isDone: done, isActive: state === 'active', isFailed: state === 'failed',
+          isPending: state === 'pending', num: String(i + 1).padStart(2, '0'),
+          railColor: done ? 'var(--rt-green)' : 'var(--rt-rule)',
+          labelColor: state === 'failed' ? 'var(--rt-error)' : (state === 'pending' ? 'var(--rt-ink-3)' : 'var(--rt-green-deep)'),
+          dim: state === 'pending' ? '0.45' : '1' };
+      }),
+      normIdle: s.normStep === -1,
+      normStarted: s.normStep >= 0,
+      normReady: s.normStep === 6,
+      normFailed: s.normFailed,
+      normRunning: s.normStep >= 0 && s.normStep < 6 && !s.normFailed,
+      normFingerprint: 'SHA-256 · a3f9…7c2e',
+      startNorm: () => this.startNormalize(false),
+      startFail: () => this.startNormalize(true),
+      retryNorm: () => this.startNormalize(false),
+      toShelfFromUpload: () => this.go('shelf'),
+      goInterviewNew: () => this.addNormalizedBook(),
+
+      // ── 5 · interview ──
+      ivQ: (() => { const q = this.ivQuestions[s.ivIndex] || this.ivQuestions[0]; const chosen = s.ivAnswers[s.ivIndex];
+        const qEnd = this.ivChars(q.q).end;
+        return { q: q.q, hint: q.hint, options: q.opts.map((label, i) => ({ label, selected: chosen === label,
+          delay: (qEnd + 640 + i * 200) + 'ms',
+          pick: () => this.ivPick(label) })) }; })(),
+      ivHistory: this.ivQuestions.slice(0, s.ivIndex + (s.ivConcluding ? 1 : 0)).map((q, i) => ({ q: q.q, a: s.ivAnswers[i] || '（跳过）' })).filter(h => h.a),
+      ivSuffLabel: s.ivSuff + '%',
+      ivPct: s.ivSuff + '%',
+      ivKey: s.ivConcluding ? 'iv-done' : ('iv-' + s.ivIndex),
+      ivTyping: s.ivTyping && !s.ivConcluding,
+      ivShowQ: !s.ivTyping && !s.ivConcluding,
+      ivConcluding: s.ivConcluding,
+      ivShowNote: !s.ivConcluding,
+      ivDoneEl: this.ivChars('好，我心里有数了——就问到这里。', 220).el,
+      ...(() => { const q = this.ivQuestions[s.ivIndex] || this.ivQuestions[0]; const qr = this.ivChars(q.q);
+        return { ivQEl: qr.el, ivHintDelay: (qr.end + 260) + 'ms', ivFreeDelay: (qr.end + 640 + q.opts.length * 200 + 120) + 'ms' }; })(),
+      ivAckEl: this.ivChars(['', '好，记下了。', '明白，我心里大概有数了。', '嗯，这个先替你记着。', '了解。', '好。'][s.ivIndex] || '', 380).el,
+      ivDotsDelay: s.ivIndex > 0 ? '1050ms' : '120ms',
+      ivHasAck: s.ivIndex > 0 && !s.ivConcluding,
+      ivInput: s.ivInput,
+      setIvInput: (e) => this.setState({ ivInput: e.target.value }),
+      ivSubmitText: () => this.ivSubmitText(),
+      ivSendColor: s.ivInput.trim() ? 'var(--rt-green)' : 'var(--rt-ink-3)',
+
+      // ── 6 · brief ──
+      briefTitle: '读之前，我想先和你说几句 · 《' + ((this.books.find(b => b.id === s.activeBookId) || this.books.find(b => b.id === 'being') || {}).title) + '》',
+      briefBook: (this.books.find(b => b.id === s.activeBookId) || this.books.find(b => b.id === 'being') || {}).title,
+      briefSections: [
+        { label: '这是一本什么书', text: '海德格尔想重新问一个被哲学遗忘了两千年的问题：当我们说任何东西“存在”，那个“是”到底指什么。他从你我这样“会追问存在的存在者”——他叫它“此在”——入手。' },
+        { label: '全书大致怎么走', text: '先说清为什么要重问（导论），再从日常生活切入“在世界之中存在”，最后落到“时间性”。前松后紧，越往后越硬。' },
+        { label: '给你的读法准备（针对你）', prep: true, text: '你说担心术语和坚持不下来——先给你吃颗定心丸：没人能一遍读通它。我们每天只走一小节，术语我贴着上下文翻译，卡住就跳过，只带走一个画面也算数。' },
+      ],
+      briefTerms: [
+        { term: '此在（Dasein）', gloss: '字面是“在此存在”。指人——但强调人是“会领会自己存在”的那种存在者。' },
+        { term: '在世界之中存在', gloss: '人不是先有个孤立的“我”再碰到世界；我们一开始就已经“在世界里忙活着”。' },
+        { term: '上手（Zuhandenheit）', gloss: '工具顺手用时你不会盯着它看——这种“用着用着就隐去”的状态。' },
+      ],
+      briefGen: s.briefGen,
+      briefReady: !s.briefGen,
+      briefToStrategy: () => this.goStrategy(false),
+
+      // ── 7 · 处理方式草稿（确认/反馈循环） ──
+      isStrategy: s.view === 'strategy',
+      stratDrafting: s.stratDrafting,
+      stratReady: !s.stratDrafting,
+      stratDraftingLabel: s.stratFromTrial ? 'Redrafting · 带着试读反馈重新起草' : 'Drafting · 起草处理方式',
+      stratVersionLabel: s.stratVersion === 1 ? '草稿 V1 · 等你确认' : ('草稿 V' + s.stratVersion + ' · 已吸收 ' + s.trialRound + ' 轮反馈'),
+      stratFromTrial: s.stratFromTrial && !s.stratDrafting,
+      trialStrategy: this.trialStrategies[s.trialVariant],
+      stratParams: this.stratParamsBase[s.trialVariant].map(p => ({ k: p[0], v: p[1] })),
+      stratFeedback: s.stratFeedback,
+      setStratFeedback: (e) => this.setState({ stratFeedback: e.target.value }),
+      stratSendColor: (s.stratFeedback.trim() && !s.stratDrafting && s.trialRound < 5) ? 'var(--rt-green-deep)' : 'var(--rt-ink-3)',
+      stratRoundsLeft: 5 - s.trialRound,
+      stratRedraft: () => this.stratRedraft(),
+      stratConfirm: () => this.stratConfirm(),
+
+      // ── 8 · 试读样章（确认/退回循环） ──
+      trialPicking: s.trialPhase !== 'ready',
+      trialSampling: s.trialPhase === 'sampling',
+      trialReady: s.trialPhase === 'ready',
+      pickedNodes: this.trialSamplesBase.slice(0, s.trialPicked).map((sm, i) => ({ ...sm, num: '0' + (i + 1) })),
+      trialVersionLabel: '按草稿 V' + s.stratVersion + ' 生成 · 节点我挑的，不是前三节',
+      trialSamples: this.trialSamplesBase.map((sm, i) => ({ ...sm, idx: i, active: s.trialTab === i,
+        borderColor: s.trialTab === i ? 'var(--rt-green)' : 'var(--rt-rule)',
+        bgColor: s.trialTab === i ? 'var(--rt-green-soft)' : 'transparent',
+        pick: () => this.setState({ trialTab: i }) })),
+      trialCurrent: this.trialSamplesBase[s.trialTab],
+      trialFeedback: s.trialFeedback,
+      setTrialFeedback: (e) => this.setState({ trialFeedback: e.target.value }),
+      trialSendColor: (s.trialFeedback.trim() && s.trialRound < 5) ? 'var(--rt-green-deep)' : 'var(--rt-ink-3)',
+      trialSendBack: () => this.trialSendBack(),
+      trialConfirm: () => this.trialConfirm(),
+
+      // ── 8 · reader ──
+      readerBook: this.books.find(b => b.id === 'zara') || this.books[0],
+      readerTitle: (this.books.find(b => b.id === s.activeBookId) || this.books[0]).title,
+      exitReader: () => this.go('shelf'),
+      readProgress: s.readPct,
+      readPctLabel: s.readPct + '%',
+      remainLabel: (() => { const cpm = 380; const chChars = 1450; const remain = Math.max(0, Math.ceil((100 - s.readPct) / 100 * chChars / cpm)); return '本章约剩 ' + (remain < 1 ? '不到 1' : remain) + ' 分钟 · 全书约 4.5 小时'; })(),
+      chromeCls: s.chromeHidden ? 'rt-chrome-hidden' : '',
+      revealChrome: () => { if (this.state.chromeHidden) this.setState({ chromeHidden: false }); },
+      resumeVisible: !!s.resumePos,
+      resumePctLabel: s.resumePos ? '· ' + s.resumePos.pct + '%' : '',
+      resumeGo: () => { const rp = this.state.resumePos; if (rp) { this.smoothTo(rp.y); this.setState({ resumePos: null }); } },
+      goNextChapter: () => { this.setState({ chapterId: 'c1', openMarkId: null }); this.smoothTo(0); this.toast('已进入 · 三种变形（原型以前言内容示意）'); },
+      theme: s.theme,
+      setTheme: (v) => this.setState({ theme: v }),
+      themeOptions: [{ value: 'paper', label: '纸白' }, { value: 'sepia', label: '纸黄' }, { value: 'night', label: '夜间' }],
+      fontSize: s.fontSize, fontMin: 15, fontMax: 24, fontPx: s.fontSize + 'px',
+      setFontSize: (v) => this.setState({ fontSize: v }), fmtPx: (v) => v + 'px',
+      lineH: s.lineH, lhMin: 1.8, lhMax: 2.6, lhStep: 0.1,
+      setLineH: (v) => this.setState({ lineH: Math.round(v * 10) / 10 }),
+      fmtLh: (v) => Number(v).toFixed(1),
+      // 字体 / 边距 / 对齐
+      bodyFace: s.bodyFace,
+      bodyFont: s.bodyFace === 'sans' ? 'var(--rt-demo)' : 'var(--rt-serif)',
+      setBodyFace: (v) => this.setState({ bodyFace: v }),
+      faceOptions: [{ value: 'serif', label: '宋体' }, { value: 'sans', label: '黑体' }],
+      margin: s.margin,
+      articleMax: s.margin === 'narrow' ? '600px' : (s.margin === 'wide' ? '760px' : '680px'),
+      setMargin: (v) => this.setState({ margin: v }),
+      marginOptions: [{ value: 'narrow', label: '窄' }, { value: 'mid', label: '中' }, { value: 'wide', label: '宽' }],
+      bodyAlign: s.bodyAlign,
+      setAlign: (v) => this.setState({ bodyAlign: v }),
+      alignOptions: [{ value: 'left', label: '左对齐' }, { value: 'justify', label: '两端' }],
+      topActions: [
+        { label: '搜索', onClick: () => this.setState({ searchOpen: true, tocOpen: false, aaOpen: false, briefOpen: false, notebookOpen: false, chromeHidden: false }),
+          glyph: React.createElement('svg', { width: 17, height: 17, viewBox: '0 0 20 20', fill: 'none', 'aria-hidden': true, style: { display: 'block' } },
+            React.createElement('circle', { cx: 9, cy: 9, r: 5.5, stroke: 'currentColor', strokeWidth: 1.5 }),
+            React.createElement('path', { d: 'M13.2 13.2 17 17', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' })) },
+        { label: '读前简报', onClick: () => this.setState({ briefOpen: true, aaOpen: false, tocOpen: false, notebookOpen: false, searchOpen: false, chromeHidden: false }),
+          glyph: React.createElement('svg', { width: 18, height: 18, viewBox: '0 0 20 20', fill: 'none', 'aria-hidden': true, style: { display: 'block' } },
+            React.createElement('path', { d: 'M3 5.2 8 3.4 12 5 17 3.4 V 14.8 L 12 16.6 8 15 3 16.6 Z', stroke: 'currentColor', strokeWidth: 1.5, strokeLinejoin: 'round', strokeLinecap: 'round' }),
+            React.createElement('path', { d: 'M8 3.4 V 15', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' }),
+            React.createElement('path', { d: 'M12 5 V 16.6', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' })) },
+      ],
+      toolbarActions: [
+        { glyph: '≡', label: '目录', tint: 'var(--rt-ink-2)', onClick: () => this.setState({ tocOpen: true, aaOpen: false, briefOpen: false, notebookOpen: false, searchOpen: false, chromeHidden: false }) },
+        { glyph: '▁', label: '笔记', tint: 'var(--rt-green)', onClick: () => this.setState({ notebookOpen: true, tocOpen: false, aaOpen: false, briefOpen: false, searchOpen: false, chromeHidden: false }) },
+        { glyph: 'Aa', label: '设置', tint: 'var(--rt-ink-2)', onClick: () => this.setState({ aaOpen: true, tocOpen: false, briefOpen: false, notebookOpen: false, searchOpen: false, chromeHidden: false }) },
+        { glyph: '✦', label: '问 AI', tint: 'var(--rt-green)', onClick: () => this.askFrom('screen', '关于当前这一页，我想问：', null) },
+      ],
+      chromeBCls: s.chromeHidden ? 'rt-bbar rt-chrome-hidden-b' : 'rt-bbar',
+      // 桌面：全部操作回到顶栏右侧（顶栏搜索/简报 + 底栏四项合并）
+      deskActions: [
+        { key: 'toc', glyph: '≡', label: '目录', tint: 'var(--rt-ink-2)', onClick: () => this.setState({ tocOpen: true, aaOpen: false, briefOpen: false, notebookOpen: false, searchOpen: false, chromeHidden: false }) },
+        { key: 'note', glyph: '▁', label: '笔记', tint: 'var(--rt-green)', onClick: () => this.setState({ notebookOpen: true, tocOpen: false, aaOpen: false, briefOpen: false, searchOpen: false, chromeHidden: false }) },
+        { key: 'search', label: '搜索', tint: 'var(--rt-ink-2)', onClick: () => this.setState({ searchOpen: true, tocOpen: false, aaOpen: false, briefOpen: false, notebookOpen: false, chromeHidden: false }),
+          glyph: React.createElement('svg', { width: 15, height: 15, viewBox: '0 0 20 20', fill: 'none', 'aria-hidden': true, style: { display: 'block' } },
+            React.createElement('circle', { cx: 9, cy: 9, r: 5.5, stroke: 'currentColor', strokeWidth: 1.5 }),
+            React.createElement('path', { d: 'M13.2 13.2 17 17', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' })) },
+        { key: 'brief', label: '简报', tint: 'var(--rt-ink-2)', onClick: () => this.setState({ briefOpen: true, aaOpen: false, tocOpen: false, notebookOpen: false, searchOpen: false, chromeHidden: false }),
+          glyph: React.createElement('svg', { width: 16, height: 16, viewBox: '0 0 20 20', fill: 'none', 'aria-hidden': true, style: { display: 'block' } },
+            React.createElement('path', { d: 'M3 5.2 8 3.4 12 5 17 3.4 V 14.8 L 12 16.6 8 15 3 16.6 Z', stroke: 'currentColor', strokeWidth: 1.5, strokeLinejoin: 'round', strokeLinecap: 'round' }),
+            React.createElement('path', { d: 'M8 3.4 V 15', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' }),
+            React.createElement('path', { d: 'M12 5 V 16.6', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' })) },
+        { key: 'aa', glyph: 'Aa', label: '设置', tint: 'var(--rt-ink-2)', onClick: () => this.setState({ aaOpen: true, tocOpen: false, briefOpen: false, notebookOpen: false, searchOpen: false, chromeHidden: false }) },
+        { key: 'ai', glyph: '✦', label: '问 AI', tint: 'var(--rt-green)', onClick: () => this.askFrom('screen', '关于当前这一页，我想问：', null) },
+      ],
+      briefOpen: s.briefOpen,
+      aaOpen: s.aaOpen, tocOpen: s.tocOpen,
+      closeSheets: () => this.setState({ aaOpen: false, tocOpen: false, briefOpen: false, notebookOpen: false, searchOpen: false }),
+      chapters: this.chapters, currentChapter: s.chapterId,
+      selectChapter: (id) => { this.setState({ chapterId: id, tocOpen: false, openMarkId: null }); this.smoothTo(0); this.toast('已跳转 · ' + (this.chapters.find(c => c.id === id) || {}).title); },
+      leadOpen: s.leadOpen, toggleLead: () => this.setState(st => ({ leadOpen: !st.leadOpen })),
+      leadLabel: s.leadOpen ? '收起 —' : '展开 +',
+      afterOpen: s.afterOpen, toggleAfter: () => this.setState(st => ({ afterOpen: !st.afterOpen })),
+      afterLabel: s.afterOpen ? '收起 —' : '展开 +',
+      glossBg: s.openMarkId === 'gloss' ? 'var(--rt-green-soft)' : 'transparent',
+      leadBullets: ['这一章是全书的“序幕”：查拉图斯特拉为什么下山。', '记住一个画面——太阳需要被它照耀的人。', '读不懂的句子先跳过，带虚线的词可以点开看便签。'],
+      openMarkId: s.openMarkId,
+      openGloss: () => this.setState({ openMarkId: s.openMarkId === 'gloss' ? null : 'gloss' }),
+      openFn: () => this.setState({ openMarkId: s.openMarkId === 'fn' ? null : 'fn' }),
+      glossActive: s.openMarkId === 'gloss',
+      fnActive: s.openMarkId === 'fn',
+      openUnter: () => this.setState(st => ({ openMarkId: st.openMarkId === 'unter' ? null : 'unter' })),
+      unterBg: s.openMarkId === 'unter' ? 'var(--rt-green-soft)' : 'transparent',
+      unterActive: s.openMarkId === 'unter',
+      openGod: () => this.setState(st => ({ openMarkId: st.openMarkId === 'god' ? null : 'god' })),
+      godBg: s.openMarkId === 'god' ? 'var(--rt-green-soft)' : 'transparent',
+      godActive: s.openMarkId === 'god',
+      openUber: () => this.setState(st => ({ openMarkId: st.openMarkId === 'uber' ? null : 'uber' })),
+      uberBg: s.openMarkId === 'uber' ? 'var(--rt-green-soft)' : 'transparent',
+      uberActive: s.openMarkId === 'uber',
+
+      // selection → 划线 / 想法 / ask
+      selMenu: s.selMenu,
+      selMenuStyle: s.selMenu ? ('position: fixed; left: ' + s.selMenu.x + 'px; top: ' + s.selMenu.y + 'px; transform: translate(-50%, -100%); z-index: 80') : 'display:none',
+      askSelection: () => { const t = s.selMenu ? s.selMenu.text : ''; window.getSelection().removeAllRanges(); this.setState({ selMenu: null }); this.askFrom('selection', t, '前言'); },
+      hlSelection: () => { const t = s.selMenu ? s.selMenu.text : ''; window.getSelection().removeAllRanges(); this.setState({ selMenu: null }); this.addHighlight(t, ''); this.toast('已划线 · 存入笔记本'); },
+      noteSelection: () => { const t = s.selMenu ? s.selMenu.text : ''; window.getSelection().removeAllRanges(); this.setState({ selMenu: null, noteDraft: { text: t, where: '前言', noteText: '' } }); },
+      // 写想法
+      noteDraft: s.noteDraft,
+      noteQuote: s.noteDraft ? '“' + s.noteDraft.text + '”' : '',
+      noteText: s.noteDraft ? s.noteDraft.noteText : '',
+      setNoteText: (e) => { const v = e.target.value; this.setState(st => ({ noteDraft: st.noteDraft ? { ...st.noteDraft, noteText: v } : null })); },
+      saveNote: () => { const d = this.state.noteDraft; if (!d) return; this.addHighlight(d.text, (d.noteText || '').trim()); this.setState({ noteDraft: null }); this.toast('想法已存入笔记本'); },
+      cancelNote: () => this.setState({ noteDraft: null }),
+      // 笔记本
+      notebookOpen: s.notebookOpen,
+      noteCountLabel: (s.highlights.length || 0) + ' 条',
+      hasNotes: s.highlights.length > 0,
+      notesEmpty: s.highlights.length === 0,
+      noteList: s.highlights.map(h => ({ key: h.id, text: h.text, where: h.where, note: h.note, hasNote: !!h.note,
+        tag: h.note ? '想法' : '划线', tagColor: h.note ? 'var(--rt-mark-margin)' : 'var(--rt-green-deep)',
+        edge: h.note ? 'var(--rt-mark-margin)' : 'var(--rt-green)',
+        bg: h.note ? 'rgba(176,136,72,0.10)' : 'var(--rt-green-soft)',
+        jump: () => { this.setState({ notebookOpen: false }); setTimeout(() => { if (!this.scrollToText(h.text)) this.toast('该段不在当前章节'); }, 60); },
+        remove: () => this.removeHighlight(h.id) })),
+      // 全文搜索
+      searchOpen: s.searchOpen,
+      searchQuery: s.searchQuery,
+      setSearchQuery: (e) => this.setState({ searchQuery: e.target.value }),
+      ...(() => {
+        const q = (s.searchQuery || '').trim();
+        const pool = this.searchCorpus.concat(s.highlights.map(h => ({ loc: h.note ? '我的想法' : '我的划线', kind: 'mine', text: h.note ? (h.text + ' — ' + h.note) : h.text })));
+        if (!q) return { hasSearchHits: false, searchNoHits: false, searchIdle: true, searchHits: [], searchCountLabel: '' };
+        const hits = [];
+        for (const item of pool) {
+          const i = item.text.indexOf(q);
+          if (i === -1) continue;
+          const pre = (i > 24 ? '…' : '') + item.text.slice(Math.max(0, i - 24), i);
+          const post = item.text.slice(i + q.length, i + q.length + 40) + (item.text.length > i + q.length + 40 ? '…' : '');
+          hits.push({ key: hits.length, loc: item.loc, hit: q, pre, post,
+            locColor: item.kind === 'note' ? 'var(--rt-mark-margin)' : (item.kind === 'mine' ? 'var(--rt-green-deep)' : 'var(--rt-ink-3)'),
+            jump: () => { this.setState({ searchOpen: false, searchQuery: '' }); setTimeout(() => { if (!this.scrollToText(item.text)) this.toast('已定位 · ' + item.loc); }, 60); } });
+        }
+        return { hasSearchHits: hits.length > 0, searchNoHits: hits.length === 0, searchIdle: false,
+          searchHits: hits, searchCountLabel: '找到 ' + hits.length + ' 处' };
+      })(),
+
+      // ── 9 · ask AI ──
+      askOpen: s.askOpen,
+      closeAsk: () => this.setState({ askOpen: false, askHistoryOpen: false }),
+      askHistoryOpen: s.askHistoryOpen,
+      askHistoryClosed: !s.askHistoryOpen,
+      toggleAskHistory: () => this.setState(st => ({ askHistoryOpen: !st.askHistoryOpen })),
+      askHistoryCount: '共 ' + s.askSessions.length + ' 个独立会话',
+      newAskSession: () => this.newAskSession(),
+      askContextLabel: s.askContext ? (s.askContext.kind === 'selection' ? '来自划线 · ' + (s.askContext.para || '正文') : '来自当前屏幕 · 前言') : '',
+      askContextText: s.askContext && s.askContext.kind === 'selection' ? '“' + s.askContext.text + '”' : '当前这一页正文 + 前言',
+      askHistoryItems: s.askSessions.map(se => {
+        const active = se.id === s.askActiveId;
+        return {
+          ...se,
+          title: se.title || ((se.turns.find(t => t.role === 'user') || {}).text || '未命名问题'),
+          contextLabel: se.context.kind === 'selection' ? (se.context.para || '来自划线') : '来自当前屏幕',
+          bg: active ? 'var(--rt-green-soft)' : 'transparent',
+          timeColor: active ? 'var(--rt-green-deep)' : 'var(--rt-ink-3)',
+          switchTo: () => this.setState({ askActiveId: se.id, askContext: se.context, askHistoryOpen: false, strategySuggest: !!se.hasProposal, strategyFeedbackPending: false }),
+        };
+      }),
+      askTurns: ((s.askSessions.find(se => se.id === s.askActiveId) || {}).turns || []).map((t, i) => {
+        const u = t.role === 'user';
+        return { key: i, text: t.text, who: u ? '你' : '✦ 裁读', align: u ? 'flex-end' : 'flex-start',
+          font: u ? 'var(--rt-demo)' : 'var(--rt-serif)', size: u ? '13.5px' : '14px',
+          color: u ? 'var(--rt-ink)' : 'var(--rt-ink-2)', bg: u ? 'var(--rt-bg-2)' : 'transparent',
+          pad: u ? '10px 14px' : '0' };
+      }),
+      askInput: s.askInput,
+      setAskInput: (e) => this.setState({ askInput: e.target.value }),
+      askFollow: () => this.askFollow(),
+      hasAsk: s.askSessions.length > 0,
+      strategySuggest: s.strategySuggest,
+      confirmStrategyChange: () => this.confirmStrategyChange(),
+      feedbackStrategyChange: () => this.feedbackStrategyChange(),
+
+      // ── 10 · deleted ──
+      deletedBooks: [
+        { id: 'd1', title: '追忆似水年华', author: '普鲁斯特', daysLeft: 28, meta: '删除于 6 月 14 日 · 剩 28 天' },
+        { id: 'd2', title: '资本论', author: '马克思', daysLeft: 9, meta: '删除于 5 月 26 日 · 剩 9 天' },
+      ].map(d => ({ ...d, metaColor: d.daysLeft <= 10 ? 'var(--rt-error)' : 'var(--rt-ink-3)', restore: () => this.toast('《' + d.title + '》已恢复到书架') })),
+
+      // ── 12 · stats ──
+      ...(() => {
+        const days = this._days || {};
+        const today = this.today ? this.today() : '';
+        const todaySec = days[today] || 0;
+        // 近 7 天（含今天），无真实数据时给一组示意值
+        const demo = [18, 32, 0, 25, 44, 12, 0];
+        const labels = ['一', '二', '三', '四', '五', '六', '日'];
+        const now = new Date();
+        const week = [];
+        for (let i = 6; i >= 0; i--) {
+          const d = new Date(now); d.setDate(now.getDate() - i);
+          const key = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+          const realMin = days[key] ? Math.round(days[key] / 60) : 0;
+          const mins = i === 0 ? Math.max(realMin, Math.round(todaySec / 60)) : (days[key] ? realMin : demo[6 - i]);
+          week.push({ mins, day: labels[(d.getDay() + 6) % 7], isToday: i === 0 });
+        }
+        const max = Math.max(1, ...week.map(w => w.mins));
+        const totalMin = week.reduce((a, w) => a + w.mins, 0);
+        // 连续天数：从今天往前数有记录（示意最少 3）
+        let streak = 0;
+        for (let i = 0; i < 30; i++) {
+          const d = new Date(now); d.setDate(now.getDate() - i);
+          const key = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+          if (days[key] && days[key] >= 30) streak++; else break;
+        }
+        streak = Math.max(streak, 3);
+        return {
+          statCards: [
+            { value: streak, label: '连续天数' },
+            { value: Math.round(todaySec / 60) || week[6].mins, label: '今日 · 分钟' },
+            { value: (totalMin / 60).toFixed(1), label: '本周 · 小时' },
+          ],
+          weekBars: week.map((w, i) => ({ key: i, mins: w.mins, day: w.day,
+            h: Math.round(6 + (w.mins / max) * 94) + 'px',
+            fill: w.isToday ? 'var(--rt-green)' : (w.mins ? 'var(--rt-green-soft)' : 'var(--rt-bg-2)'),
+            numColor: w.isToday ? 'var(--rt-green-deep)' : 'var(--rt-ink-3)' })),
+          statBooks: [
+            { title: '查拉图斯特拉如是说', pct: 8, remain: '4.3 小时' },
+            { title: '理想国', pct: 36, remain: '2.1 小时' },
+          ].map(b => ({ ...b, pctLabel: b.pct + '%', pctW: b.pct + '%' })),
+        };
+      })(),
+
+      toastVisible: s.toastVisible,
+      toastText: s.toastText,
+    };
+  }
+}
+</script>
+</body>
+</html>

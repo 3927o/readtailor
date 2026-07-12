@@ -1,0 +1,61 @@
+/* ───────────────────────────────────────────────────────────────────
+   ReadTailor 裁读 · Reading themes
+   Three reading surfaces for the reader view: 纸白 paper (default),
+   纸黄 sepia (eye-comfort), 夜间 night. Apply by setting
+   `data-rt-theme="sepia" | "night"` on the reader's root element
+   (default paper needs no attribute). Only the reader re-themes —
+   the letter/landing surfaces always stay on warm paper.
+
+   Rules carried across themes:
+   · never pure white / pure black — warm tints in every mode
+   · green stays the ONLY accent; in night it lightens to keep AA
+   · mark hues re-tuned per theme for contrast on the new paper
+   ─────────────────────────────────────────────────────────────────── */
+
+/* ── 纸黄 sepia — warm parchment, low blue light ── */
+[data-rt-theme="sepia"] {
+  --rt-bg:         #F6EFDF;
+  --rt-bg-2:       #EDE4CE;
+  --rt-bg-card:    #FBF6EA;
+
+  --rt-ink:        #211C12;
+  --rt-ink-2:      #574F3E;
+  --rt-ink-3:      #938A73;
+
+  --rt-green:      #2F6A52;
+  --rt-green-deep: #1F4D3A;
+  --rt-green-soft: rgba(47,106,82,0.12);
+
+  --rt-rule:       rgba(33,28,18,0.14);
+  --rt-rule-2:     rgba(33,28,18,0.07);
+
+  --rt-mark-gloss:  #2F6A52;
+  --rt-mark-fillin: #54689b;
+  --rt-mark-margin: #9c7434;
+}
+
+/* ── 夜间 night — warm charcoal, ink becomes bone ── */
+[data-rt-theme="night"] {
+  --rt-bg:         #191917;
+  --rt-bg-2:       #131311;
+  --rt-bg-card:    #21211E;
+
+  --rt-ink:        #E9E7DF;
+  --rt-ink-2:      #ABA99F;
+  --rt-ink-3:      #75746C;
+
+  --rt-green:      #7FB89F;          /* lifted for AA on dark paper */
+  --rt-green-deep: #A3CFBB;          /* hover goes LIGHTER at night */
+  --rt-green-soft: rgba(127,184,159,0.14);
+
+  --rt-rule:       rgba(233,231,223,0.14);
+  --rt-rule-2:     rgba(233,231,223,0.07);
+
+  --rt-error:      #d2775f;
+
+  --rt-mark-gloss:  #7FB89F;
+  --rt-mark-fillin: #93a7d6;
+  --rt-mark-margin: #cfa96a;
+}
+
+[data-rt-theme="night"] ::selection { background: rgba(127,184,159,0.25); }

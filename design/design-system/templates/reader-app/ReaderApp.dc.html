@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<!-- @template name="阅读 App" description="书架 → 书籍详情 → 阅读页的完整阅读应用外壳（PWA：手机全屏、桌面居中窄栏）" -->
+<helmet>
+  <script src="./ds-base.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; background: var(--rt-bg); }
+    @media (prefers-reduced-motion: no-preference) {
+      .rt-screen { animation: rtRise 360ms cubic-bezier(.2,.7,.2,1) both; }
+      @keyframes rtRise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+    }
+    a { color: var(--rt-green-deep); }
+    a:hover { color: var(--rt-green); }
+  </style>
+</helmet>
+
+<div style="min-height: 100vh; background: var(--rt-bg); color: var(--rt-ink)">
+
+  <!-- ═══ 书架 · Shelf ═══ -->
+  <sc-if value="{{ isShelf }}" hint-placeholder-val="{{ true }}">
+    <div class="rt-screen" data-screen-label="书架 Shelf" style="max-width: 560px; margin: 0 auto; padding: 40px 24px 96px; box-sizing: border-box">
+
+      <header style="display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 28px">
+        <div style="display: flex; flex-direction: column; gap: 5px">
+          <div style="font-family: var(--rt-serif); font-size: 24px; font-weight: 600; letter-spacing: 0.22em">裁读</div>
+          <div style="font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--rt-ink-3)">· ReadTailor ·</div>
+        </div>
+        <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3)">{{ todayLine }}</div>
+      </header>
+
+      <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.SearchField" value="{{ query }}" onChange="{{ setQuery }}" hint-size="100%,40px" style="max-width: 420px; margin-bottom: 34px"></x-import>
+
+      <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3); border-bottom: 1px dashed var(--rt-rule); padding-bottom: 8px; margin-bottom: 6px">在读 · Reading</div>
+
+      <sc-if value="{{ shelfIsList }}" hint-placeholder-val="{{ true }}">
+        <sc-for list="{{ books }}" as="b" hint-placeholder-count="3">
+          <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.BookListItem" title="{{ b.title }}" author="{{ b.author }}" meta="{{ b.meta }}" progress="{{ b.progress }}" onClick="{{ b.open }}" hint-size="100%,86px"></x-import>
+        </sc-for>
+      </sc-if>
+      <sc-if value="{{ shelfIsGrid }}" hint-placeholder-val="{{ false }}">
+        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 24px 20px; padding-top: 18px">
+          <sc-for list="{{ books }}" as="b" hint-placeholder-count="3">
+            <div onClick="{{ b.open }}" style="cursor: pointer; display: flex; flex-direction: column; gap: 8px">
+              <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.BookCover" title="{{ b.title }}" author="{{ b.author }}" hint-size="108px,144px"></x-import>
+              <div style="font-family: var(--rt-serif); font-size: 12.5px; color: var(--rt-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{ b.title }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <div style="margin-top: 40px; text-align: center; font-family: var(--rt-serif); font-size: 12.5px; color: var(--rt-ink-3); letter-spacing: 0.08em">—— 读完一本，胜过收藏一百本。</div>
+    </div>
+
+    <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.BottomNav" value="{{ tab }}" onChange="{{ setTab }}" hint-size="100%,52px"></x-import>
+  </sc-if>
+
+  <!-- ═══ 书籍详情 · Detail ═══ -->
+  <sc-if value="{{ isDetail }}" hint-placeholder-val="{{ false }}">
+    <div class="rt-screen" data-screen-label="书籍详情 Detail" style="max-width: 560px; margin: 0 auto; padding: 22px 24px 72px; box-sizing: border-box">
+
+      <button onClick="{{ backToShelf }}" style="display: inline-flex; align-items: center; gap: 8px; min-height: 44px; border: none; background: transparent; cursor: pointer; font-family: var(--rt-serif); font-size: 14px; color: var(--rt-ink-2); padding: 0" style-hover="color: var(--rt-ink)">‹ 书架</button>
+
+      <div style="display: flex; gap: 26px; align-items: flex-start; margin-top: 26px">
+        <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.BookCover" size="lg" title="{{ book.title }}" author="{{ book.author }}" hint-size="148px,197px"></x-import>
+        <div style="min-width: 0; display: flex; flex-direction: column; gap: 12px; padding-top: 6px">
+          <h1 style="margin: 0; font-family: var(--rt-serif); font-size: 26px; font-weight: 600; line-height: 1.4; letter-spacing: 0.04em">{{ book.title }}</h1>
+          <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3)">{{ book.authorLine }}</div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px">
+            <sc-for list="{{ book.tags }}" as="t" hint-placeholder-count="2">
+              <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Chip" as="span" hint-size="80px,30px">{{ t }}</x-import>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top: 34px; border-top: 1px dashed var(--rt-rule); padding-top: 26px">
+        <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 14px">读前一封信 · Before You Read</div>
+        <p style="margin: 0; font-family: var(--rt-serif); font-size: 15px; line-height: 2.1; color: var(--rt-ink-2); max-width: 38ch">{{ book.brief }}</p>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 16px; margin-top: 36px">
+        <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Button" variant="primary" size="lg" onClick="{{ startReading }}" hint-size="160px,46px">{{ book.cta }}</x-import>
+        <span style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.14em; color: var(--rt-ink-3)">{{ book.progressLine }}</span>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ═══ 阅读 · Reader ═══ -->
+  <sc-if value="{{ isReader }}" hint-placeholder-val="{{ false }}">
+    <div class="rt-screen" data-screen-label="阅读 Reader" data-rt-theme="{{ theme }}" style="min-height: 100vh; background: var(--rt-bg); color: var(--rt-ink); transition: background 240ms">
+
+      <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.ProgressBar" value="{{ readProgress }}" hint-size="100%,2px" style="position: fixed; top: 0; left: 0; right: 0; z-index: 45"></x-import>
+      <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.ReaderToolbar" title="{{ book.title }}" onBack="{{ exitReader }}" actions="{{ toolbarActions }}" hint-size="100%,52px"></x-import>
+
+      <article style="max-width: 680px; margin: 0 auto; padding: 96px 24px 120px; box-sizing: border-box">
+        <div style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 12px">{{ chapterKicker }}</div>
+        <h2 style="margin: 0 0 30px; font-family: var(--rt-serif); font-size: 24px; font-weight: 600; letter-spacing: 0.06em">{{ chapterTitle }}</h2>
+
+        <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.AnnotationCard" kind="lead" title="进山之前，先看一眼地图" bullets="{{ leadBullets }}" hint-size="100%,150px" style="margin-bottom: 30px"></x-import>
+
+        <div style="font-family: var(--rt-serif); font-size: {{ fontPx }}; line-height: 2.15; color: var(--rt-ink); display: flex; flex-direction: column; gap: 1.4em">
+          <p style="margin: 0">查拉图斯特拉三十岁的时候，离开了他的故乡和故乡的湖，走进山里。在山上，他享受着自己的精神与孤独，十年不倦。</p>
+          <p style="margin: 0">但最终，他的心改变了。一天清晨，他与朝霞一同醒来，走到太阳面前，对它说：<span onClick="{{ toggleGloss }}" style="border-bottom: 1px dotted var(--rt-mark-gloss); cursor: pointer; color: var(--rt-green-deep)" style-hover="background: var(--rt-green-soft)">你伟大的星球啊</span>，假如没有你所照耀的人们，你的幸福何在？</p>
+          <sc-if value="{{ glossOpen }}" hint-placeholder-val="{{ false }}">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.AnnotationCard" kind="margin" anchor="你伟大的星球啊" trigger="触发 · 点按正文中的虚线词" hint-size="100%,110px">这句对太阳说的话，是全书的第一个隐喻：给予者需要接受者。查拉图斯特拉像太阳一样"满溢"，所以要下山，把智慧分给人们。</x-import>
+          </sc-if>
+          <p style="margin: 0">十年来，你在这里升上我的洞穴：假如没有我、我的鹰和我的蛇，你会厌倦你的光和这条路吧。</p>
+          <p style="margin: 0">看啊，我厌倦了我的智慧，像蜜蜂采了过多的蜜。我需要伸出来的手。</p>
+        </div>
+
+        <div style="margin-top: 56px; text-align: center; font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--rt-ink-3)">· 01 / 22 ·</div>
+      </article>
+
+      <!-- Aa 设置 -->
+      <sc-if value="{{ aaOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeSheets }}" style="position: fixed; inset: 0; z-index: 48; background: rgba(10,10,9,0.18)"></div>
+        <div data-screen-label="Aa 阅读设置" style="position: fixed; left: 50%; transform: translateX(-50%); bottom: 0; width: min(560px, 100%); box-sizing: border-box; z-index: 50; background: var(--rt-bg-card); border: 1px solid var(--rt-rule); border-bottom: none; border-radius: 14px 14px 0 0; box-shadow: 0 -6px 24px -16px rgba(20,40,30,0.25); padding: 22px 24px calc(24px + env(safe-area-inset-bottom, 0px))">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px">
+            <span style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3)">阅读设置 · Aa</span>
+            <button onClick="{{ closeSheets }}" aria-label="关闭" style="border: none; background: transparent; cursor: pointer; font-family: var(--rt-demo); font-size: 15px; color: var(--rt-ink-3); min-width: 44px; min-height: 32px" style-hover="color: var(--rt-ink)">×</button>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 20px">
+            <div style="display: flex; align-items: center; gap: 16px">
+              <span style="font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-2); min-width: 42px">字号</span>
+              <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Slider" label="字号" min="{{ fontMin }}" max="{{ fontMax }}" value="{{ fontSize }}" onChange="{{ setFontSize }}" showValue="{{ true }}" format="{{ fmtPx }}" hint-size="100%,24px" style="flex: 1"></x-import>
+            </div>
+            <div style="display: flex; align-items: center; gap: 16px">
+              <span style="font-family: var(--rt-demo); font-size: 13px; color: var(--rt-ink-2); min-width: 42px">主题</span>
+              <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Segmented" label="阅读主题" value="{{ theme }}" onChange="{{ setTheme }}" options="{{ themeOptions }}" hint-size="220px,34px"></x-import>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- 目录 -->
+      <sc-if value="{{ tocOpen }}" hint-placeholder-val="{{ false }}">
+        <div onClick="{{ closeSheets }}" style="position: fixed; inset: 0; z-index: 48; background: rgba(10,10,9,0.18)"></div>
+        <div data-screen-label="目录 TOC" style="position: fixed; top: 0; bottom: 0; left: 0; width: min(340px, 86vw); z-index: 50; background: var(--rt-bg-card); border-right: 1px solid var(--rt-rule); box-shadow: 6px 0 24px -16px rgba(20,40,30,0.25); display: flex; flex-direction: column">
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 18px 18px 12px">
+            <span style="font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3)">目录 · Contents</span>
+            <button onClick="{{ closeSheets }}" aria-label="关闭" style="border: none; background: transparent; cursor: pointer; font-family: var(--rt-demo); font-size: 15px; color: var(--rt-ink-3); min-width: 44px; min-height: 32px" style-hover="color: var(--rt-ink)">×</button>
+          </div>
+          <div style="flex: 1; overflow-y: auto; padding: 0 10px 20px">
+            <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.TOCList" chapters="{{ chapters }}" current="{{ currentChapter }}" onSelect="{{ selectChapter }}" hint-size="100%,300px"></x-import>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <x-import component-from-global-scope="ReadTailorDesignSystem_39423e.Toast" visible="{{ toastVisible }}" hint-size="160px,40px">{{ toastText }}</x-import>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;shelfView&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;list&quot;, &quot;grid&quot;], &quot;default&quot;: &quot;list&quot;, &quot;tsType&quot;: &quot;'list' | 'grid'&quot;, &quot;section&quot;: &quot;书架&quot; }
+}">
+class Component extends DCLogic {
+  state = {
+    screen: 'shelf',        // shelf | detail | reader
+    tab: 'shelf',
+    query: '',
+    bookId: 'zara',
+    theme: 'paper',
+    fontSize: 17,
+    aaOpen: false,
+    tocOpen: false,
+    glossOpen: false,
+    currentChapter: 'c1',
+    toastVisible: false,
+    toastText: '',
+  };
+
+  books = [
+    { id: 'zara', title: '查拉图斯特拉如是说', author: '尼采', authorLine: 'NIETZSCHE · 1883', meta: '读到 第一章', progress: 8,
+      tags: ['哲学', '需要向导', '22 章'],
+      brief: '你好，我的朋友。这本书像一座没有路标的森林——句子是诗，路却要自己找。别急，我会在每一章之前给你一张小地图，在难懂的句子旁边留一张便签。卡住不代表你不行。',
+      cta: '继续阅读', progressLine: 'CHAPTER 01 · 8%' },
+    { id: 'being', title: '存在与时间', author: '海德格尔', authorLine: 'HEIDEGGER · 1927', meta: '未开始', progress: 0,
+      tags: ['哲学', '很硬', '需要耐心'],
+      brief: '这可能是你书架上最难的一本。我们不求快——每天一小节，我先替你把术语翻译成人话。',
+      cta: '开始阅读', progressLine: 'NOT STARTED' },
+    { id: 'republic', title: '理想国', author: '柏拉图', authorLine: 'PLATO · C. 375 BC', meta: '读到 卷四', progress: 36,
+      tags: ['对话体', '入门友好'],
+      brief: '苏格拉底在对话里绕圈子，是故意的。跟着问题走，别急着要答案。',
+      cta: '继续阅读', progressLine: 'BOOK IV · 36%' },
+  ];
+
+  chaptersData = [
+    { id: 'pre', title: '查拉图斯特拉的前言', read: true },
+    { id: 'c1', title: '三种变形' },
+    { id: 'c2', title: '道德的讲座' },
+    { id: 'c3', title: '背后世界论者' },
+    { id: 'c4', title: '轻蔑肉体者' },
+  ];
+
+  toast(text) {
+    clearTimeout(this._toastT);
+    this.setState({ toastVisible: true, toastText: text });
+    this._toastT = setTimeout(() => this.setState({ toastVisible: false }), 2400);
+  }
+
+  renderVals() {
+    const s = this.state;
+    const shelfView = this.props.shelfView ?? 'list';
+    const book = this.books.find(b => b.id === s.bookId) || this.books[0];
+    const now = new Date();
+    return {
+      isShelf: s.screen === 'shelf',
+      isDetail: s.screen === 'detail',
+      isReader: s.screen === 'reader',
+      shelfIsList: shelfView === 'list',
+      shelfIsGrid: shelfView === 'grid',
+      todayLine: 'ISSUE · ' + now.getFullYear() + '.' + String(now.getMonth() + 1).padStart(2, '0'),
+
+      tab: s.tab,
+      setTab: (v) => this.setState({ tab: v }),
+      query: s.query,
+      setQuery: (e) => this.setState({ query: e.target.value }),
+
+      books: this.books
+        .filter(b => !s.query || b.title.includes(s.query) || b.author.includes(s.query))
+        .map(b => ({ ...b, open: () => this.setState({ bookId: b.id, screen: 'detail' }) })),
+
+      book,
+      backToShelf: () => this.setState({ screen: 'shelf' }),
+      startReading: () => this.setState({ screen: 'reader', glossOpen: false, aaOpen: false, tocOpen: false }),
+      exitReader: () => this.setState({ screen: 'detail' }),
+
+      theme: s.theme,
+      setTheme: (v) => this.setState({ theme: v }),
+      themeOptions: [
+        { value: 'paper', label: '纸白' },
+        { value: 'sepia', label: '纸黄' },
+        { value: 'night', label: '夜间' },
+      ],
+      fontSize: s.fontSize,
+      fontMin: 14,
+      fontMax: 24,
+      setFontSize: (v) => this.setState({ fontSize: v }),
+      fontPx: s.fontSize + 'px',
+      fmtPx: (v) => v + 'px',
+
+      readProgress: 8,
+      toolbarActions: [
+        { glyph: '≡', label: '目录', onClick: () => this.setState({ tocOpen: true, aaOpen: false }) },
+        { glyph: 'Aa', label: '阅读设置', onClick: () => this.setState({ aaOpen: true, tocOpen: false }) },
+        { glyph: '✦', label: '问 AI', onClick: () => this.toast('AI 伴读即将到来') },
+      ],
+      aaOpen: s.aaOpen,
+      tocOpen: s.tocOpen,
+      closeSheets: () => this.setState({ aaOpen: false, tocOpen: false }),
+
+      chapterKicker: '第一部 · CHAPTER 01',
+      chapterTitle: '查拉图斯特拉的前言',
+      leadBullets: [
+        '这一章是全书的"序幕"：主角为什么下山。',
+        '记住一个画面：太阳需要被照耀的人。',
+        '读不懂的句子先跳过，虚线词可以点开看便签。',
+      ],
+      glossOpen: s.glossOpen,
+      toggleGloss: () => this.setState({ glossOpen: !s.glossOpen }),
+
+      chapters: this.chaptersData,
+      currentChapter: s.currentChapter,
+      selectChapter: (id) => { this.setState({ currentChapter: id, tocOpen: false }); this.toast('已跳转 · ' + (this.chaptersData.find(c => c.id === id) || {}).title); },
+
+      toastVisible: s.toastVisible,
+      toastText: s.toastText,
+    };
+  }
+}
+
+</script>
+</body>
+</html>

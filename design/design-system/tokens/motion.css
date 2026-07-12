@@ -1,0 +1,37 @@
+/* ───────────────────────────────────────────────────────────────────
+   ReadTailor 裁读 · Motion & effects
+   Slow, soft, with lift. Almost everything uses one ease-out curve for
+   consistency. Reveals fade + rise + (for narration) deblur. Controls
+   inside the product fade plainly — controls shouldn't "perform" like a
+   sentence does. Always respect prefers-reduced-motion.
+   ─────────────────────────────────────────────────────────────────── */
+:root {
+  /* ── easing ── */
+  --rt-ease:     cubic-bezier(.2,.7,.2,1);  /* @kind other */
+  --rt-ease-out: cubic-bezier(.4,0,.2,1);   /* @kind other */
+
+  /* ── durations ── */
+  --rt-char-reveal:  1100ms; /* @kind other */
+  --rt-char-stagger: 55ms; /* @kind other */
+  --rt-scene-enter:  720ms; /* @kind other */
+  --rt-scene-leave:  680ms; /* @kind other */
+  --rt-hover:        160ms; /* @kind other */
+
+  /* ── shadow (used sparingly — no generic SaaS card stacks) ── */
+  --rt-shadow-phone: 0 1px 2px rgba(0,0,0,0.1),
+                     0 30px 60px -30px rgba(0,0,0,0.35),
+                     inset 0 0 0 1px rgba(255,255,255,0.06);
+  --rt-shadow-bubble: 0 18px 30px -12px rgba(0,0,0,0.35);
+  --rt-shadow-card:   0 6px 24px -16px rgba(20,40,30,0.25);   /* brief card */
+  --rt-shadow-pop:    0 14px 34px -12px rgba(25,40,30,0.34),
+                      0 2px 8px -4px rgba(0,0,0,0.12);        /* popover    */
+
+  /* ── glass (masthead backdrop) ── */
+  --rt-glass: saturate(150%) blur(10px); /* @kind other */
+
+  /* ── semantic aliases ── */
+  --ease:        var(--rt-ease);
+  --ease-exit:   var(--rt-ease-out);
+  --shadow-phone: var(--rt-shadow-phone);
+  --shadow-pop:   var(--rt-shadow-pop);
+}

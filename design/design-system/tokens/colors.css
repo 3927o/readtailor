@@ -1,0 +1,50 @@
+/* ───────────────────────────────────────────────────────────────────
+   ReadTailor 裁读 · Color
+   "A quiet letter" — warm paper, ink black, a single sage-green accent.
+   ~90% of any screen is paper + ink/grey; green is a highlighter, never
+   a fill. Base ramps first, then semantic aliases.
+   ─────────────────────────────────────────────────────────────────── */
+:root {
+  /* ── paper / surfaces (warm, never pure white) ── */
+  --rt-bg:         #FAFAF6;          /* warm paper — the canvas           */
+  --rt-bg-2:       #F0EFE9;          /* soft grey card base               */
+  --rt-bg-card:    #FFFFFF;          /* phone-screen / floating-card white */
+
+  /* ── ink / text (warm near-black, never pure #000) ── */
+  --rt-ink:        #0A0A09;          /* primary — headings, body          */
+  --rt-ink-2:      #4E4D49;          /* secondary — body, captions        */
+  --rt-ink-3:      #8E8C85;          /* tertiary — labels, hints, placeholder */
+
+  /* ── brand green (sage / pine — the ONLY chromatic note) ── */
+  --rt-green:      #2F6A52;          /* accent — emphasis, CTA, selected  */
+  --rt-green-deep: #1F4D3A;          /* italic emphasis, button :hover    */
+  --rt-green-soft: rgba(47,106,82,0.10); /* annotation bg, selected state  */
+
+  /* ── rules / hairlines ── */
+  --rt-rule:       rgba(10,10,9,0.12);   /* hairline rules, borders       */
+  --rt-rule-2:     rgba(10,10,9,0.06);   /* lighter underlines / dashes   */
+
+  /* ── status (used sparingly) ── */
+  --rt-error:      #b4452f;          /* form errors only — brick, not bright red */
+
+  /* secondary annotation hues — ONLY for the reader's 3-way mark legend
+     (释义 green / 推理补全 indigo / 脉络 amber). Not general-purpose. */
+  --rt-mark-gloss:  #2F6A52;         /* 释义 · gloss  (dotted underline)  */
+  --rt-mark-fillin: #5b73a8;         /* 推理补全 · fill-in (dashed)        */
+  --rt-mark-margin: #b08848;         /* 脉络 · margin (wavy)               */
+
+  /* ── semantic aliases (prefer these in product CSS) ── */
+  --surface-page:    var(--rt-bg);
+  --surface-sunken:  var(--rt-bg-2);
+  --surface-card:    var(--rt-bg-card);
+  --text-strong:     var(--rt-ink);
+  --text-body:       var(--rt-ink-2);
+  --text-muted:      var(--rt-ink-3);
+  --accent:          var(--rt-green);
+  --accent-strong:   var(--rt-green-deep);
+  --accent-wash:     var(--rt-green-soft);
+  --border-hairline: var(--rt-rule);
+  --border-faint:    var(--rt-rule-2);
+}
+
+::selection { background: var(--rt-green-soft); }

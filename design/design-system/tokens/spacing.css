@@ -1,0 +1,42 @@
+/* ───────────────────────────────────────────────────────────────────
+   ReadTailor 裁读 · Space, measure & radius
+   Lots of air. Narrow measures. The signature radius is asymmetric:
+   square on the left (where the green border lives), rounded on the right.
+   ─────────────────────────────────────────────────────────────────── */
+:root {
+  /* ── spacing scale (8-based, with a 4 half-step) ── */
+  --rt-space-1:  4px;
+  --rt-space-2:  8px;
+  --rt-space-3:  12px;
+  --rt-space-4:  16px;
+  --rt-space-5:  22px;
+  --rt-space-6:  32px;
+  --rt-space-7:  48px;
+  --rt-space-8:  64px;
+  --rt-space-9:  96px;
+  --rt-space-10: 110px;
+
+  /* ── stage / scene padding (the landing's generous frame) ── */
+  --rt-stage-padding:        110px 64px;
+  --rt-stage-padding-mobile: 90px 18px;
+
+  /* ── measures (max content width — text never fills the screen) ── */
+  --rt-measure-narration: 38ch;     /* one-sentence narration column     */
+  --rt-measure-demo:      1000px;    /* product demo split                */
+  --rt-measure-letter:    720px;     /* the letter / reading column       */
+
+  /* ── radius ── */
+  --rt-radius-card:   0 4px 4px 0;   /* signature: square left, round right */
+  --rt-radius-soft:   8px;           /* floating cards, popovers          */
+  --rt-radius-pill:   999px;         /* buttons, chips, progress dots     */
+  --rt-radius-phone:  38px;          /* phone bezel                       */
+  --rt-radius-screen: 28px;          /* phone screen interior             */
+
+  /* ── signature border — the annotation card's left edge ── */
+  --rt-accent-left: 2px solid var(--rt-green);
+
+  /* ── semantic aliases ── */
+  --radius-card:  var(--rt-radius-card);
+  --radius-soft:  var(--rt-radius-soft);
+  --radius-pill:  var(--rt-radius-pill);
+}

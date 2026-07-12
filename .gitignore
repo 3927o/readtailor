@@ -1,0 +1,15 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+.pnpm-store/
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.log
+
+# The extracted, reviewed contents are the repository baseline.
+readtailor-handoff-*.zip
+

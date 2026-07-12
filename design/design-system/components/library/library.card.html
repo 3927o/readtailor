@@ -1,0 +1,49 @@
+<!-- @dsCard group="Components" viewport="720x460" name="Library · BookCover / ListItem / Shelf / Search" subtitle="书架 — typographic jackets, quiet rows, underline search" -->
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../../styles.css" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>
+  body { margin: 0; background: var(--rt-bg); padding: 26px 30px; }
+  .group { margin-bottom: 22px; }
+  .glabel { font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+  const { BookCover, BookListItem, ShelfGrid, SearchField } = window.ReadTailorDesignSystem_39423e;
+  function Demo() {
+    const [q, setQ] = React.useState('');
+    return (
+      <React.Fragment>
+        <div className="group" style={{maxWidth: 380}}>
+          <div className="glabel">SearchField</div>
+          <SearchField value={q} onChange={e => setQ(e.target.value)} />
+        </div>
+        <div className="group">
+          <div className="glabel">ShelfGrid · BookCover</div>
+          <ShelfGrid min={96} gap={20} style={{maxWidth: 520}}>
+            <BookCover size="sm" title="查拉图斯特拉如是说" author="Nietzsche" />
+            <BookCover size="sm" title="存在与时间" author="Heidegger" />
+            <BookCover size="sm" title="纯粹理性批判" author="Kant" />
+            <BookCover size="sm" title="理想国" author="Plato" />
+          </ShelfGrid>
+        </div>
+        <div className="group" style={{marginBottom: 0, maxWidth: 560}}>
+          <div className="glabel">BookListItem</div>
+          <BookListItem title="查拉图斯特拉如是说" author="尼采" meta="读到 第三章" progress={42} onClick={() => {}} />
+          <BookListItem title="存在与时间" author="海德格尔" meta="未开始" onClick={() => {}} />
+        </div>
+      </React.Fragment>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<Demo />);
+</script>
+</body>
+</html>

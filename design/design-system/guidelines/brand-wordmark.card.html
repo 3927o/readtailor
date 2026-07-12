@@ -1,0 +1,21 @@
+<!-- @dsCard group="Brand" viewport="700x190" name="Wordmark" subtitle="裁读 · ReadTailor — serif Chinese mark over a tracked mono latin line" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; background: var(--rt-bg); display: grid; place-items: center; height: 190px; }
+  .logo { display: inline-flex; flex-direction: column; align-items: center; gap: 10px; }
+  .zh { font-family: var(--rt-serif); font-size: 50px; font-weight: 700; letter-spacing: 0.14em; color: var(--rt-ink); padding-left: 0.14em; }
+  .en { font-family: var(--rt-mono); font-size: 10px; letter-spacing: 0.42em; text-transform: uppercase; color: var(--rt-green); display: flex; align-items: center; gap: 12px; }
+  .en::before, .en::after { content:""; width: 22px; height: 1px; background: var(--rt-rule); }
+</style>
+</head>
+<body>
+  <div class="logo">
+    <span class="zh">裁读</span>
+    <span class="en">ReadTailor</span>
+  </div>
+</body>
+</html>

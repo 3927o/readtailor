@@ -1,0 +1,60 @@
+<!-- @dsCard group="Components" viewport="700x440" name="Chrome · Masthead / Progress / Dots / Phone" subtitle="Editorial frame: top bar, progress sliver, page dots, device shell" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../../styles.css" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>
+  body { margin: 0; background: var(--rt-bg); padding: 0; }
+  .glabel { font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3); margin: 0 0 12px; }
+  .stage { padding: 24px 30px 30px; }
+  .split { display: grid; grid-template-columns: 1fr auto; gap: 30px; align-items: center; margin-top: 26px; }
+  .relbox { position: relative; height: 8px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+  const { Masthead, ProgressBar, NavDots, PhoneFrame } = window.ReadTailorDesignSystem_39423e;
+  function Demo() {
+    const [pg, setPg] = React.useState(2);
+    return (
+      <React.Fragment>
+        <Masthead fixed={false} issue={<span><span style={{color:'var(--rt-green)'}}>BP</span> · 2026</span>} />
+        <div className="stage">
+          <div className="glabel" style={{marginTop:6}}>Progress · 阅读进度</div>
+          <div className="relbox">
+            <ProgressBar value={62} gradient style={{position:'relative', borderRadius:999}} />
+          </div>
+          <div className="split">
+            <div>
+              <div className="glabel">Nav Dots</div>
+              <NavDots count={8} current={pg} specialIndex={7} onJump={setPg} style={{marginBottom:24}} />
+              <div className="glabel">Phone shell interior speaks the UI sans</div>
+            </div>
+            <div>
+              <div className="glabel">Phone Frame</div>
+              <PhoneFrame width={210} height={300}>
+                <div style={{padding:'40px 16px 16px', height:'100%', boxSizing:'border-box', fontFamily:'var(--rt-demo)'}}>
+                  <div style={{display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--rt-ink-3)', borderBottom:'1px solid var(--rt-rule-2)', paddingBottom:8, marginBottom:10}}>
+                    <span>‹</span><span style={{fontWeight:600, color:'var(--rt-ink)'}}>《罪与罚》</span><span>···</span>
+                  </div>
+                  <div style={{fontFamily:'var(--rt-serif)', fontSize:11.5, lineHeight:1.85, color:'var(--rt-ink)'}}>
+                    拉斯柯尔尼科夫已经五天没怎么出门，今天却走进了这间下等酒馆。
+                  </div>
+                </div>
+              </PhoneFrame>
+            </div>
+          </div>
+        </div>
+      </React.Fragment>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<Demo />);
+</script>
+</body>
+</html>

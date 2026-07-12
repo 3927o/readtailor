@@ -1,0 +1,29 @@
+<!-- @dsCard group="Type" viewport="700x180" name="UI Sans · the Product voice" subtitle="未来荧黑 Glow Sans SC — controls inside the phone shell" -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; background: var(--rt-bg); padding: 26px 30px; }
+  .lab { font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--rt-green); margin-bottom: 18px; display:flex; align-items:center; gap:12px; }
+  .lab::before { content:""; width:28px; height:1px; background: var(--rt-green); }
+  .demo { font-family: var(--rt-demo); }
+  .big { font-size: 24px; font-weight: 600; color: var(--rt-ink); }
+  .chips { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+  .chip { font-family: var(--rt-demo); font-size: 12.5px; border: 1px solid var(--rt-rule); border-radius: 999px; padding: 7px 13px; color: var(--rt-ink-2); }
+  .chip.on { color: var(--rt-green-deep); background: var(--rt-green-soft); border-color: var(--rt-green); font-weight: 600; }
+  .meta { font-family: var(--rt-mono); font-size: 9.5px; letter-spacing: 0.1em; color: var(--rt-ink-3); margin-top: 16px; }
+</style>
+</head>
+<body>
+  <div class="lab">Product UI · 手机壳内</div>
+  <div class="big demo">就这段问问 AI</div>
+  <div class="chips">
+    <span class="chip">这段在说什么</span>
+    <span class="chip on">真正读懂</span>
+    <span class="chip">找某个论点</span>
+  </div>
+  <div class="meta">Glow Sans SC · controls, chips, app chrome — quiet, geometric</div>
+</body>
+</html>

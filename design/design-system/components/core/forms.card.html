@@ -1,0 +1,67 @@
+<!-- @dsCard group="Components" viewport="720x560" name="Core · Forms & Feedback" subtitle="Toggle / Slider / Segmented / TextField / Toast / EmptyState" -->
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../../styles.css" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>
+  body { margin: 0; background: var(--rt-bg); padding: 26px 30px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; max-width: 660px; }
+  .group { margin-bottom: 20px; }
+  .glabel { font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--rt-ink-3); margin-bottom: 12px; }
+  .srow { display: flex; align-items: center; justify-content: space-between; gap: 14px; font-family: var(--rt-demo); font-size: 13.5px; color: var(--rt-ink-2); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+  const { Toggle, Slider, Segmented, TextField, Toast, EmptyState, Button } = window.ReadTailorDesignSystem_39423e;
+  function Demo() {
+    const [night, setNight] = React.useState(true);
+    const [fs, setFs] = React.useState(17);
+    const [theme, setTheme] = React.useState('sepia');
+    const [name, setName] = React.useState('');
+    return (
+      <React.Fragment>
+        <div className="cols">
+          <div>
+            <div className="group">
+              <div className="glabel">Toggle</div>
+              <div className="srow">夜间自动切换 <Toggle checked={night} onChange={setNight} label="夜间自动切换" /></div>
+            </div>
+            <div className="group">
+              <div className="glabel">Slider · 字号</div>
+              <Slider label="字号" min={14} max={24} value={fs} onChange={setFs} showValue format={v => v + 'px'} />
+            </div>
+            <div className="group" style={{marginBottom: 0}}>
+              <div className="glabel">Segmented · 阅读主题</div>
+              <Segmented label="阅读主题" value={theme} onChange={setTheme}
+                options={[{value:'paper',label:'纸白'},{value:'sepia',label:'纸黄'},{value:'night',label:'夜间'}]} />
+            </div>
+          </div>
+          <div>
+            <div className="group">
+              <div className="glabel">TextField</div>
+              <TextField label="昵称" value={name} onChange={e => setName(e.target.value)} placeholder="怎么称呼你？" />
+            </div>
+            <div className="group" style={{marginBottom: 0}}>
+              <div className="glabel">EmptyState</div>
+              <EmptyState title="书架还空着" style={{padding: '18px 10px'}}
+                action={<Button variant="secondary" size="sm">挑一本书</Button>}>
+                挑一本你一直想读、却总是读不完的书。
+              </EmptyState>
+            </div>
+          </div>
+        </div>
+        <Toast visible>已加入书架</Toast>
+      </React.Fragment>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<Demo />);
+</script>
+</body>
+</html>
