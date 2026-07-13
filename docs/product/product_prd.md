@@ -8,11 +8,11 @@
 关联文档：
 
 - [`product_mvp_plan.md`](product_mvp_plan.md)：产品方向与 MVP 边界
-- [`agent_design.md`](agent_design.md)：Agent 职责、工具和权限边界
-- [`reading_contract.md`](reading_contract.md)：阅读节点、block、锚点和阅读器数据契约
-- [`normalized_book_spec.md`](normalized_book_spec.md)：规范化书籍 `nb-1.0` 契约
-- [`technical_architecture_v2.md`](technical_architecture_v2.md)：当前 TypeScript 产品的快速实现方案
-- [`technical_architecture.md`](technical_architecture.md)：未来线上化和系统加固的参考方案
+- [`agent_design.md`](../architecture/agent_design.md)：Agent 职责、工具和权限边界
+- [`reading_contract.md`](../contracts/reading_contract.md)：阅读节点、block、锚点和阅读器数据契约
+- [`normalized_book_spec.md`](../contracts/normalized_book_spec.md)：规范化书籍 `nb-1.0` 契约
+- [`technical_architecture_v2.md`](../architecture/technical_architecture_v2.md)：当前 TypeScript 产品的快速实现方案
+- [`technical_architecture.md`](../architecture/technical_architecture.md)：未来线上化和系统加固的参考方案
 
 本文档的目的不是论证市场、商业模式或系统容量，而是明确首发网页产品必须呈现的功能、
 交互、状态、数据规则和验收条件，使实现方可以按本文直接完成产品。

@@ -3,7 +3,7 @@
 生成日期：2026-07-13
 
 > 当前仓库已由交接包初始化。实现时先阅读
-> [`docs/implementation_baseline.md`](docs/implementation_baseline.md)，其中冻结了当前自用上线目标、
+> [`docs/project/implementation_baseline.md`](docs/project/implementation_baseline.md)，其中冻结了当前自用上线目标、
 > 云服务取舍和实施顺序。
 
 ## 当前工程
@@ -40,13 +40,14 @@ pnpm check
 
 按以下顺序阅读，不要先从旧技术方案或设计原型反推产品行为：
 
-1. `docs/product_prd.md`：用户可见行为和 MVP 验收基线。
-2. `docs/reading_contract.md`：阅读节点、block、UTF-16 range、进度、活动和统计契约。
-3. `docs/normalized_book_spec.md`：规范化书籍 `nb-1.0` 契约。
-4. `docs/agent_design.md`：Agent 职责、工具和权限。
-5. `docs/technical_architecture_v2.md`：当前快速实现方案。
-6. `docs/technical_architecture.md`：未来线上化与系统加固参考，不是当前实现要求。
-7. `docs/implementation_baseline.md`：本仓库当前已冻结的实施范围和顺序。
+1. `docs/README.md`：文档分类、阅读顺序和优先级。
+2. `docs/project/implementation_baseline.md`：本仓库当前已冻结的实施范围和顺序。
+3. `docs/product/product_prd.md`：用户可见行为和 MVP 验收基线。
+4. `docs/contracts/reading_contract.md`：阅读节点、block、UTF-16 range、进度、活动和统计契约。
+5. `docs/contracts/normalized_book_spec.md`：规范化书籍 `nb-1.0` 契约。
+6. `docs/architecture/agent_design.md`：Agent 职责、工具和权限。
+7. `docs/architecture/technical_architecture_v2.md`：当前快速实现方案。
+8. `docs/architecture/technical_architecture.md`：未来线上化与系统加固参考，不是当前实现要求。
 
 设计入口：
 
@@ -134,7 +135,7 @@ pnpm check
 - range 使用 `section_id + segment + block_index + UTF-16 offset`。
 
 `tools/build_reading_nodes.py` 是现有生成器原型，不是完整生产实现。它尚未覆盖阅读契约要求的完整
-outline、裁读资格和全书位置索引。接手者必须按 `reading_contract.md` 补齐，而不是把当前脚本输出
+outline、裁读资格和全书位置索引。接手者必须按 `docs/contracts/reading_contract.md` 补齐，而不是把当前脚本输出
 直接认定为 ready package。
 
 ## 包内容
@@ -154,7 +155,8 @@ fixtures/   一个小型 EPUB 输入样例，不是已完成的 ready package
 
 本包按生成时的工作区内容制作，包含尚未提交的当前版本：
 
-- 产品源：`docs/agent_design.md`、`docs/product_prd.md`、`docs/reading_contract.md` 有修改；两版技术
+- 产品源：`docs/architecture/agent_design.md`、`docs/product/product_prd.md`、
+  `docs/contracts/reading_contract.md` 有修改；两版技术
   方案文件尚未跟踪。
 - 设计源：`prototypes/readtailor-mobile.dc.html`、`prototypes/readtailor-mvp.dc.html` 有未提交修改。
 

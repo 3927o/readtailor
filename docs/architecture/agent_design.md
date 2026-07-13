@@ -2,10 +2,10 @@
 
 **版本**：v0.2
 **日期**：2026-07-13
-**关联产品文档**：[`product_mvp_plan.md`](product_mvp_plan.md)
-**规范化契约**：[`normalized_book_spec.md`](normalized_book_spec.md)
+**关联产品文档**：[`product_mvp_plan.md`](../product/product_mvp_plan.md)
+**规范化契约**：[`normalized_book_spec.md`](../contracts/normalized_book_spec.md)
 
-**阅读数据契约**：[`reading_contract.md`](reading_contract.md)
+**阅读数据契约**：[`reading_contract.md`](../contracts/reading_contract.md)
 
 本文档定义首发产品中各类 Agent 的职责、输入输出、工具权限、完成条件和运行边界。
 目标是让 Agent 可以直接进入实现，而不是只停留在“这里调用一下 AI”的描述上。

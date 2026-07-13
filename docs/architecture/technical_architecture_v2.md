@@ -2,14 +2,15 @@
 
 **版本**：v2  
 **日期**：2026-07-13  
-**状态**：当前实现方案，已于 2026-07-13 按 `implementation_baseline.md` 冻结
+**状态**：当前实现方案，已于 2026-07-13 按
+[`implementation_baseline.md`](../project/implementation_baseline.md) 冻结
 
 关联文档：
 
-- [`product_prd.md`](product_prd.md)：产品流程和验收标准
+- [`product_prd.md`](../product/product_prd.md)：产品流程和验收标准
 - [`agent_design.md`](agent_design.md)：Agent 分工和工具设计
-- [`reading_contract.md`](reading_contract.md)：阅读节点、block 和锚点契约
-- [`normalized_book_spec.md`](normalized_book_spec.md)：规范化书籍契约
+- [`reading_contract.md`](../contracts/reading_contract.md)：阅读节点、block 和锚点契约
+- [`normalized_book_spec.md`](../contracts/normalized_book_spec.md)：规范化书籍契约
 
 本文面向产品的第一个可用版本。目标是在不破坏核心产品体验的前提下，尽快完成完整流程，
 而不是提前建设成熟平台所需的全部可靠性、扩展性和治理能力。

@@ -6,10 +6,10 @@
 
 关联文档：
 
-- [`product_prd.md`](product_prd.md)：产品行为与最终验收标准
+- [`product_prd.md`](../product/product_prd.md)：产品行为与最终验收标准
 - [`agent_design.md`](agent_design.md)：Agent 职责、工具和权限边界
-- [`reading_contract.md`](reading_contract.md)：阅读节点、block 和锚点契约
-- [`normalized_book_spec.md`](normalized_book_spec.md)：规范化书籍契约
+- [`reading_contract.md`](../contracts/reading_contract.md)：阅读节点、block 和锚点契约
+- [`normalized_book_spec.md`](../contracts/normalized_book_spec.md)：规范化书籍契约
 
 本文定义新 TypeScript 产品的系统边界、模块职责、数据模型、异步执行、接口约定、部署方式、
 测试策略和实施顺序。它不替代上述产品与数据契约；实现冲突时，产品行为以 PRD 为准，书籍和

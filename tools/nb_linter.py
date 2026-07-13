@@ -1,6 +1,6 @@
 """nb-1.0 规范化书籍统一契约的 Linter。
 
-对着 docs/normalized_book_spec.md 逐节检查。修复了初版的 6 处 bug + 3 处误报，
+对着 docs/contracts/normalized_book_spec.md 逐节检查。修复了初版的 6 处 bug + 3 处误报，
 补齐了 §16 合规清单里之前漏掉的约 20 项检查。
 
 用法：

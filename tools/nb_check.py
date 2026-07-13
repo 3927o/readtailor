@@ -5,7 +5,7 @@
     python tools/nb_check.py book.html --baseline book.epub   # 三层完整校验
 
 三层分工：
-- 结构层（永远跑）：产物自身是否符合 docs/normalized_book_spec.md 的结构规则。
+- 结构层（永远跑）：产物自身是否符合 docs/contracts/normalized_book_spec.md 的结构规则。
   规则实现在同目录 nb_linter.py。
 - 包资源层（永远跑）：assets/... 路径安全且引用文件真实存在。
 - 保真层（提供 --baseline 时跑）：产物相对源 EPUB 有没有丢内容。
