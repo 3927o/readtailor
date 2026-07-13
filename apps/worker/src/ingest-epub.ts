@@ -251,7 +251,7 @@ async function main(): Promise<void> {
       modelApiKey,
       modelName: normalizationModel,
       maxAttempts: integer('NORMALIZATION_MAX_ATTEMPTS', 3, 1),
-      maxTurns: integer('NORMALIZATION_MAX_TURNS', 30, 1),
+      maxTurns: integer('NORMALIZATION_MAX_TURNS', 50, 1),
       attemptTimeoutMs: integer('NORMALIZATION_ATTEMPT_TIMEOUT_MS', 30 * 60_000, 60_000),
       logger,
     });
@@ -266,6 +266,7 @@ async function main(): Promise<void> {
       analysisModelName: analysisModel,
       analysisMaxTurns: integer('BOOK_ANALYSIS_MAX_TURNS', 20, 1),
       analysisTimeoutMs: integer('BOOK_ANALYSIS_TIMEOUT_MS', 20 * 60_000, 60_000),
+      logger,
     });
     process.stdout.write(
       `${JSON.stringify({ reused: false, epubSha256, ...publication }, null, 2)}\n`,

@@ -2,7 +2,6 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import {
   CommandExitError,
-  FileType,
   Sandbox,
   type CommandResult,
   type CommandStartOpts,
@@ -49,10 +48,6 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const copy = new Uint8Array(bytes.byteLength);
   copy.set(bytes);
   return copy.buffer;
-}
-
-function safeSourcePath(path: string): string {
-  return `${SOURCE_ROOT}/${assertSafeRelativePath(path)}`;
 }
 
 function countOccurrences(source: string, expected: string): number {
@@ -166,89 +161,70 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
     return inventory;
   }
 
-  async listSourceFiles(
-    input: { directory?: string; glob?: string; limit?: number },
+  async runShell(
+    input: { command: string; timeoutSeconds?: number },
     signal?: AbortSignal,
   ): Promise<ToolTextResult> {
     this.assertOpen();
+    if (!input.command || input.command.length > 20_000 || input.command.includes('\0')) {
+      throw new Error('shell command must contain 1 to 20000 non-NUL characters');
+    }
+    const timeoutSeconds = input.timeoutSeconds ?? 30;
+    if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 120) {
+      throw new Error('shell timeout must be an integer from 1 to 120 seconds');
+    }
     const result = await runAllowingExit(
       this.sandbox,
-      `python3 ${HELPER} list`,
+      `python3 ${HELPER} run-shell`,
       this.commandOptions({
-        timeoutMs: 60_000,
+        timeoutMs: (timeoutSeconds + 15) * 1000,
         signal,
+        user: NORMALIZER_USER,
         envs: {
-          DIRECTORY: input.directory ?? '',
-          GLOB: input.glob ?? '*',
-          LIMIT: String(input.limit ?? 200),
+          SHELL_COMMAND: input.command,
+          SHELL_TIMEOUT_SECONDS: String(timeoutSeconds),
         },
       }),
     );
     if (result.exitCode !== 0) {
-      throw new Error((result.stdout + result.stderr).slice(-4000));
+      throw new Error(`trusted shell wrapper failed: ${(result.stdout + result.stderr).slice(-4000)}`);
     }
-    return { text: result.stdout, details: { exitCode: result.exitCode } };
-  }
-
-  async readSourceFile(
-    input: { path: string; startLine?: number; maxLines?: number },
-    signal?: AbortSignal,
-  ): Promise<ToolTextResult> {
-    this.assertOpen();
-    const path = safeSourcePath(input.path);
-    const info = await this.sandbox.files.getInfo(path, this.requestOptions(signal));
-    if (info.type !== FileType.FILE || info.size > 2_000_000) {
-      throw new Error(`source file is not a readable text file under 2 MB: ${input.path}`);
-    }
-    const content = await this.sandbox.files.read(path, this.requestOptions(signal));
-    const lines = content.split(/\r?\n/);
-    const start = (input.startLine ?? 1) - 1;
-    const maxLines = input.maxLines ?? 200;
+    const shell = JSON.parse(result.stdout) as {
+      exit_code: number;
+      timed_out: boolean;
+      stdout: string;
+      stderr: string;
+      truncated: { stdout: boolean; stderr: boolean };
+    };
+    const output = truncate(
+      `exit_code=${shell.exit_code}\ntimed_out=${shell.timed_out}\nstdout:\n${shell.stdout}\nstderr:\n${shell.stderr}`,
+    );
     return {
-      text: lines.slice(start, start + maxLines).join('\n'),
+      text: output.text,
       details: {
-        path: input.path,
-        startLine: start + 1,
-        endLine: Math.min(lines.length, start + maxLines),
-        totalLines: lines.length,
+        exitCode: shell.exit_code,
+        timedOut: shell.timed_out,
+        stdoutTruncated: shell.truncated.stdout,
+        stderrTruncated: shell.truncated.stderr,
+        responseTruncated: output.truncated,
       },
     };
   }
 
-  async searchSource(
-    input: { query: string; glob?: string; limit?: number },
-    signal?: AbortSignal,
-  ): Promise<ToolTextResult> {
+  async inspectEpubStructure(signal?: AbortSignal): Promise<ToolTextResult> {
     this.assertOpen();
     const result = await runAllowingExit(
       this.sandbox,
-      `python3 ${HELPER} search`,
-      this.commandOptions({
-        timeoutMs: 120_000,
-        signal,
-        envs: {
-          QUERY: input.query,
-          GLOB: input.glob ?? '*',
-          LIMIT: String(input.limit ?? 50),
-        },
-      }),
+      `python3 ${HELPER} inspect-epub-structure`,
+      this.commandOptions({ timeoutMs: 120_000, signal }),
     );
-    if (result.exitCode !== 0) throw new Error((result.stdout + result.stderr).slice(-4000));
-    return { text: result.stdout, details: { exitCode: result.exitCode } };
-  }
-
-  async readNormalizedSpec(
-    input: { startLine?: number; maxLines?: number },
-    signal?: AbortSignal,
-  ): Promise<ToolTextResult> {
-    this.assertOpen();
-    const content = await this.sandbox.files.read(SPEC, this.requestOptions(signal));
-    const lines = content.split(/\r?\n/);
-    const start = (input.startLine ?? 1) - 1;
-    const maxLines = input.maxLines ?? 200;
+    if (result.exitCode !== 0) {
+      throw new Error(`failed to inspect EPUB structure: ${(result.stdout + result.stderr).slice(-4000)}`);
+    }
+    const output = truncate(result.stdout);
     return {
-      text: lines.slice(start, start + maxLines).join('\n'),
-      details: { startLine: start + 1, totalLines: lines.length },
+      text: output.text,
+      details: { exitCode: result.exitCode, responseTruncated: output.truncated },
     };
   }
 
@@ -315,11 +291,24 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
     this.lastSuccessfulRun = undefined;
     this.lastValidation = undefined;
     this.finishBinding = undefined;
-    const wrapper = await runAllowingExit(
-      this.sandbox,
-      `runuser --user ${NORMALIZER_USER} -- python3 ${HELPER} run-normalizer`,
-      this.commandOptions({ timeoutMs: 10 * 60_000, signal, user: 'root' }),
-    );
+    const wrapper = await (async () => {
+      try {
+        return await runAllowingExit(
+          this.sandbox,
+          `runuser --user ${NORMALIZER_USER} -- python3 ${HELPER} run-normalizer`,
+          this.commandOptions({ timeoutMs: 10 * 60_000, signal, user: 'root' }),
+        );
+      } finally {
+        const lockOutput = await runAllowingExit(
+          this.sandbox,
+          `chown -R root:root ${OUTPUT_ROOT} && chmod -R a-w,a+rX ${OUTPUT_ROOT}`,
+          this.commandOptions({ timeoutMs: 30_000, user: 'root' }),
+        );
+        if (lockOutput.exitCode !== 0) {
+          throw new Error(`failed to lock normalizer output: ${(lockOutput.stdout + lockOutput.stderr).slice(-4000)}`);
+        }
+      }
+    })();
     if (wrapper.exitCode !== 0) {
       throw new Error(`normalizer wrapper failed: ${(wrapper.stdout + wrapper.stderr).slice(-4000)}`);
     }
@@ -456,25 +445,6 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
     };
   }
 
-  async inspectNormalizedOutput(
-    input: { selector?: string; limit?: number },
-    signal?: AbortSignal,
-  ): Promise<ToolTextResult> {
-    this.assertOpen();
-    if (!this.lastSuccessfulRun) throw new Error('run_normalizer must succeed first');
-    const result = await runAllowingExit(
-      this.sandbox,
-      `python3 ${HELPER} inspect`,
-      this.commandOptions({
-        timeoutMs: 120_000,
-        signal,
-        envs: { SELECTOR: input.selector ?? '', LIMIT: String(input.limit ?? 20) },
-      }),
-    );
-    if (result.exitCode !== 0) throw new Error((result.stdout + result.stderr).slice(-4000));
-    return { text: truncate(result.stdout).text, details: { exitCode: result.exitCode } };
-  }
-
   async finishNormalization(signal?: AbortSignal): Promise<NormalizationFinishBinding> {
     this.assertOpen();
     const currentScript = await this.readNormalizer();
@@ -586,7 +556,7 @@ export async function createE2BNormalizationSandbox(options: {
     ]);
     const prepare = await runAllowingExit(
       sandbox,
-      `id -u ${NORMALIZER_USER} >/dev/null 2>&1 || useradd --create-home --shell /bin/bash ${NORMALIZER_USER}; mkdir -p ${SOURCE_ROOT} ${OUTPUT_ROOT} ${ROOT}/reports ${ROOT}/normalizer-logs && python3 ${HELPER} preflight && python3 -m zipfile -e ${SOURCE_EPUB} ${SOURCE_ROOT} && chmod 0755 ${ROOT} && chmod -R a+rX,go-w ${ROOT}/source ${ROOT}/tools ${ROOT}/spec && chmod 0777 ${ROOT}/output ${OUTPUT_ROOT} ${ROOT}/normalizer-logs && chmod 0755 ${ROOT}/reports && python3 -c "import bs4"`,
+      `id -u ${NORMALIZER_USER} >/dev/null 2>&1 || useradd --create-home --shell /bin/bash ${NORMALIZER_USER}; mkdir -p ${SOURCE_ROOT} ${OUTPUT_ROOT} ${ROOT}/reports ${ROOT}/normalizer-logs ${ROOT}/work && python3 ${HELPER} preflight && python3 -m zipfile -e ${SOURCE_EPUB} ${SOURCE_ROOT} && chmod 0755 ${ROOT} && chmod -R a+rX,go-w ${ROOT}/source ${ROOT}/tools ${ROOT}/spec && chmod 0755 ${ROOT}/output ${OUTPUT_ROOT} && chmod 0777 ${ROOT}/normalizer-logs && chown ${NORMALIZER_USER}:${NORMALIZER_USER} ${ROOT}/work && chmod 0700 ${ROOT}/work && chmod 0755 ${ROOT}/reports && python3 -c "import bs4"`,
       { cwd: ROOT, timeoutMs: 120_000, user: 'root' },
     );
     if (prepare.exitCode !== 0) {

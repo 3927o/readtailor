@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   runNormalizationAgent,
+  type AgentTraceEvent,
   type NormalizationAgentToolbox,
   type NormalizationFinishBinding,
 } from './index';
@@ -83,18 +84,16 @@ describe('normalization Pi Agent', () => {
       throw new Error('unexpected tool call');
     };
     const toolbox: NormalizationAgentToolbox = {
-      listSourceFiles: unavailable,
-      readSourceFile: unavailable,
-      searchSource: unavailable,
-      readNormalizedSpec: unavailable,
+      runShell: unavailable,
+      inspectEpubStructure: unavailable,
       writeNormalizer: unavailable,
       patchNormalizer: unavailable,
       runNormalizer: unavailable,
       runNbLinter: unavailable,
       runNbCheck: unavailable,
-      inspectNormalizedOutput: unavailable,
       finishNormalization: async () => binding,
     };
+    const traces: AgentTraceEvent[] = [];
 
     const result = await runNormalizationAgent({
       apiBaseUrl: `http://127.0.0.1:${address.port}/v1`,
@@ -104,10 +103,41 @@ describe('normalization Pi Agent', () => {
       sessionId: 'test-session',
       maxTurns: 2,
       timeoutMs: 5000,
+      onTrace: (event) => {
+        traces.push(event);
+      },
     });
 
     expect(result.finishBinding).toEqual(binding);
     expect(result.turns).toBe(1);
     expect(result.toolCalls).toBe(1);
+    expect(traces[0]).toMatchObject({
+      type: 'agent_started',
+      agentName: 'normalization',
+      sessionId: 'test-session',
+      modelName: 'fake-tool-model',
+    });
+    expect(traces).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_started',
+        toolName: 'finish_normalization',
+        args: {},
+      }),
+    );
+    expect(traces).toContainEqual(
+      expect.objectContaining({
+        type: 'tool_finished',
+        toolName: 'finish_normalization',
+        succeeded: true,
+        result: expect.objectContaining({ details: binding }),
+      }),
+    );
+    expect(traces.some((event) => event.type === 'assistant_message')).toBe(true);
+    expect(traces.at(-1)).toMatchObject({
+      type: 'agent_finished',
+      agentName: 'normalization',
+      turns: 1,
+      toolCalls: 1,
+    });
   });
 });

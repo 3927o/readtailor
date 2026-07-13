@@ -22,7 +22,10 @@ import {
 } from '@readtailor/normalized-book';
 import type { ObjectStorage } from '@readtailor/storage';
 import { analyzeBookPackage } from './book-analysis';
-import type { ValidatedNormalizationCandidate } from './coordinator';
+import type {
+  NormalizationCoordinatorLogger,
+  ValidatedNormalizationCandidate,
+} from './coordinator';
 import {
   createNormalizationRepository,
   type NormalizationRepository,
@@ -101,6 +104,7 @@ export async function publishValidatedNormalization(options: {
   analysisModelName: string;
   analysisMaxTurns?: number;
   analysisTimeoutMs?: number;
+  logger: NormalizationCoordinatorLogger;
   repository?: NormalizationRepository;
 }): Promise<{
   bookId: string;
@@ -165,6 +169,12 @@ export async function publishValidatedNormalization(options: {
       modelName: options.analysisModelName,
       ...(options.analysisMaxTurns ? { maxTurns: options.analysisMaxTurns } : {}),
       ...(options.analysisTimeoutMs ? { timeoutMs: options.analysisTimeoutMs } : {}),
+      onTrace: (event) => {
+        options.logger.info(
+          { normalizationRunId: options.normalizationRunId, agentTrace: event },
+          'agent trace',
+        );
+      },
     });
 
     const normalizationReport = JSON.parse(

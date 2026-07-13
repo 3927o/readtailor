@@ -190,19 +190,14 @@ export async function runFormalNormalization(options: {
         sessionId,
         ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
         timeoutMs: attemptTimeoutMs,
-        onEvent: async (event) => {
+        onEvent: async () => {
           await repository.heartbeat(started.id, options.normalizationRunId);
-          if (event.type === 'tool_finished') {
-            options.logger.info(
-              {
-                attemptId: started.id,
-                toolCallId: event.toolCallId,
-                toolName: event.toolName,
-                succeeded: event.succeeded,
-              },
-              'normalization agent tool finished',
-            );
-          }
+        },
+        onTrace: (event) => {
+          options.logger.info(
+            { attemptId: started.id, attemptNo: started.attemptNo, agentTrace: event },
+            'agent trace',
+          );
         },
       });
       await repository.recordAgentFinish(started.id, agent.finishBinding, {

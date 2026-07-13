@@ -3,6 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   runBookAnalysisAgent,
+  type AgentTraceHandler,
   type BookAnalysisToolbox,
   type BookProfile,
   type ToolTextResult,
@@ -200,6 +201,7 @@ export async function analyzeBookPackage(options: {
   modelName: string;
   maxTurns?: number;
   timeoutMs?: number;
+  onTrace?: AgentTraceHandler;
 }): Promise<{ profile: BookProfile; turns: number; toolCalls: number }> {
   const { toolbox } = await createBookAnalysisToolbox(options);
   const result = await runBookAnalysisAgent({
@@ -210,6 +212,7 @@ export async function analyzeBookPackage(options: {
     sessionId: randomUUID(),
     ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
     ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.onTrace ? { onTrace: options.onTrace } : {}),
   });
   await writeFile(
     join(options.packageDirectory, 'book_profile.json'),

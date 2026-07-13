@@ -1,4 +1,9 @@
-import { Agent, type AgentEvent, type AgentTool } from '@earendil-works/pi-agent-core';
+import {
+  Agent,
+  type AgentEvent,
+  type AgentMessage,
+  type AgentTool,
+} from '@earendil-works/pi-agent-core';
 import { Type, type Model, type Static } from '@earendil-works/pi-ai';
 
 export type NormalizationFinishBinding = {
@@ -16,23 +21,196 @@ export type ToolTextResult = {
   details?: Record<string, unknown>;
 };
 
+export type AgentTraceEvent =
+  | {
+      type: 'agent_started';
+      agentName: string;
+      sessionId: string;
+      modelName: string;
+      systemPrompt: string;
+      prompt: string;
+    }
+  | { type: 'turn_started'; agentName: string; turn: number }
+  | {
+      type: 'assistant_message';
+      agentName: string;
+      turn: number;
+      message: unknown;
+    }
+  | {
+      type: 'tool_started';
+      agentName: string;
+      turn: number;
+      toolCallId: string;
+      toolName: string;
+      args: unknown;
+    }
+  | {
+      type: 'tool_finished';
+      agentName: string;
+      turn: number;
+      toolCallId: string;
+      toolName: string;
+      succeeded: boolean;
+      durationMs: number;
+      result: unknown;
+    }
+  | {
+      type: 'turn_finished';
+      agentName: string;
+      turn: number;
+      toolResultCount: number;
+    }
+  | {
+      type: 'agent_finished';
+      agentName: string;
+      turns: number;
+      toolCalls: number;
+      messageCount: number;
+    };
+
+export type AgentTraceHandler = (event: AgentTraceEvent) => void | Promise<void>;
+
+const TRACE_STRING_LIMIT = 8_000;
+const TRACE_COLLECTION_LIMIT = 50;
+
+function traceString(value: string): string {
+  if (value.length <= TRACE_STRING_LIMIT) return value;
+  return `${value.slice(0, TRACE_STRING_LIMIT)}\n... trace truncated (${value.length - TRACE_STRING_LIMIT} characters omitted) ...`;
+}
+
+function traceValue(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'string') return traceString(value);
+  if (typeof value === 'bigint') return value.toString();
+  if (typeof value === 'undefined') return '[undefined]';
+  if (typeof value !== 'object') return String(value);
+  if (value instanceof Uint8Array) return { type: 'Uint8Array', byteLength: value.byteLength };
+  if (seen.has(value)) return '[circular]';
+  if (depth >= 5) return '[depth limit]';
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const items = value
+      .slice(0, TRACE_COLLECTION_LIMIT)
+      .map((item) => traceValue(item, depth + 1, seen));
+    if (value.length > TRACE_COLLECTION_LIMIT) {
+      items.push(`[${value.length - TRACE_COLLECTION_LIMIT} items omitted]`);
+    }
+    return items;
+  }
+  const entries = Object.entries(value).slice(0, TRACE_COLLECTION_LIMIT);
+  const result = Object.fromEntries(
+    entries.map(([key, item]) => [key, traceValue(item, depth + 1, seen)]),
+  );
+  if (Object.keys(value).length > TRACE_COLLECTION_LIMIT) {
+    result.__trace_omitted_keys__ = Object.keys(value).length - TRACE_COLLECTION_LIMIT;
+  }
+  return result;
+}
+
+function traceMessage(message: AgentMessage): unknown {
+  if (message.role !== 'assistant') return traceValue(message);
+  return {
+    role: message.role,
+    content: traceValue(message.content),
+    model: message.model,
+    responseModel: message.responseModel,
+    stopReason: message.stopReason,
+    errorMessage: message.errorMessage,
+    usage: traceValue(message.usage),
+  };
+}
+
+function subscribeAgentTrace(
+  agent: Agent,
+  options: {
+    agentName: string;
+    sessionId: string;
+    modelName: string;
+    systemPrompt: string;
+    prompt: string;
+    getTurn: () => number;
+    getToolCalls: () => number;
+    onTrace?: AgentTraceHandler;
+  },
+): void {
+  const toolStartedAt = new Map<string, number>();
+  agent.subscribe(async (event) => {
+    if (!options.onTrace) return;
+    let trace: AgentTraceEvent | undefined;
+    if (event.type === 'agent_start') {
+      trace = {
+        type: 'agent_started',
+        agentName: options.agentName,
+        sessionId: options.sessionId,
+        modelName: options.modelName,
+        systemPrompt: options.systemPrompt,
+        prompt: options.prompt,
+      };
+    } else if (event.type === 'turn_start') {
+      trace = { type: 'turn_started', agentName: options.agentName, turn: options.getTurn() };
+    } else if (event.type === 'message_end' && event.message.role === 'assistant') {
+      trace = {
+        type: 'assistant_message',
+        agentName: options.agentName,
+        turn: options.getTurn(),
+        message: traceMessage(event.message),
+      };
+    } else if (event.type === 'tool_execution_start') {
+      toolStartedAt.set(event.toolCallId, Date.now());
+      trace = {
+        type: 'tool_started',
+        agentName: options.agentName,
+        turn: options.getTurn(),
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        args: traceValue(event.args),
+      };
+    } else if (event.type === 'tool_execution_end') {
+      const startedAt = toolStartedAt.get(event.toolCallId);
+      toolStartedAt.delete(event.toolCallId);
+      trace = {
+        type: 'tool_finished',
+        agentName: options.agentName,
+        turn: options.getTurn(),
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        succeeded: !event.isError,
+        durationMs: startedAt ? Date.now() - startedAt : 0,
+        result: traceValue(event.result),
+      };
+    } else if (event.type === 'turn_end') {
+      trace = {
+        type: 'turn_finished',
+        agentName: options.agentName,
+        turn: options.getTurn(),
+        toolResultCount: event.toolResults.length,
+      };
+    } else if (event.type === 'agent_end') {
+      trace = {
+        type: 'agent_finished',
+        agentName: options.agentName,
+        turns: options.getTurn(),
+        toolCalls: options.getToolCalls(),
+        messageCount: event.messages.length,
+      };
+    }
+    if (trace) {
+      try {
+        await options.onTrace(trace);
+      } catch {
+        // Trace logging must not change agent behavior.
+      }
+    }
+  });
+}
+
 export interface NormalizationAgentToolbox {
-  listSourceFiles(
-    input: { directory?: string; glob?: string; limit?: number },
+  runShell(
+    input: { command: string; timeoutSeconds?: number },
     signal?: AbortSignal,
   ): Promise<ToolTextResult>;
-  readSourceFile(
-    input: { path: string; startLine?: number; maxLines?: number },
-    signal?: AbortSignal,
-  ): Promise<ToolTextResult>;
-  searchSource(
-    input: { query: string; glob?: string; limit?: number },
-    signal?: AbortSignal,
-  ): Promise<ToolTextResult>;
-  readNormalizedSpec(
-    input: { startLine?: number; maxLines?: number },
-    signal?: AbortSignal,
-  ): Promise<ToolTextResult>;
+  inspectEpubStructure(signal?: AbortSignal): Promise<ToolTextResult>;
   writeNormalizer(input: { content: string }, signal?: AbortSignal): Promise<ToolTextResult>;
   patchNormalizer(
     input: { expected: string; replacement: string },
@@ -41,10 +219,6 @@ export interface NormalizationAgentToolbox {
   runNormalizer(signal?: AbortSignal): Promise<ToolTextResult>;
   runNbLinter(signal?: AbortSignal): Promise<ToolTextResult>;
   runNbCheck(signal?: AbortSignal): Promise<ToolTextResult>;
-  inspectNormalizedOutput(
-    input: { selector?: string; limit?: number },
-    signal?: AbortSignal,
-  ): Promise<ToolTextResult>;
   finishNormalization(signal?: AbortSignal): Promise<NormalizationFinishBinding>;
 }
 
@@ -67,6 +241,7 @@ export type NormalizationAgentOptions = {
   maxTurns?: number;
   timeoutMs?: number;
   onEvent?: (event: NormalizationAgentEvent) => void | Promise<void>;
+  onTrace?: AgentTraceHandler;
 };
 
 export type NormalizationAgentResult = {
@@ -77,11 +252,16 @@ export type NormalizationAgentResult = {
 
 const NORMALIZATION_SYSTEM_PROMPT = `你是 ReadTailor 的 EPUB 规范化 Coding Agent。
 
-你的唯一目标是编写 normalize.py，把当前 source.epub 转换成符合 nb-1.0 的书籍包。你只能使用给定工具，不能执行任意 shell、不能联网、不能修改校验器或规范。
+你的唯一目标是编写 normalize.py，把当前 source.epub 转换成符合 nb-1.0 的书籍包。你只能使用给定工具；Shell 命令必须通过 run_shell 执行，不能联网、不能修改校验器或规范。
 
-工作闭环：检查源文件 -> 编写或修补 normalize.py -> run_normalizer -> run_nb_linter / run_nb_check -> 根据问题修复。run_nb_check 的 warning 是诊断信息，不阻断完成；blocking error 必须为 0。只有 finish_normalization 成功才算任务完成，不得用文字自行宣布完成。
+第一步必须调用 inspect_epub_structure，先获得容器、OPF、manifest、spine、导航、资源和异常的全局视图。之后只对异常项和少量代表性文件使用 run_shell 深入检查；不要重复做全量目录扫描。可用路径：原 EPUB=/tmp/readtailor/source/source.epub，解包目录=/tmp/readtailor/source/unpacked，规范=/tmp/readtailor/spec/normalized_book_spec.md，当前输出=/tmp/readtailor/output/current。
+
+工作闭环：inspect_epub_structure -> 必要的定点检查 -> 编写或修补 normalize.py -> run_normalizer -> run_nb_linter -> run_nb_check -> 根据问题修复。Shell 仅用于探索，不能替代受信任的 normalizer、校验和完成工具。run_nb_linter 通过后立即运行 run_nb_check；run_nb_check 的 blocking error 为 0 后立即调用 finish_normalization，warning 只作为诊断信息、不阻断完成。只有 finish_normalization 成功才算任务完成，不得用文字自行宣布完成。
 
 必须保留无法可靠分类的原文和资源，不能通过删除内容换取校验通过。每次修改脚本后必须重新运行 normalizer 和完整校验。`;
+
+const NORMALIZATION_INITIAL_PROMPT =
+  '开始处理当前 EPUB。第一步调用 inspect_epub_structure，然后只对异常和代表性文件做定点检查，尽快编写 normalize.py。必须通过完整校验并调用 finish_normalization。';
 
 function textResult(result: ToolTextResult) {
   return {
@@ -96,71 +276,31 @@ function createTools(
 ): AgentTool[] {
   return [
     {
-      name: 'list_source_files',
-      label: 'List source files',
-      description: '列出当前 EPUB 解包目录中的文件。',
+      name: 'run_shell',
+      label: 'Run exploration shell',
+      description:
+        '在隔离的 E2B 中以低权限用户运行 Shell 命令来探索 EPUB。cwd=/tmp/readtailor/work，原 EPUB 位于 /tmp/readtailor/source/source.epub，解包文件位于 /tmp/readtailor/source/unpacked；source/spec/tools 只读且网络不可用，正式执行和校验仍须使用专用工具。',
       parameters: Type.Object({
-        directory: Type.Optional(Type.String()),
-        glob: Type.Optional(Type.String()),
-        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
+        command: Type.String({ minLength: 1, maxLength: 20_000 }),
+        timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 120 })),
       }),
+      executionMode: 'sequential',
       execute: async (_id, input, signal) =>
         textResult(
-          await toolbox.listSourceFiles(
-            input as { directory?: string; glob?: string; limit?: number },
+          await toolbox.runShell(
+            input as { command: string; timeoutSeconds?: number },
             signal,
           ),
         ),
     },
     {
-      name: 'read_source_file',
-      label: 'Read source file',
-      description: '按行读取 EPUB 中的一个文本文件，输出会被截断。',
-      parameters: Type.Object({
-        path: Type.String(),
-        startLine: Type.Optional(Type.Integer({ minimum: 1 })),
-        maxLines: Type.Optional(Type.Integer({ minimum: 1, maximum: 400 })),
-      }),
-      execute: async (_id, input, signal) =>
-        textResult(
-          await toolbox.readSourceFile(
-            input as { path: string; startLine?: number; maxLines?: number },
-            signal,
-          ),
-        ),
-    },
-    {
-      name: 'search_source',
-      label: 'Search source',
-      description: '在 EPUB 源文件中搜索文本并返回短上下文。',
-      parameters: Type.Object({
-        query: Type.String({ minLength: 1, maxLength: 500 }),
-        glob: Type.Optional(Type.String()),
-        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
-      }),
-      execute: async (_id, input, signal) =>
-        textResult(
-          await toolbox.searchSource(
-            input as { query: string; glob?: string; limit?: number },
-            signal,
-          ),
-        ),
-    },
-    {
-      name: 'read_normalized_spec',
-      label: 'Read normalized book spec',
-      description: '按行读取 nb-1.0 规范。',
-      parameters: Type.Object({
-        startLine: Type.Optional(Type.Integer({ minimum: 1 })),
-        maxLines: Type.Optional(Type.Integer({ minimum: 1, maximum: 400 })),
-      }),
-      execute: async (_id, input, signal) =>
-        textResult(
-          await toolbox.readNormalizedSpec(
-            input as { startLine?: number; maxLines?: number },
-            signal,
-          ),
-        ),
+      name: 'inspect_epub_structure',
+      label: 'Inspect EPUB structure',
+      description:
+        '可信地解析源 EPUB，一次返回 container/OPF metadata、manifest 分类、spine 顺序和正文统计、nav/NCX/guide、资源汇总、特殊结构及缺失引用等异常。每个任务必须先调用一次。',
+      parameters: Type.Object({}),
+      execute: async (_id, _input, signal) =>
+        textResult(await toolbox.inspectEpubStructure(signal)),
     },
     {
       name: 'write_normalizer',
@@ -213,22 +353,6 @@ function createTools(
       execute: async (_id, _input, signal) => textResult(await toolbox.runNbCheck(signal)),
     },
     {
-      name: 'inspect_normalized_output',
-      label: 'Inspect normalized output',
-      description: '按结构或 CSS selector 查看当前规范化 HTML 的短片段和统计。',
-      parameters: Type.Object({
-        selector: Type.Optional(Type.String({ maxLength: 500 })),
-        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
-      }),
-      execute: async (_id, input, signal) =>
-        textResult(
-          await toolbox.inspectNormalizedOutput(
-            input as { selector?: string; limit?: number },
-            signal,
-          ),
-        ),
-    },
-    {
       name: 'finish_normalization',
       label: 'Finish normalization',
       description: '核对最新脚本、输出和完整校验的哈希绑定；不满足时会失败。',
@@ -268,7 +392,7 @@ function createModel(options: {
 export async function runNormalizationAgent(
   options: NormalizationAgentOptions,
 ): Promise<NormalizationAgentResult> {
-  const maxTurns = options.maxTurns ?? 30;
+  const maxTurns = options.maxTurns ?? 50;
   const timeoutMs = options.timeoutMs ?? 30 * 60_000;
   let finishBinding: NormalizationFinishBinding | undefined;
   let turns = 0;
@@ -315,12 +439,20 @@ export async function runNormalizationAgent(
       });
     }
   });
+  subscribeAgentTrace(agent, {
+    agentName: 'normalization',
+    sessionId: options.sessionId,
+    modelName: options.modelName,
+    systemPrompt: NORMALIZATION_SYSTEM_PROMPT,
+    prompt: NORMALIZATION_INITIAL_PROMPT,
+    getTurn: () => turns,
+    getToolCalls: () => toolCalls,
+    ...(options.onTrace ? { onTrace: options.onTrace } : {}),
+  });
 
   const timeout = setTimeout(() => agent.abort(), timeoutMs);
   try {
-    await agent.prompt(
-      '开始处理当前 EPUB。先检查容器、OPF、spine、nav/NCX 和代表性正文，再编写 normalize.py。必须通过完整校验并调用 finish_normalization。',
-    );
+    await agent.prompt(NORMALIZATION_INITIAL_PROMPT);
   } finally {
     clearTimeout(timeout);
   }
@@ -391,6 +523,11 @@ export interface BookAnalysisToolbox {
   saveBookProfile(profile: BookProfile, signal?: AbortSignal): Promise<void>;
 }
 
+const BOOK_ANALYSIS_SYSTEM_PROMPT = `你是 ReadTailor 的共享书籍分析 Agent。只读已经通过确定性校验的规范化书籍和 reading manifest，生成不含任何用户信息的 book-profile-1.0。先检查元数据和完整结构，再抽样阅读开头、中段、后段以及具有代表性的节点。试读候选只能引用 tailoring_eligible=true 的节点，覆盖全书不同位置。不要修改原文，不要复制大段原文。只有 save_book_profile 成功才算完成。`;
+
+const BOOK_ANALYSIS_INITIAL_PROMPT =
+  '分析当前书籍并生成共享 book profile。候选池通常为 9–15 个；若全书可裁读节点不足 9 个，则使用全部可裁读节点。';
+
 export async function runBookAnalysisAgent(options: {
   apiBaseUrl: string;
   apiKey: string;
@@ -399,6 +536,7 @@ export async function runBookAnalysisAgent(options: {
   sessionId: string;
   maxTurns?: number;
   timeoutMs?: number;
+  onTrace?: AgentTraceHandler;
 }): Promise<{ profile: BookProfile; turns: number; toolCalls: number }> {
   let profile: BookProfile | undefined;
   let turns = 0;
@@ -500,7 +638,7 @@ export async function runBookAnalysisAgent(options: {
 
   const agent = new Agent({
     initialState: {
-      systemPrompt: `你是 ReadTailor 的共享书籍分析 Agent。只读已经通过确定性校验的规范化书籍和 reading manifest，生成不含任何用户信息的 book-profile-1.0。先检查元数据和完整结构，再抽样阅读开头、中段、后段以及具有代表性的节点。试读候选只能引用 tailoring_eligible=true 的节点，覆盖全书不同位置。不要修改原文，不要复制大段原文。只有 save_book_profile 成功才算完成。`,
+      systemPrompt: BOOK_ANALYSIS_SYSTEM_PROMPT,
       model: createModel(options),
       thinkingLevel: 'medium',
       tools,
@@ -522,11 +660,19 @@ export async function runBookAnalysisAgent(options: {
       toolCalls += 1;
     }
   });
+  subscribeAgentTrace(agent, {
+    agentName: 'book_analysis',
+    sessionId: options.sessionId,
+    modelName: options.modelName,
+    systemPrompt: BOOK_ANALYSIS_SYSTEM_PROMPT,
+    prompt: BOOK_ANALYSIS_INITIAL_PROMPT,
+    getTurn: () => turns,
+    getToolCalls: () => toolCalls,
+    ...(options.onTrace ? { onTrace: options.onTrace } : {}),
+  });
   const timeout = setTimeout(() => agent.abort(), options.timeoutMs ?? 20 * 60_000);
   try {
-    await agent.prompt(
-      '分析当前书籍并生成共享 book profile。候选池通常为 9–15 个；若全书可裁读节点不足 9 个，则使用全部可裁读节点。',
-    );
+    await agent.prompt(BOOK_ANALYSIS_INITIAL_PROMPT);
   } finally {
     clearTimeout(timeout);
   }
