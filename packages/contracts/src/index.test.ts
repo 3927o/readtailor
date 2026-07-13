@@ -1,6 +1,6 @@
 import { Value } from '@sinclair/typebox/value';
 import { describe, expect, it } from 'vitest';
-import { HealthResponseSchema } from './index';
+import { HealthResponseSchema, SystemJobPayloadSchema, SystemJobSchema } from './index';
 
 describe('HealthResponseSchema', () => {
   it('accepts the service health contract', () => {
@@ -12,5 +12,49 @@ describe('HealthResponseSchema', () => {
         timestamp: '2026-07-13T00:00:00.000Z',
       }),
     ).toBe(true);
+  });
+});
+
+describe('SystemJobPayloadSchema', () => {
+  it('requires the database row id', () => {
+    expect(
+      Value.Check(SystemJobPayloadSchema, {
+        jobId: 'a3bb189e-8bf9-3888-9912-ace4e6543002',
+        kind: 'system.ping',
+        requestedAt: '2026-07-13T00:00:00.000Z',
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(SystemJobPayloadSchema, {
+        kind: 'system.ping',
+        requestedAt: '2026-07-13T00:00:00.000Z',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('SystemJobSchema', () => {
+  it('accepts a queued job with a null completion time', () => {
+    expect(
+      Value.Check(SystemJobSchema, {
+        id: 'a3bb189e-8bf9-3888-9912-ace4e6543002',
+        kind: 'system.ping',
+        status: 'queued',
+        createdAt: '2026-07-13T00:00:00.000Z',
+        completedAt: null,
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects an unknown status', () => {
+    expect(
+      Value.Check(SystemJobSchema, {
+        id: 'a3bb189e-8bf9-3888-9912-ace4e6543002',
+        kind: 'system.ping',
+        status: 'unknown',
+        createdAt: '2026-07-13T00:00:00.000Z',
+        completedAt: null,
+      }),
+    ).toBe(false);
   });
 });

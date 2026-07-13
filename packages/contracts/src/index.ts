@@ -9,7 +9,34 @@ export const HealthResponseSchema = Type.Object({
 export type HealthResponse = Static<typeof HealthResponseSchema>;
 
 export const SystemJobPayloadSchema = Type.Object({
+  jobId: Type.String(),
   kind: Type.Literal('system.ping'),
   requestedAt: Type.String(),
 });
 export type SystemJobPayload = Static<typeof SystemJobPayloadSchema>;
+
+export const SystemJobStatusSchema = Type.Union([
+  Type.Literal('queued'),
+  Type.Literal('completed'),
+  Type.Literal('failed'),
+]);
+export type SystemJobStatus = Static<typeof SystemJobStatusSchema>;
+
+export const SystemJobSchema = Type.Object({
+  id: Type.String(),
+  kind: Type.String(),
+  status: SystemJobStatusSchema,
+  createdAt: Type.String(),
+  completedAt: Type.Union([Type.String(), Type.Null()]),
+});
+export type SystemJob = Static<typeof SystemJobSchema>;
+
+export const EnqueueSystemPingResponseSchema = Type.Object({
+  jobId: Type.String(),
+});
+export type EnqueueSystemPingResponse = Static<typeof EnqueueSystemPingResponseSchema>;
+
+export const ErrorResponseSchema = Type.Object({
+  error: Type.String(),
+});
+export type ErrorResponse = Static<typeof ErrorResponseSchema>;

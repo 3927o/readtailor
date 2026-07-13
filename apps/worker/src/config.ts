@@ -8,6 +8,7 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
     port: readInteger(env, 'WORKER_PORT', 3002, { min: 1, max: 65_535 }),
     concurrency: readInteger(env, 'WORKER_CONCURRENCY', 1, { min: 1 }),
     redisUrl: readOptionalString(env, 'REDIS_URL'),
+    databaseUrl: readOptionalString(env, 'DATABASE_URL'),
     logLevel: readLogLevel(env, 'LOG_LEVEL', 'info'),
   };
 }

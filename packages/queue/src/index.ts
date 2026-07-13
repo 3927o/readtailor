@@ -1,4 +1,5 @@
 import { Queue, Worker } from 'bullmq';
+import type { Job } from 'bullmq';
 import IORedis from 'ioredis';
 import type { Logger } from 'pino';
 import type { SystemJobPayload } from '@readtailor/contracts';
@@ -23,18 +24,20 @@ export function createSystemQueue(redisUrl: string) {
   });
 }
 
+export type SystemQueue = ReturnType<typeof createSystemQueue>;
+export type SystemQueueJob = Job<SystemJobPayload>;
+
 export function createSystemWorker(options: {
   redisUrl: string;
   concurrency: number;
   logger: Logger;
+  handler: (job: SystemQueueJob) => Promise<void>;
 }) {
   const worker = new Worker<SystemJobPayload>(
     SYSTEM_QUEUE_NAME,
     async (job) => {
       options.logger.info({ jobId: job.id, kind: job.data.kind }, 'processing system job');
-      return {
-        receivedAt: new Date().toISOString(),
-      };
+      await options.handler(job);
     },
     {
       connection: createRedis(options.redisUrl),

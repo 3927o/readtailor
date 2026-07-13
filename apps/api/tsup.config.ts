@@ -8,5 +8,5 @@ export default defineConfig({
   clean: true,
   sourcemap: true,
   noExternal: [/^@readtailor\//],
-  external: ['pino'],
+  external: ['bullmq', 'drizzle-orm', 'ioredis', 'pino', 'postgres'],
 });

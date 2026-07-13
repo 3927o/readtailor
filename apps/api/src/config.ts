@@ -1,10 +1,12 @@
-import { readInteger, readLogLevel, readString } from '@readtailor/config';
+import { readInteger, readLogLevel, readOptionalString, readString } from '@readtailor/config';
 
 export type ApiConfig = ReturnType<typeof loadApiConfig>;
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env) {
   return {
     host: readString(env, 'API_HOST', '0.0.0.0'),
+    databaseUrl: readOptionalString(env, 'DATABASE_URL'),
+    redisUrl: readOptionalString(env, 'REDIS_URL'),
     port: readInteger(env, 'API_PORT', 3001, { min: 1, max: 65_535 }),
     webOrigins: readString(
       env,
