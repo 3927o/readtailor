@@ -6,7 +6,11 @@ const bannedNames = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'LI
 
 export interface RenderedNode extends ReaderNode {
   html: string;
-  headings: ReaderOutlineItem[];
+  headings: RenderedHeading[];
+}
+
+export interface RenderedHeading extends ReaderOutlineItem {
+  html: string;
 }
 
 export interface OriginalNote {
@@ -99,7 +103,11 @@ function prepareFragment(nodes: ChildNode[], assetBaseUrl: string): string {
   return container.innerHTML;
 }
 
-function outlineHeadings(outline: ReaderOutlineItem[]): Map<number, ReaderOutlineItem[]> {
+function outlineHeadings(
+  documentRoot: Document,
+  outline: ReaderOutlineItem[],
+  assetBaseUrl: string,
+): Map<number, RenderedHeading[]> {
   const byId = new Map(outline.map((item) => [item.section_id, item]));
   const depth = (item: ReaderOutlineItem): number => {
     let value = 0;
@@ -110,10 +118,19 @@ function outlineHeadings(outline: ReaderOutlineItem[]): Map<number, ReaderOutlin
     }
     return value;
   };
-  const result = new Map<number, ReaderOutlineItem[]>();
+  const result = new Map<number, RenderedHeading[]>();
   for (const item of outline) {
     const current = result.get(item.first_node_order) ?? [];
-    current.push(item);
+    const owner = documentRoot.getElementById(item.section_id);
+    const sourceHeading = owner instanceof HTMLElement
+      ? [...owner.children].find((child) => headingNames.has(child.tagName))
+      : undefined;
+    current.push({
+      ...item,
+      html: sourceHeading
+        ? prepareFragment([...sourceHeading.childNodes], assetBaseUrl)
+        : prepareFragment([documentRoot.createTextNode(item.title)], assetBaseUrl),
+    });
     current.sort((left, right) => depth(left) - depth(right));
     result.set(item.first_node_order, current);
   }
@@ -127,7 +144,7 @@ export function prepareBookContent(
   assetBaseUrl: string,
 ): PreparedBookContent {
   const documentRoot = new DOMParser().parseFromString(rawHtml, 'text/html');
-  const headings = outlineHeadings(outline);
+  const headings = outlineHeadings(documentRoot, outline, assetBaseUrl);
   const nodes = manifestNodes.map((node) => {
     const owner = documentRoot.getElementById(node.section_id);
     if (!(owner instanceof HTMLElement)) {

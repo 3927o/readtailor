@@ -7,21 +7,30 @@ import { Slider } from '../components/core/Slider';
 import { getReaderDocument } from './api';
 import type { ReaderOutlineItem } from './api';
 import { getOutlineDepth, prepareBookContent } from './content';
-import type { OriginalNote, RenderedNode } from './content';
+import type { OriginalNote, RenderedHeading, RenderedNode } from './content';
 
 type ThemeSetting = 'system' | 'paper' | 'night';
+type ContentWidthSetting = 'narrow' | 'medium' | 'wide';
 
 interface ReaderSettings {
   fontSize: number;
   lineHeight: number;
-  contentWidth: number;
+  contentWidth: ContentWidthSetting;
   theme: ThemeSetting;
+}
+
+interface ActiveNote {
+  note: OriginalNote;
+  left: number;
+  edge: number;
+  caretLeft: number;
+  placement: 'above' | 'below';
 }
 
 const defaultSettings: ReaderSettings = {
   fontSize: 18,
   lineHeight: 1.95,
-  contentWidth: 720,
+  contentWidth: 'medium',
   theme: 'system',
 };
 
@@ -46,6 +55,18 @@ function usePrefersDark() {
   return prefersDark;
 }
 
+const contentWidthOptions: ReadonlyArray<{ value: ContentWidthSetting; label: string }> = [
+  { value: 'narrow', label: '窄' },
+  { value: 'medium', label: '中' },
+  { value: 'wide', label: '宽' },
+];
+
+const contentWidths: Record<ContentWidthSetting, number> = {
+  narrow: 600,
+  medium: 680,
+  wide: 760,
+};
+
 export function ReaderPage() {
   const { bookId = '' } = useParams();
   const query = useQuery({
@@ -69,9 +90,11 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const [tocOpen, setTocOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [currentOrder, setCurrentOrder] = useState(document.manifest.nodes[0]?.order ?? 1);
-  const [note, setNote] = useState<OriginalNote | null>(null);
+  const [note, setNote] = useState<ActiveNote | null>(null);
   const [scrollProgress, setScrollProgress] = useState(0);
+  const [chromeHidden, setChromeHidden] = useState(false);
   const scrollRoot = useRef<HTMLDivElement>(null);
+  const lastScrollTop = useRef(0);
   const prefersDark = usePrefersDark();
   const theme = resolvedTheme(settings.theme, prefersDark);
   const prepared = useMemo(
@@ -108,11 +131,24 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     return () => window.removeEventListener('keydown', closeOverlays);
   }, []);
 
+  useEffect(() => {
+    const closeNote = () => setNote(null);
+    window.addEventListener('resize', closeNote);
+    return () => window.removeEventListener('resize', closeNote);
+  }, []);
+
   const handleScroll = () => {
     const root = scrollRoot.current;
     if (!root) return;
     const max = root.scrollHeight - root.clientHeight;
     setScrollProgress(max > 0 ? (root.scrollTop / max) * 100 : 0);
+    const delta = root.scrollTop - lastScrollTop.current;
+    if (delta > 4 && root.scrollTop > 180 && !tocOpen && !settingsOpen && !note) {
+      setChromeHidden(true);
+    } else if ((delta < -4 || root.scrollTop < 120) && chromeHidden) {
+      setChromeHidden(false);
+    }
+    lastScrollTop.current = root.scrollTop;
     setNote(null);
   };
 
@@ -123,6 +159,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   };
 
   const handleContentClick = (event: React.MouseEvent<HTMLElement>) => {
+    setChromeHidden(false);
     const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[href]');
     if (!anchor) return;
     const targetId = anchor.getAttribute('href')?.replace(/^#/, '');
@@ -130,7 +167,18 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     const originalNote = prepared.notes.get(targetId);
     if (originalNote) {
       event.preventDefault();
-      setNote(originalNote);
+      const rect = anchor.getBoundingClientRect();
+      const popoverWidth = Math.min(392, window.innerWidth - 32);
+      const anchorCenter = rect.left + rect.width / 2;
+      const left = Math.max(16, Math.min(anchorCenter - popoverWidth / 2, window.innerWidth - popoverWidth - 16));
+      const placement = window.innerHeight - rect.bottom < 280 && rect.top > 280 ? 'above' : 'below';
+      setNote({
+        note: originalNote,
+        left,
+        edge: placement === 'above' ? window.innerHeight - rect.top + 8 : rect.bottom + 8,
+        caretLeft: Math.max(24, Math.min(anchorCenter - left, popoverWidth - 24)),
+        placement,
+      });
       return;
     }
     const targetOutline = document.manifest.outline.find((item) => item.section_id === targetId);
@@ -152,17 +200,23 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     .at(-1)?.section_id;
   const openToc = () => {
     setSettingsOpen(false);
+    setChromeHidden(false);
     setTocOpen(true);
   };
   const openSettings = () => {
     setTocOpen(false);
+    setChromeHidden(false);
     setSettingsOpen(true);
   };
 
   return (
-    <div className="reader-shell" data-rt-theme={theme === 'night' ? 'night' : undefined}>
+    <div
+      className="reader-shell"
+      data-reader-language={document.book.language}
+      data-rt-theme={theme === 'night' ? 'night' : undefined}
+    >
       <ProgressBar value={scrollProgress} aria-label="阅读滚动进度" />
-      <div className="reader-chrome">
+      <div className="reader-chrome" data-hidden={chromeHidden}>
         <header className="reader-toolbar">
           <Link className="reader-back-button" to="/" aria-label="返回书架" title="返回书架">‹</Link>
           <div className="reader-title" title={document.book.title}>{document.book.title}</div>
@@ -173,9 +227,9 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
         </header>
       </div>
 
-      <nav className="reader-mobile-bar" aria-label="阅读工具">
+      <nav className="reader-mobile-bar" data-hidden={chromeHidden} aria-label="阅读工具">
         <ReaderAction glyph="≡" label="目录" onClick={openToc} />
-        <ReaderAction glyph="Aa" label="阅读设置" onClick={openSettings} />
+        <ReaderAction glyph="Aa" label="设置" onClick={openSettings} />
       </nav>
 
       {settingsOpen && <button className="reader-modal-scrim" type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭阅读设置" />}
@@ -193,7 +247,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
           style={{
             '--reader-font-size': `${settings.fontSize}px`,
             '--reader-line-height': settings.lineHeight,
-            '--reader-content-width': `${settings.contentWidth}px`,
+            '--reader-content-width': `${contentWidths[settings.contentWidth]}px`,
           } as React.CSSProperties}
           onClick={handleContentClick}
         >
@@ -241,20 +295,37 @@ function ReaderAction({ glyph, label, onClick }: { glyph: string; label: string;
 }
 
 function ReadingNode({ node, bookTitle }: { node: RenderedNode; bookTitle: string }) {
+  const headings = node.headings.filter((heading) => heading.title.trim() !== bookTitle.trim());
   return (
-    <section className="reader-node" data-node-order={node.order} id={`reader-node-${node.order}`}>
-      {node.headings.filter((heading) => heading.title.trim() !== bookTitle.trim()).map((heading) => (
-        <div
-          key={heading.section_id}
-          className="reader-outline-heading"
-          data-outline-type={heading.data_type}
-        >
-          {heading.title}
-        </div>
+    <section
+      className="reader-node"
+      data-has-heading={headings.length > 0}
+      data-node-order={node.order}
+      id={`reader-node-${node.order}`}
+    >
+      {headings.map((heading) => (
+        <OutlineHeading key={heading.section_id} heading={heading} />
       ))}
       <div className="reader-original" dangerouslySetInnerHTML={{ __html: node.html }} />
     </section>
   );
+}
+
+function OutlineHeading({ heading }: { heading: RenderedHeading }) {
+  const props = {
+    className: 'reader-outline-heading',
+    'data-outline-type': heading.data_type,
+  };
+  if (heading.data_type === 'part') {
+    return <div {...props}><span dangerouslySetInnerHTML={{ __html: heading.html }} /></div>;
+  }
+  if (heading.data_type === 'section') {
+    return <h3 {...props} dangerouslySetInnerHTML={{ __html: heading.html }} />;
+  }
+  if (heading.data_type === 'subsection') {
+    return <h4 {...props} dangerouslySetInnerHTML={{ __html: heading.html }} />;
+  }
+  return <h2 {...props} dangerouslySetInnerHTML={{ __html: heading.html }} />;
 }
 
 function TocDrawer({ open, title, outline, activeSectionId, close, jump }: {
@@ -317,7 +388,12 @@ function SettingsPanel({ settings, update, close }: {
       </div>
       <div className="reader-setting-row reader-setting-wide">
         <span>版心</span>
-        <Slider label="正文宽度" min={560} max={880} step={40} value={settings.contentWidth} onChange={(contentWidth) => update({ contentWidth })} showValue format={(value) => `${value}px`} />
+        <Segmented
+          label="正文宽度"
+          value={settings.contentWidth}
+          onChange={(contentWidth) => update({ contentWidth })}
+          options={contentWidthOptions}
+        />
       </div>
       <fieldset className="reader-setting-row">
         <legend>主题</legend>
@@ -332,14 +408,24 @@ function SettingsPanel({ settings, update, close }: {
   );
 }
 
-function NoteDialog({ note, close }: { note: OriginalNote | null; close: () => void }) {
+function NoteDialog({ note, close }: { note: ActiveNote | null; close: () => void }) {
   if (!note) return null;
   return (
     <div className="note-dialog-wrap" role="presentation" onClick={close}>
-      <aside className="note-dialog" role="dialog" aria-modal="true" aria-label="原书注" onClick={(event) => event.stopPropagation()}>
-        <div className="reader-sheet-handle" aria-hidden="true" />
-        <header><span>原书注 · Book note</span><button type="button" onClick={close} aria-label="关闭原书注">×</button></header>
-        <div dangerouslySetInnerHTML={{ __html: note.html }} />
+      <aside
+        className="note-dialog"
+        role="dialog"
+        aria-label="原书注"
+        data-placement={note.placement}
+        style={{
+          left: note.left,
+          ...(note.placement === 'above' ? { bottom: note.edge } : { top: note.edge }),
+          '--note-caret-left': `${note.caretLeft}px`,
+        } as React.CSSProperties & { '--note-caret-left': string }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header><span><i aria-hidden="true" />原书注 <em>Book note</em></span></header>
+        <div className="note-dialog-content" dangerouslySetInnerHTML={{ __html: note.note.html }} />
       </aside>
     </div>
   );
