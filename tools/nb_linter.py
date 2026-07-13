@@ -971,6 +971,39 @@ class NbBookLinter:
 
 
 # ---------------------------------------------------------------------------
+# 输出限制
+# ---------------------------------------------------------------------------
+
+# 同一类问题最多逐条列出多少条，其余用一行汇总代替。像 1600+ 章的网文，源里满是
+# 无属性 <span> wrapper，第一遍能刷出几万条同类 error（曾见 40k 条 / 6.8MB）。逐条
+# 打印会把报告撑到几 MB，既拖垮 Agent 的回合预算，也没有额外信息量——同类修法一致，
+# 给几条带定位的样本就够了。
+MAX_LINES_PER_CATEGORY = 10
+
+
+def _category_key(line: str) -> str:
+    """按问题描述归类：去掉 '  @ css_path' 定位后缀，只保留 '[级别] 描述' 部分。"""
+    return line.split("  @ ", 1)[0]
+
+
+def cap_by_category(lines: list[str], per_category: int = MAX_LINES_PER_CATEGORY) -> list[str]:
+    """把同类问题压到每类最多 per_category 条，其余替换成一行汇总，保持原始顺序。"""
+    totals: Counter = Counter()
+    for line in lines:
+        totals[_category_key(line)] += 1
+    shown: Counter = Counter()
+    out: list[str] = []
+    for line in lines:
+        key = _category_key(line)
+        shown[key] += 1
+        if shown[key] <= per_category:
+            out.append(line)
+        elif shown[key] == per_category + 1:
+            out.append(f"  …（该类共 {totals[key]} 条，仅显示前 {per_category} 条）")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 主入口
 # ---------------------------------------------------------------------------
 
@@ -985,9 +1018,9 @@ def main(argv: list[str]) -> int:
     linter = NbBookLinter(html)
     result = linter.run_all_checks()
 
-    for e in result["errors"]:
+    for e in cap_by_category(result["errors"]):
         print(e)
-    for w in result["warnings"]:
+    for w in cap_by_category(result["warnings"]):
         print(w)
 
     err_n = len(result["errors"])

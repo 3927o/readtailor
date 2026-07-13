@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-from nb_linter import NbBookLinter
+from nb_linter import MAX_LINES_PER_CATEGORY, NbBookLinter, cap_by_category
 
 
 def normalized_html(fragment: str) -> str:
@@ -103,6 +103,28 @@ class ReadingContractLinterTests(unittest.TestCase):
     def test_rejects_non_assets_relative_path(self) -> None:
         result = messages('<p>text <img src="images/a.png"></p>')
         self.assertTrue(any("必须以 assets/ 开头" in item for item in result))
+
+
+class CapByCategoryTests(unittest.TestCase):
+    def test_caps_same_category_and_appends_summary(self) -> None:
+        lines = [f"[错误] 无任何属性的 <span> …  @ ch-001 > p:nth({i}) > span" for i in range(100)]
+        out = cap_by_category(lines, per_category=10)
+        self.assertEqual(sum(1 for o in out if o.startswith("[错误]")), 10)
+        self.assertEqual(sum(1 for o in out if "该类共 100 条" in o), 1)
+        self.assertEqual(len(out), 11)
+
+    def test_groups_by_message_ignoring_location(self) -> None:
+        spans = [f"[错误] 无任何属性的 <span> …  @ path{i}" for i in range(30)]
+        divs = [f"[错误] 无任何属性的 <div> …  @ path{i}" for i in range(30)]
+        out = cap_by_category(spans + divs, per_category=5)
+        # 两类各自独立封顶：5 条样本 + 1 条汇总
+        self.assertEqual(sum(1 for o in out if "<span>" in o and o.startswith("[错误]")), 5)
+        self.assertEqual(sum(1 for o in out if "<div>" in o and o.startswith("[错误]")), 5)
+        self.assertEqual(sum(1 for o in out if "该类共 30 条" in o), 2)
+
+    def test_leaves_small_lists_untouched(self) -> None:
+        lines = ["[错误] a  @ x", "[错误] b  @ y"]
+        self.assertEqual(cap_by_category(lines, per_category=MAX_LINES_PER_CATEGORY), lines)
 
 
 if __name__ == "__main__":
