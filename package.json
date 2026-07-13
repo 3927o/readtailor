@@ -1,0 +1,27 @@
+{
+  "name": "readtailor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.13.1",
+  "engines": {
+    "node": ">=22 <25"
+  },
+  "scripts": {
+    "dev:web": "pnpm --filter @readtailor/web dev",
+    "dev:api": "pnpm --filter @readtailor/api dev",
+    "dev:worker": "pnpm --filter @readtailor/worker dev",
+    "build": "pnpm -r --if-present build",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test:ts": "vitest run",
+    "test:python": "python3 -m unittest discover -s tests -v",
+    "test": "pnpm test:ts && pnpm test:python",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

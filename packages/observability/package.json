@@ -1,0 +1,17 @@
+{
+  "name": "@readtailor/observability",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit --pretty false",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
+  },
+  "dependencies": {
+    "@readtailor/config": "workspace:*",
+    "pino": "^9.7.0"
+  }
+}

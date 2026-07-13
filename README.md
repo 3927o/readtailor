@@ -6,6 +6,33 @@
 > [`docs/implementation_baseline.md`](docs/implementation_baseline.md)，其中冻结了当前自用上线目标、
 > 云服务取舍和实施顺序。
 
+## 当前工程
+
+项目使用 Node.js 22 LTS 和 pnpm 10。首次安装：
+
+```bash
+pnpm install
+cp .env.example .env
+```
+
+本地分别启动三个进程：
+
+```bash
+pnpm dev:web
+pnpm dev:api
+pnpm dev:worker
+```
+
+默认地址：Web `http://localhost:5173`，API health `http://localhost:3001/v1/health`，
+Worker health `http://localhost:3002/health`。Worker 未配置 `REDIS_URL` 时会正常启动，但 health
+状态为 `degraded`。
+
+提交前执行：
+
+```bash
+pnpm check
+```
+
 这是 ReadTailor 新 TypeScript 网页产品的实现交接包。源仓库中的 Rust CLI、历史实验目录和大型输出
 不属于新产品架构依据，未包含在本包中。
 

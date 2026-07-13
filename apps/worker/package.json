@@ -1,0 +1,24 @@
+{
+  "name": "@readtailor/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsup",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
+  },
+  "dependencies": {
+    "@readtailor/config": "workspace:*",
+    "@readtailor/observability": "workspace:*",
+    "@readtailor/queue": "workspace:*",
+    "bullmq": "^5.56.0",
+    "fastify": "^5.4.0",
+    "ioredis": "5.10.1",
+    "pino": "^9.7.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0"
+  }
+}
