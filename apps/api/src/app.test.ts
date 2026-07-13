@@ -145,6 +145,22 @@ describe('POST /v1/system/chat', () => {
     ]);
   });
 
+  it('returns 500 when the stream fails before the first event', async () => {
+    const deadChat: SystemChatService = {
+      async *stream() {
+        throw new Error('database unavailable');
+      },
+    };
+    const app = await buildApp(config, { systemChat: deadChat });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/system/chat',
+      payload: { prompt: '你好' },
+    });
+
+    expect(response.statusCode).toBe(500);
+  });
+
   it('emits an in-band error event when the stream fails midway', async () => {
     const brokenChat: SystemChatService = {
       async *stream() {

@@ -1,5 +1,5 @@
 import Fastify from 'fastify';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { createDatabase, systemJobs } from '@readtailor/database';
 import { createLogger } from '@readtailor/observability';
 import { createSystemWorker } from '@readtailor/queue';
@@ -33,20 +33,28 @@ const queueWorker = config.redisUrl && database
       concurrency: config.concurrency,
       logger,
       handler: async (job) => {
+        if (!job.data.jobId) {
+          // 旧格式任务没有 jobId；undefined 传给 postgres.js 会直接抛 UNDEFINED_VALUE。
+          logger.warn({ queueJobId: job.id }, 'skipping legacy job without jobId');
+          return;
+        }
         await database.db
           .update(systemJobs)
-          .set({ status: 'completed', completedAt: new Date() })
+          // created_at 由数据库时钟生成，完成时间也用 now() 以免本机时钟偏差造成先完成后创建。
+          .set({ status: 'completed', completedAt: sql`now()` })
           .where(eq(systemJobs.id, job.data.jobId));
       },
     })
   : undefined;
 
-queueWorker?.on('failed', (job) => {
-  if (!database || !job) {
+queueWorker?.on('failed', (job, error) => {
+  if (!database || !job || !job.data.jobId) {
     return;
   }
   const attempts = job.opts.attempts ?? 1;
-  if (job.attemptsMade < attempts) {
+  // UnrecoverableError（含 stall 淘汰路径）在 attemptsMade < attempts 时就已终态失败。
+  const terminal = job.attemptsMade >= attempts || error.name === 'UnrecoverableError';
+  if (!terminal) {
     return; // BullMQ 还会重试，先不落失败状态
   }
   void database.db
@@ -77,7 +85,12 @@ queueWorker?.on('ioredis:close', () => {
 });
 
 queueWorker?.on('error', (error) => {
-  logger.error({ err: error }, 'system queue error');
+  // 阻塞连接（取任务用）故障只会以 error 形式上抛，不会触发 ioredis:close；
+  // 任一连接恢复后会重新收到 ready，届时状态会被拨回 connected。
+  if (queueStatus !== 'disconnected') {
+    logger.error({ err: error }, 'system queue error');
+  }
+  queueStatus = 'disconnected';
 });
 
 if (queueWorker) {
@@ -128,6 +141,8 @@ app.get('/health', async (_request, reply) => {
 
 const shutdown = async (signal: string) => {
   logger.info({ signal }, 'shutting down worker');
+  // 兜底：清理流程若被卡住（如长任务不结束），限时后强制退出，避免只能被 SIGKILL。
+  setTimeout(() => process.exit(1), 10_000).unref();
   await queueWorker?.close();
   await app.close();
   await database?.client.end({ timeout: 5 });

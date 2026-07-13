@@ -17,14 +17,20 @@ interface ChatCompletionChunk {
       reasoning_content?: string | null;
     };
   }>;
+  error?: {
+    message?: string;
+  };
 }
 
 /**
  * Parse a single SSE line from an OpenAI-compatible streaming response.
- * Returns 'done' on the [DONE] sentinel, the delta events on a data line,
- * and null for anything else (comments, keep-alives, blank lines).
+ * Returns 'done' on the [DONE] sentinel, an error marker on an in-band error
+ * chunk, the delta events on a data line, and null for anything else
+ * (comments, keep-alives, blank lines).
  */
-export function parseChatCompletionLine(line: string): ModelStreamEvent[] | 'done' | null {
+export function parseChatCompletionLine(
+  line: string,
+): ModelStreamEvent[] | 'done' | { error: string } | null {
   const trimmed = line.trim();
   if (!trimmed.startsWith('data:')) {
     return null;
@@ -40,6 +46,11 @@ export function parseChatCompletionLine(line: string): ModelStreamEvent[] | 'don
     chunk = JSON.parse(data) as ChatCompletionChunk;
   } catch {
     return null;
+  }
+
+  // 有些上游先回 200 再用带内 error 块报错（限流、内容策略等），必须当失败处理。
+  if (chunk.error) {
+    return { error: chunk.error.message ?? 'unknown model stream error' };
   }
 
   const delta = chunk.choices?.[0]?.delta;
@@ -76,7 +87,9 @@ export function createOpenAiCompatibleEngine(options: {
           max_tokens: streamOptions?.maxTokens ?? 2048,
           stream: true,
         }),
-        signal: AbortSignal.timeout(options.timeoutMs ?? 120_000),
+        // 注意：这是整条流的总时长上限（fetch 的 signal 覆盖到 body 读完），
+        // 推理模型的长回答可能持续数分钟，默认给 10 分钟。
+        signal: AbortSignal.timeout(options.timeoutMs ?? 600_000),
       });
 
       if (!response.ok) {
@@ -89,22 +102,34 @@ export function createOpenAiCompatibleEngine(options: {
 
       const decoder = new TextDecoder();
       let buffer = '';
-      for await (const bytes of response.body) {
-        buffer += decoder.decode(bytes, { stream: true });
-        let newlineIndex = buffer.indexOf('\n');
-        while (newlineIndex !== -1) {
-          const line = buffer.slice(0, newlineIndex);
-          buffer = buffer.slice(newlineIndex + 1);
+      let done = false;
+      const consume = function* (text: string): Generator<ModelStreamEvent> {
+        buffer += text;
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
           const parsed = parseChatCompletionLine(line);
           if (parsed === 'done') {
+            done = true;
             return;
+          }
+          if (parsed && 'error' in parsed) {
+            throw new Error(`model stream error: ${parsed.error}`);
           }
           if (parsed) {
             yield* parsed;
           }
-          newlineIndex = buffer.indexOf('\n');
+        }
+      };
+
+      for await (const bytes of response.body) {
+        yield* consume(decoder.decode(bytes, { stream: true }));
+        if (done) {
+          return;
         }
       }
+      // 上游可能不发结尾换行/[DONE] 就断开：冲刷解码器并处理残留的最后一行。
+      yield* consume(`${decoder.decode()}\n`);
     },
   };
 }

@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { systemJobs } from '@readtailor/database';
 import type { Database } from '@readtailor/database';
 import type { SystemQueue } from '@readtailor/queue';
-import type { SystemJob, SystemJobStatus } from '@readtailor/contracts';
+import type { SystemJob } from '@readtailor/contracts';
 
 export interface SystemJobService {
   enqueuePing(): Promise<{ jobId: string }>;
@@ -26,7 +26,22 @@ export function createSystemJobService(options: {
         throw new Error('failed to insert system job');
       }
 
-      await queue.add('system.ping', { jobId: row.id, kind: 'system.ping', requestedAt });
+      try {
+        // jobId 用数据库行 ID：队列日志可直接对上表记录，重复入队也会被去重。
+        await queue.add(
+          'system.ping',
+          { jobId: row.id, kind: 'system.ping', requestedAt },
+          { jobId: row.id },
+        );
+      } catch (error) {
+        // 入队失败时把行落成 failed，避免留下永远 queued 的孤儿行；失败本身继续上抛。
+        await db
+          .update(systemJobs)
+          .set({ status: 'failed' })
+          .where(eq(systemJobs.id, row.id))
+          .catch(() => undefined);
+        throw error;
+      }
       return { jobId: row.id };
     },
 
@@ -39,8 +54,8 @@ export function createSystemJobService(options: {
       return {
         id: row.id,
         kind: row.kind,
-        status: row.status as SystemJobStatus,
-        result: (row.result as Record<string, unknown> | null) ?? null,
+        status: row.status,
+        result: row.result,
         createdAt: row.createdAt.toISOString(),
         completedAt: row.completedAt?.toISOString() ?? null,
       };

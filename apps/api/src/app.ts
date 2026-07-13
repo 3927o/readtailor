@@ -165,15 +165,30 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
           .send({ error: 'system chat is not configured (DATABASE_URL required)' });
       }
 
+      const encode = (event: SystemChatEvent) => `data: ${JSON.stringify(event)}\n\n`;
+
+      // 先拉取首个事件再开流：开流前的失败（如数据库不可用）还能以 HTTP 错误码呈现，
+      // 一旦响应头发出就只能靠带内 error 事件了。
+      const events = systemChat.stream(request.body.prompt);
+      let first: IteratorResult<SystemChatEvent>;
+      try {
+        first = await events.next();
+      } catch (error) {
+        request.log.error({ err: error }, 'system chat failed to start');
+        return reply.code(500).send({ error: 'system chat failed to start' });
+      }
+
       const toSse = async function* (): AsyncGenerator<string> {
         try {
-          for await (const event of systemChat.stream(request.body.prompt)) {
-            yield `data: ${JSON.stringify(event satisfies SystemChatEvent)}\n\n`;
+          if (!first.done) {
+            yield encode(first.value);
+          }
+          for await (const event of events) {
+            yield encode(event);
           }
         } catch (error) {
-          // 响应头已经发出，只能用带内错误事件通知客户端。
           request.log.error({ err: error }, 'system chat stream failed');
-          yield `data: ${JSON.stringify({ type: 'error', message: 'model stream failed' })}\n\n`;
+          yield encode({ type: 'error', message: 'model stream failed' });
         }
       };
 

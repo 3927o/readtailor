@@ -24,6 +24,15 @@ describe('parseChatCompletionLine', () => {
   it('returns no events for an empty delta', () => {
     expect(parseChatCompletionLine('data: {"choices":[{"delta":{}}]}')).toEqual([]);
   });
+
+  it('surfaces in-band error chunks as an error marker', () => {
+    expect(
+      parseChatCompletionLine('data: {"error":{"message":"rate limit exceeded"}}'),
+    ).toEqual({ error: 'rate limit exceeded' });
+    expect(parseChatCompletionLine('data: {"error":{}}')).toEqual({
+      error: 'unknown model stream error',
+    });
+  });
 });
 
 describe('createFakeModelEngine', () => {

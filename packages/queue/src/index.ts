@@ -1,21 +1,30 @@
 import { Queue, Worker } from 'bullmq';
-import type { Job } from 'bullmq';
-import IORedis from 'ioredis';
+import type { Job, RedisOptions } from 'bullmq';
+import type IORedis from 'ioredis';
 import type { Logger } from 'pino';
 import type { SystemJobPayload } from '@readtailor/contracts';
 
 export const SYSTEM_QUEUE_NAME = 'system';
 
-function createRedis(redisUrl: string) {
-  return new IORedis(redisUrl, {
+// 传连接参数而非 ioredis 实例：实例会被 BullMQ 视作调用方所有（shared），
+// close() 时不 quit，socket 只能靠进程退出回收。
+function redisOptionsFromUrl(redisUrl: string): RedisOptions {
+  const url = new URL(redisUrl);
+  return {
+    host: url.hostname,
+    port: url.port ? Number(url.port) : 6379,
+    ...(url.username ? { username: decodeURIComponent(url.username) } : {}),
+    ...(url.password ? { password: decodeURIComponent(url.password) } : {}),
+    ...(url.pathname && url.pathname !== '/' ? { db: Number(url.pathname.slice(1)) } : {}),
+    ...(url.protocol === 'rediss:' ? { tls: {} } : {}),
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
-  });
+  };
 }
 
 export function createSystemQueue(redisUrl: string) {
   return new Queue<SystemJobPayload>(SYSTEM_QUEUE_NAME, {
-    connection: createRedis(redisUrl),
+    connection: redisOptionsFromUrl(redisUrl),
     defaultJobOptions: {
       attempts: 3,
       removeOnComplete: 100,
@@ -46,7 +55,7 @@ export function createSystemWorker(options: {
       await options.handler(job);
     },
     {
-      connection: createRedis(options.redisUrl),
+      connection: redisOptionsFromUrl(options.redisUrl),
       concurrency: options.concurrency,
     },
   );

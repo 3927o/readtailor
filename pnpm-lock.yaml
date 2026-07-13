@@ -151,6 +151,9 @@ importers:
 
   packages/database:
     dependencies:
+      '@readtailor/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       drizzle-orm:
         specifier: ^0.44.0
         version: 0.44.7(postgres@3.4.9)
