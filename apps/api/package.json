@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",
+    "@fastify/multipart": "^9.4.0",
     "@fastify/type-provider-typebox": "^5.1.0",
     "@readtailor/config": "workspace:*",
     "@readtailor/contracts": "workspace:*",

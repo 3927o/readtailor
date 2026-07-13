@@ -1,9 +1,15 @@
 import { createHash } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
-import type { SharedBook } from '@readtailor/contracts';
+import { and, desc, eq } from 'drizzle-orm';
+import type {
+  BookCatalogItem,
+  BookNormalizationStatus,
+  SharedBook,
+} from '@readtailor/contracts';
 import {
   bookPackages,
   bookProfiles,
+  normalizationAttempts,
+  normalizationRuns,
   sharedBooks,
   type Database,
 } from '@readtailor/database';
@@ -21,9 +27,13 @@ export type ReadyBookRecord = SharedBook & {
 
 export interface BookRepository {
   getReadyBook(id: string): Promise<ReadyBookRecord | null>;
+  listBooks(): Promise<BookCatalogItem[]>;
+  getNormalizationStatus(id: string): Promise<BookNormalizationStatus | null>;
 }
 
 export interface BookService {
+  listBooks(): Promise<BookCatalogItem[]>;
+  getNormalizationStatus(id: string): Promise<BookNormalizationStatus | null>;
   getBook(id: string): Promise<SharedBook | null>;
   getManifest(id: string): Promise<unknown | null>;
   getProfile(id: string): Promise<unknown | null>;
@@ -32,6 +42,19 @@ export interface BookService {
 }
 
 export function createDatabaseBookRepository(db: Database): BookRepository {
+  const catalogItem = (row: typeof sharedBooks.$inferSelect): BookCatalogItem => ({
+    id: row.id,
+    epubSha256: row.epubSha256,
+    status: row.status,
+    title: row.title,
+    authors: row.authors,
+    coverPath: row.coverPath,
+    sourceFilename: row.sourceFilename,
+    errorSummary: row.errorSummary,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  });
+
   return {
     async getReadyBook(id) {
       const [row] = await db
@@ -74,6 +97,52 @@ export function createDatabaseBookRepository(db: Database): BookRepository {
         fileHashes: row.package.fileHashes,
         profileObjectKey: row.profile.objectKey,
         profileSha256: row.profile.sha256,
+      };
+    },
+    async listBooks() {
+      const rows = await db.select().from(sharedBooks).orderBy(desc(sharedBooks.updatedAt));
+      return rows.map(catalogItem);
+    },
+    async getNormalizationStatus(id) {
+      const [book] = await db.select().from(sharedBooks).where(eq(sharedBooks.id, id)).limit(1);
+      if (!book) return null;
+      const [run] = await db
+        .select()
+        .from(normalizationRuns)
+        .where(eq(normalizationRuns.sharedBookId, id))
+        .orderBy(desc(normalizationRuns.startedAt))
+        .limit(1);
+      if (!run) return { book: catalogItem(book), run: null };
+      const [attempt] = await db
+        .select()
+        .from(normalizationAttempts)
+        .where(eq(normalizationAttempts.normalizationRunId, run.id))
+        .orderBy(desc(normalizationAttempts.attemptNo))
+        .limit(1);
+      return {
+        book: catalogItem(book),
+        run: {
+          id: run.id,
+          status: run.status,
+          step: run.step,
+          attempt: run.attempt,
+          errorSummary: run.errorSummary,
+          startedAt: run.startedAt.toISOString(),
+          completedAt: run.completedAt?.toISOString() ?? null,
+          latestAttempt: attempt
+            ? {
+                attemptNo: attempt.attemptNo,
+                status: attempt.status,
+                turnCount: attempt.turnCount,
+                toolCallCount: attempt.toolCallCount,
+                blockingErrorCount: attempt.blockingErrorCount,
+                warningCount: attempt.warningCount,
+                errorSummary: attempt.errorSummary,
+                startedAt: attempt.startedAt.toISOString(),
+                completedAt: attempt.completedAt?.toISOString() ?? null,
+              }
+            : null,
+        },
       };
     },
   };
@@ -136,6 +205,12 @@ export function createBookService(options: {
   };
 
   return {
+    listBooks() {
+      return options.repository.listBooks();
+    },
+    getNormalizationStatus(id) {
+      return options.repository.getNormalizationStatus(id);
+    },
     async getBook(id) {
       const book = await options.repository.getReadyBook(id);
       if (!book) {

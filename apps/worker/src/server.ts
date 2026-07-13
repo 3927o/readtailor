@@ -1,15 +1,30 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import { eq, sql } from 'drizzle-orm';
 import { createDatabase, systemJobs } from '@readtailor/database';
 import { createLogger } from '@readtailor/observability';
-import { createSystemWorker } from '@readtailor/queue';
+import { createNormalizationWorker, createSystemWorker } from '@readtailor/queue';
+import { createObjectStorage } from '@readtailor/storage';
 import { loadWorkerConfig } from './config';
+import { executeNormalizationRun } from './normalization/job';
 
 const config = loadWorkerConfig();
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const logger = createLogger(config.logLevel);
 const app = Fastify({ loggerInstance: logger });
 
 const database = config.databaseUrl ? createDatabase(config.databaseUrl) : undefined;
+const objectStorage = createObjectStorage({
+  localRoot: config.objectStorageLocalRoot
+    ? resolve(repoRoot, config.objectStorageLocalRoot)
+    : undefined,
+  endpoint: config.objectStorageEndpoint,
+  region: config.objectStorageRegion,
+  bucket: config.objectStorageBucket,
+  accessKeyId: config.objectStorageAccessKeyId,
+  secretAccessKey: config.objectStorageSecretAccessKey,
+});
 
 type QueueStatus =
   | 'not_configured'
@@ -46,6 +61,61 @@ const queueWorker = config.redisUrl && database
       },
     })
   : undefined;
+
+const normalizationModel = config.normalizationModelName ?? config.modelName;
+const analysisModel = config.analysisModelName ?? normalizationModel;
+const normalizationConfigured = Boolean(
+  config.redisUrl &&
+    database &&
+    objectStorage &&
+    config.e2bApiKey &&
+    config.modelApiBaseUrl &&
+    config.modelApiKey &&
+    normalizationModel &&
+    analysisModel,
+);
+const normalizationWorker =
+  normalizationConfigured &&
+  config.redisUrl &&
+  database &&
+  objectStorage &&
+  config.e2bApiKey &&
+  config.modelApiBaseUrl &&
+  config.modelApiKey &&
+  normalizationModel &&
+  analysisModel
+    ? createNormalizationWorker({
+        redisUrl: config.redisUrl,
+        concurrency: config.concurrency,
+        logger,
+        handler: async (job) => {
+          await executeNormalizationRun({
+            db: database.db,
+            storage: objectStorage,
+            normalizationRunId: job.data.runId,
+            repoRoot,
+            e2bApiKey: config.e2bApiKey!,
+            ...(config.e2bTemplate ? { e2bTemplate: config.e2bTemplate } : {}),
+            modelApiBaseUrl: config.modelApiBaseUrl!,
+            modelApiKey: config.modelApiKey!,
+            normalizationModel,
+            analysisModel,
+            maxAttempts: config.normalizationMaxAttempts,
+            maxTurns: config.normalizationMaxTurns,
+            attemptTimeoutMs: config.normalizationAttemptTimeoutMs,
+            analysisMaxTurns: config.analysisMaxTurns,
+            analysisTimeoutMs: config.analysisTimeoutMs,
+            logger,
+          });
+        },
+      })
+    : undefined;
+
+if (!normalizationWorker) {
+  logger.warn(
+    'normalization queue consumer disabled: Redis, database, object storage, E2B and model configuration are required',
+  );
+}
 
 queueWorker?.on('failed', (job, error) => {
   if (!database || !job || !job.data.jobId) {
@@ -144,6 +214,7 @@ const shutdown = async (signal: string) => {
   // 兜底：清理流程若被卡住（如长任务不结束），限时后强制退出，避免只能被 SIGKILL。
   setTimeout(() => process.exit(1), 10_000).unref();
   await queueWorker?.close();
+  await normalizationWorker?.close();
   await app.close();
   await database?.client.end({ timeout: 5 });
   process.exit(0);

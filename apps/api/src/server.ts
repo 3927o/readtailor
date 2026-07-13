@@ -1,8 +1,15 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createDatabase } from '@readtailor/database';
 import { createFakeModelEngine, createOpenAiCompatibleEngine } from '@readtailor/model';
-import { createSystemQueue, pingSystemQueue } from '@readtailor/queue';
+import {
+  createNormalizationQueue,
+  createSystemQueue,
+  pingSystemQueue,
+} from '@readtailor/queue';
 import { createObjectStorage } from '@readtailor/storage';
 import { buildApp } from './app';
+import { createBookImportService } from './book-imports';
 import { createBookService, createDatabaseBookRepository } from './books';
 import { loadApiConfig } from './config';
 import { createSystemChatService } from './system-chat';
@@ -13,6 +20,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 const database = config.databaseUrl ? createDatabase(config.databaseUrl) : undefined;
 const systemQueue = config.redisUrl ? createSystemQueue(config.redisUrl) : undefined;
+const normalizationQueue = config.redisUrl ? createNormalizationQueue(config.redisUrl) : undefined;
 const objectStorage = createObjectStorage({
   localRoot: config.objectStorageLocalRoot
     ? resolve(repoRoot, config.objectStorageLocalRoot)
@@ -56,6 +64,14 @@ const books =
         storage: objectStorage,
       })
     : undefined;
+const bookImports =
+  database && objectStorage && normalizationQueue
+    ? createBookImportService({
+        db: database.db,
+        storage: objectStorage,
+        queue: normalizationQueue,
+      })
+    : undefined;
 
 const healthProbes: Record<string, () => Promise<void>> = {};
 if (database) {
@@ -74,7 +90,13 @@ if (objectStorage) {
   };
 }
 
-const app = await buildApp(config, { systemJobs, systemChat, healthProbes, books });
+const app = await buildApp(config, {
+  systemJobs,
+  systemChat,
+  healthProbes,
+  books,
+  bookImports,
+});
 
 app.log.info({ model: modelEngine.name }, 'model engine ready');
 if (!modelConfigured) {
@@ -89,6 +111,9 @@ if (!systemChat) {
 if (!books) {
   app.log.warn('book catalog disabled: DATABASE_URL and object storage are both required');
 }
+if (!bookImports) {
+  app.log.warn('book import disabled: DATABASE_URL, REDIS_URL and object storage are required');
+}
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, 'shutting down api');
@@ -96,6 +121,7 @@ const shutdown = async (signal: string) => {
   setTimeout(() => process.exit(1), 10_000).unref();
   await app.close();
   await systemQueue?.close();
+  await normalizationQueue?.close();
   await database?.client.end({ timeout: 5 });
   process.exit(0);
 };
@@ -104,5 +130,3 @@ process.once('SIGINT', () => void shutdown('SIGINT'));
 process.once('SIGTERM', () => void shutdown('SIGTERM'));
 
 await app.listen({ host: config.host, port: config.port });
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';

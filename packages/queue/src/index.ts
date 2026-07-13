@@ -2,9 +2,10 @@ import { Queue, Worker } from 'bullmq';
 import type { Job, RedisOptions } from 'bullmq';
 import type IORedis from 'ioredis';
 import type { Logger } from 'pino';
-import type { SystemJobPayload } from '@readtailor/contracts';
+import type { NormalizationJobPayload, SystemJobPayload } from '@readtailor/contracts';
 
 export const SYSTEM_QUEUE_NAME = 'system';
+export const NORMALIZATION_QUEUE_NAME = 'normalization';
 
 // 传连接参数而非 ioredis 实例：实例会被 BullMQ 视作调用方所有（shared），
 // close() 时不 quit，socket 只能靠进程退出回收。
@@ -31,6 +32,48 @@ export function createSystemQueue(redisUrl: string) {
       removeOnFail: 100,
     },
   });
+}
+
+export function createNormalizationQueue(redisUrl: string) {
+  return new Queue<NormalizationJobPayload>(NORMALIZATION_QUEUE_NAME, {
+    connection: redisOptionsFromUrl(redisUrl),
+    defaultJobOptions: {
+      attempts: 1,
+      removeOnComplete: 100,
+      removeOnFail: 100,
+    },
+  });
+}
+
+export type NormalizationQueue = ReturnType<typeof createNormalizationQueue>;
+export type NormalizationQueueJob = Job<NormalizationJobPayload>;
+
+export function createNormalizationWorker(options: {
+  redisUrl: string;
+  concurrency: number;
+  logger: Logger;
+  handler: (job: NormalizationQueueJob) => Promise<void>;
+}) {
+  const worker = new Worker<NormalizationJobPayload>(
+    NORMALIZATION_QUEUE_NAME,
+    async (job) => {
+      options.logger.info({ jobId: job.id, runId: job.data.runId }, 'processing normalization job');
+      await options.handler(job);
+    },
+    {
+      connection: redisOptionsFromUrl(options.redisUrl),
+      concurrency: options.concurrency,
+    },
+  );
+
+  worker.on('failed', (job, error) => {
+    options.logger.error(
+      { err: error, jobId: job?.id, runId: job?.data.runId },
+      'normalization job failed',
+    );
+  });
+
+  return worker;
 }
 
 export type SystemQueue = ReturnType<typeof createSystemQueue>;

@@ -125,3 +125,68 @@ export const SharedBookSchema = Type.Object({
   package: Type.Union([BookPackageSummarySchema, Type.Null()]),
 });
 export type SharedBook = Static<typeof SharedBookSchema>;
+
+export const BookCatalogItemSchema = Type.Object({
+  id: Type.String(),
+  epubSha256: Type.String(),
+  status: SharedBookStatusSchema,
+  title: Type.String(),
+  authors: Type.Array(Type.String()),
+  coverPath: Type.Union([Type.String(), Type.Null()]),
+  sourceFilename: Type.String(),
+  errorSummary: Type.Union([Type.String(), Type.Null()]),
+  createdAt: Type.String(),
+  updatedAt: Type.String(),
+});
+export type BookCatalogItem = Static<typeof BookCatalogItemSchema>;
+
+export const BookCatalogResponseSchema = Type.Object({
+  books: Type.Array(BookCatalogItemSchema),
+});
+export type BookCatalogResponse = Static<typeof BookCatalogResponseSchema>;
+
+export const NormalizationAttemptSummarySchema = Type.Object({
+  attemptNo: Type.Integer({ minimum: 1 }),
+  status: NormalizationAttemptStatusSchema,
+  turnCount: Type.Integer({ minimum: 0 }),
+  toolCallCount: Type.Integer({ minimum: 0 }),
+  blockingErrorCount: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
+  warningCount: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
+  errorSummary: Type.Union([Type.String(), Type.Null()]),
+  startedAt: Type.String(),
+  completedAt: Type.Union([Type.String(), Type.Null()]),
+});
+export type NormalizationAttemptSummary = Static<typeof NormalizationAttemptSummarySchema>;
+
+export const NormalizationRunSummarySchema = Type.Object({
+  id: Type.String(),
+  status: NormalizationRunStatusSchema,
+  step: Type.String(),
+  attempt: Type.Integer({ minimum: 1 }),
+  errorSummary: Type.Union([Type.String(), Type.Null()]),
+  startedAt: Type.String(),
+  completedAt: Type.Union([Type.String(), Type.Null()]),
+  latestAttempt: Type.Union([NormalizationAttemptSummarySchema, Type.Null()]),
+});
+export type NormalizationRunSummary = Static<typeof NormalizationRunSummarySchema>;
+
+export const BookNormalizationStatusSchema = Type.Object({
+  book: BookCatalogItemSchema,
+  run: Type.Union([NormalizationRunSummarySchema, Type.Null()]),
+});
+export type BookNormalizationStatus = Static<typeof BookNormalizationStatusSchema>;
+
+export const ImportBookResponseSchema = Type.Object({
+  bookId: Type.String(),
+  runId: Type.Union([Type.String(), Type.Null()]),
+  reused: Type.Boolean(),
+  status: SharedBookStatusSchema,
+});
+export type ImportBookResponse = Static<typeof ImportBookResponseSchema>;
+
+export const NormalizationJobPayloadSchema = Type.Object({
+  kind: Type.Literal('book.normalize'),
+  runId: Type.String(),
+  requestedAt: Type.String(),
+});
+export type NormalizationJobPayload = Static<typeof NormalizationJobPayloadSchema>;

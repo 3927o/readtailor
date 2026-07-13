@@ -4,6 +4,7 @@ import { buildApp } from './app';
 import { loadApiConfig } from './config';
 import type { SystemChatService } from './system-chat';
 import type { SystemJobService } from './system-jobs';
+import type { BookImportService } from './book-imports';
 import type { BookService } from './books';
 
 const JOB_ID = 'a3bb189e-8bf9-3888-9912-ace4e6543002';
@@ -21,7 +22,26 @@ function createFakeService(job: SystemJob | null): SystemJobService {
 
 const config = loadApiConfig({ LOG_LEVEL: 'silent' });
 
+const catalogBook = {
+  id: JOB_ID,
+  epubSha256: 'a'.repeat(64),
+  status: 'ready' as const,
+  title: 'Book',
+  authors: ['Author'],
+  coverPath: 'assets/cover.jpg',
+  sourceFilename: 'book.epub',
+  errorSummary: null,
+  createdAt: '2026-07-13T00:00:00.000Z',
+  updatedAt: '2026-07-13T00:00:01.000Z',
+};
+
 const fakeBooks: BookService = {
+  async listBooks() {
+    return [catalogBook];
+  },
+  async getNormalizationStatus(id) {
+    return id === JOB_ID ? { book: catalogBook, run: null } : null;
+  },
   async getBook(id) {
     return {
       id,
@@ -101,6 +121,17 @@ describe('GET /v1/health', () => {
 });
 
 describe('ready book routes', () => {
+  it('returns the shelf catalog and normalization status', async () => {
+    const app = await buildApp(config, { books: fakeBooks });
+    const catalog = await app.inject({ method: 'GET', url: '/v1/books' });
+    expect(catalog.statusCode).toBe(200);
+    expect(catalog.json()).toEqual({ books: [catalogBook] });
+
+    const status = await app.inject({ method: 'GET', url: `/v1/books/${JOB_ID}/status` });
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toEqual({ book: catalogBook, run: null });
+  });
+
   it('returns metadata, manifest, content and package assets', async () => {
     const app = await buildApp(config, { books: fakeBooks });
     const book = await app.inject({ method: 'GET', url: `/v1/books/${JOB_ID}` });
@@ -129,6 +160,48 @@ describe('ready book routes', () => {
   it('returns 503 when the catalog is not configured', async () => {
     const app = await buildApp(config);
     const response = await app.inject({ method: 'GET', url: `/v1/books/${JOB_ID}` });
+    expect(response.statusCode).toBe(503);
+  });
+});
+
+describe('POST /v1/books/import', () => {
+  it('accepts a multipart EPUB and returns the queued book', async () => {
+    const bookImports: BookImportService = {
+      async importBook(input) {
+        expect(input.filename).toBe('book.epub');
+        expect(input.mediaType).toBe('application/epub+zip');
+        expect([...input.bytes.slice(0, 2)]).toEqual([0x50, 0x4b]);
+        return { bookId: JOB_ID, runId: JOB_ID, reused: false, status: 'queued' };
+      },
+    };
+    const boundary = 'readtailor-test-boundary';
+    const payload = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="book.epub"\r\nContent-Type: application/epub+zip\r\n\r\n`,
+      ),
+      Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const app = await buildApp(config, { bookImports });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/books/import',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({
+      bookId: JOB_ID,
+      runId: JOB_ID,
+      reused: false,
+      status: 'queued',
+    });
+  });
+
+  it('returns 503 when the import pipeline is not configured', async () => {
+    const app = await buildApp(config);
+    const response = await app.inject({ method: 'POST', url: '/v1/books/import' });
     expect(response.statusCode).toBe(503);
   });
 });

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { SharedBook } from '@readtailor/contracts';
 import { FileSystemObjectStorage } from '@readtailor/storage';
-import { createBookService, type ReadyBookRecord } from './books';
+import { createBookService, type BookRepository, type ReadyBookRecord } from './books';
 
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -48,6 +48,14 @@ function readyRecord(): ReadyBookRecord {
   };
 }
 
+function repository(record: ReadyBookRecord): BookRepository {
+  return {
+    async getReadyBook() { return record; },
+    async listBooks() { return []; },
+    async getNormalizationStatus() { return null; },
+  };
+}
+
 function createMemoryStorage(values: Record<string, string>) {
   return {
     async get(key: string) {
@@ -78,7 +86,7 @@ describe('createBookService', () => {
   it('reads the current immutable package through storage', async () => {
     const record = readyRecord();
     const service = createBookService({
-      repository: { async getReadyBook() { return record; } },
+      repository: repository(record),
       storage: createMemoryStorage({
         ...Object.fromEntries(
           Object.entries(artifacts).map(([path, value]) => [`${record.objectPrefix}/${path}`, value]),
@@ -96,7 +104,7 @@ describe('createBookService', () => {
   it('rejects asset paths that can leave the package asset directory', async () => {
     const record = readyRecord();
     const service = createBookService({
-      repository: { async getReadyBook() { return record; } },
+      repository: repository(record),
       storage: createMemoryStorage({}),
     });
     await expect(service.getAsset(record.id, '../book.normalized.html')).resolves.toBeNull();
@@ -106,7 +114,7 @@ describe('createBookService', () => {
   it('rejects objects that are absent from or differ from the package inventory', async () => {
     const record = readyRecord();
     const service = createBookService({
-      repository: { async getReadyBook() { return record; } },
+      repository: repository(record),
       storage: createMemoryStorage({
         [`${record.objectPrefix}/assets/cover.jpg`]: 'tampered',
         [`${record.objectPrefix}/assets/injected.jpg`]: 'injected',

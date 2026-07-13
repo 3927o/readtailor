@@ -1,7 +1,9 @@
 import { Value } from '@sinclair/typebox/value';
 import { describe, expect, it } from 'vitest';
 import {
+  BookNormalizationStatusSchema,
   HealthResponseSchema,
+  ImportBookResponseSchema,
   SharedBookSchema,
   SystemJobPayloadSchema,
   SystemJobSchema,
@@ -111,5 +113,52 @@ describe('SharedBookSchema', () => {
         },
       }),
     ).toBe(true);
+  });
+});
+
+describe('book normalization contracts', () => {
+  const book = {
+    id: 'book-id',
+    epubSha256: 'a'.repeat(64),
+    status: 'normalizing',
+    title: 'Book',
+    authors: [],
+    coverPath: null,
+    sourceFilename: 'book.epub',
+    errorSummary: null,
+    createdAt: '2026-07-13T00:00:00.000Z',
+    updatedAt: '2026-07-13T00:00:01.000Z',
+  };
+
+  it('accepts import responses and live attempt diagnostics', () => {
+    expect(Value.Check(ImportBookResponseSchema, {
+      bookId: 'book-id',
+      runId: 'run-id',
+      reused: false,
+      status: 'queued',
+    })).toBe(true);
+    expect(Value.Check(BookNormalizationStatusSchema, {
+      book,
+      run: {
+        id: 'run-id',
+        status: 'running',
+        step: 'normalizing',
+        attempt: 1,
+        errorSummary: null,
+        startedAt: '2026-07-13T00:00:01.000Z',
+        completedAt: null,
+        latestAttempt: {
+          attemptNo: 1,
+          status: 'running',
+          turnCount: 8,
+          toolCallCount: 12,
+          blockingErrorCount: 0,
+          warningCount: 3,
+          errorSummary: null,
+          startedAt: '2026-07-13T00:00:02.000Z',
+          completedAt: null,
+        },
+      },
+    })).toBe(true);
   });
 });

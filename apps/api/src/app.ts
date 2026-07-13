@@ -1,19 +1,24 @@
 import { Readable } from 'node:stream';
 import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
 import Fastify from 'fastify';
 import { Type } from '@sinclair/typebox';
 import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
 import {
   type DependencyStatus,
+  BookCatalogResponseSchema,
+  BookNormalizationStatusSchema,
   EnqueueSystemPingResponseSchema,
   ErrorResponseSchema,
   HealthResponseSchema,
+  ImportBookResponseSchema,
   SharedBookSchema,
   SystemChatRequestSchema,
   SystemJobSchema,
 } from '@readtailor/contracts';
 import { createLogger } from '@readtailor/observability';
 import type { ApiConfig } from './config';
+import { BookImportError, type BookImportService } from './book-imports';
 import type { BookService } from './books';
 import type { SystemChatEvent, SystemChatService } from './system-chat';
 import type { SystemJobService } from './system-jobs';
@@ -31,6 +36,7 @@ export interface AppDeps {
   systemChat?: SystemChatService | undefined;
   healthProbes?: Record<string, HealthProbe> | undefined;
   books?: BookService | undefined;
+  bookImports?: BookImportService | undefined;
 }
 
 const bookIdParams = Type.Object({
@@ -83,6 +89,12 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
   await app.register(cors, {
     origin: config.webOrigins,
     credentials: true,
+  });
+  await app.register(multipart, {
+    limits: {
+      files: 1,
+      fileSize: 100 * 1024 * 1024,
+    },
   });
 
   app.get(
@@ -144,6 +156,83 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
 
       const { jobId } = await deps.systemJobs.enqueuePing();
       return reply.code(202).send({ jobId });
+    },
+  );
+
+  app.get(
+    '/v1/books',
+    {
+      schema: {
+        response: {
+          200: BookCatalogResponseSchema,
+          503: ErrorResponseSchema,
+        },
+      },
+    },
+    async (_request, reply) => {
+      if (!deps.books) {
+        return reply.code(503).send({ error: 'book catalog is not configured' });
+      }
+      return { books: await deps.books.listBooks() };
+    },
+  );
+
+  app.post(
+    '/v1/books/import',
+    {
+      schema: {
+        response: {
+          200: ImportBookResponseSchema,
+          202: ImportBookResponseSchema,
+          400: ErrorResponseSchema,
+          413: ErrorResponseSchema,
+          503: ErrorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.bookImports) {
+        return reply.code(503).send({ error: 'book import pipeline is not configured' });
+      }
+      try {
+        const upload = await request.file();
+        if (!upload) return reply.code(400).send({ error: '请选择 EPUB 文件' });
+        const result = await deps.bookImports.importBook({
+          filename: upload.filename,
+          mediaType: upload.mimetype,
+          bytes: await upload.toBuffer(),
+        });
+        return reply.code(result.reused ? 200 : 202).send(result);
+      } catch (error) {
+        if (error instanceof BookImportError) {
+          return reply.code(error.statusCode === 413 ? 413 : 400).send({ error: error.message });
+        }
+        if ((error as { code?: string }).code === 'FST_REQ_FILE_TOO_LARGE') {
+          return reply.code(413).send({ error: 'EPUB 文件不能超过 100 MB' });
+        }
+        throw error;
+      }
+    },
+  );
+
+  app.get(
+    '/v1/books/:id/status',
+    {
+      schema: {
+        params: bookIdParams,
+        response: {
+          200: BookNormalizationStatusSchema,
+          404: ErrorResponseSchema,
+          503: ErrorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.books) {
+        return reply.code(503).send({ error: 'book catalog is not configured' });
+      }
+      const status = await deps.books.getNormalizationStatus(request.params.id);
+      return status ?? reply.code(404).send({ error: 'book not found' });
     },
   );
 
