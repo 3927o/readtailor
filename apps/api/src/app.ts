@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream';
 import cors from '@fastify/cors';
 import Fastify from 'fastify';
 import { Type } from '@sinclair/typebox';
@@ -6,10 +7,12 @@ import {
   EnqueueSystemPingResponseSchema,
   ErrorResponseSchema,
   HealthResponseSchema,
+  SystemChatRequestSchema,
   SystemJobSchema,
 } from '@readtailor/contracts';
 import { createLogger } from '@readtailor/observability';
 import type { ApiConfig } from './config';
+import type { SystemChatEvent, SystemChatService } from './system-chat';
 import type { SystemJobService } from './system-jobs';
 
 const UUID_PATTERN =
@@ -17,6 +20,7 @@ const UUID_PATTERN =
 
 export interface AppDeps {
   systemJobs?: SystemJobService | undefined;
+  systemChat?: SystemChatService | undefined;
 }
 
 export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
@@ -96,6 +100,41 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       }
 
       return job;
+    },
+  );
+
+  app.post(
+    '/v1/system/chat',
+    {
+      // 响应是 SSE 流，不声明 response schema（流会绕过序列化，类型推导也不适用）。
+      schema: {
+        body: SystemChatRequestSchema,
+      },
+    },
+    async (request, reply) => {
+      const systemChat = deps.systemChat;
+      if (!systemChat) {
+        return reply
+          .code(503)
+          .send({ error: 'system chat is not configured (DATABASE_URL required)' });
+      }
+
+      const toSse = async function* (): AsyncGenerator<string> {
+        try {
+          for await (const event of systemChat.stream(request.body.prompt)) {
+            yield `data: ${JSON.stringify(event satisfies SystemChatEvent)}\n\n`;
+          }
+        } catch (error) {
+          // 响应头已经发出，只能用带内错误事件通知客户端。
+          request.log.error({ err: error }, 'system chat stream failed');
+          yield `data: ${JSON.stringify({ type: 'error', message: 'model stream failed' })}\n\n`;
+        }
+      };
+
+      return reply
+        .type('text/event-stream')
+        .header('cache-control', 'no-cache')
+        .send(Readable.from(toSse()));
     },
   );
 

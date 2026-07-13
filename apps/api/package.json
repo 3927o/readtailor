@@ -15,6 +15,7 @@
     "@readtailor/config": "workspace:*",
     "@readtailor/contracts": "workspace:*",
     "@readtailor/database": "workspace:*",
+    "@readtailor/model": "workspace:*",
     "@readtailor/observability": "workspace:*",
     "@readtailor/queue": "workspace:*",
     "@sinclair/typebox": "^0.34.0",

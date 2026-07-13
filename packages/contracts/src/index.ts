@@ -26,10 +26,16 @@ export const SystemJobSchema = Type.Object({
   id: Type.String(),
   kind: Type.String(),
   status: SystemJobStatusSchema,
+  result: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
   createdAt: Type.String(),
   completedAt: Type.Union([Type.String(), Type.Null()]),
 });
 export type SystemJob = Static<typeof SystemJobSchema>;
+
+export const SystemChatRequestSchema = Type.Object({
+  prompt: Type.String({ minLength: 1, maxLength: 4000 }),
+});
+export type SystemChatRequest = Static<typeof SystemChatRequestSchema>;
 
 export const EnqueueSystemPingResponseSchema = Type.Object({
   jobId: Type.String(),

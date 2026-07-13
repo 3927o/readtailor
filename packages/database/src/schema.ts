@@ -5,6 +5,7 @@ export const systemJobs = pgTable('system_jobs', {
   kind: text('kind').notNull(),
   status: text('status').notNull(),
   payload: jsonb('payload').notNull(),
+  result: jsonb('result'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   completedAt: timestamp('completed_at', { withTimezone: true }),
 });

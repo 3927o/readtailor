@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { SystemJob } from '@readtailor/contracts';
 import { buildApp } from './app';
 import { loadApiConfig } from './config';
+import type { SystemChatService } from './system-chat';
 import type { SystemJobService } from './system-jobs';
 
 const JOB_ID = 'a3bb189e-8bf9-3888-9912-ace4e6543002';
@@ -41,6 +42,7 @@ describe('GET /v1/system/jobs/:id', () => {
     id: JOB_ID,
     kind: 'system.ping',
     status: 'completed',
+    result: null,
     createdAt: '2026-07-13T00:00:00.000Z',
     completedAt: '2026-07-13T00:00:01.000Z',
   };
@@ -68,5 +70,76 @@ describe('GET /v1/system/jobs/:id', () => {
     const response = await app.inject({ method: 'GET', url: '/v1/system/jobs/not-a-uuid' });
 
     expect(response.statusCode).toBe(400);
+  });
+});
+
+describe('POST /v1/system/chat', () => {
+  const fakeChat: SystemChatService = {
+    async *stream(prompt) {
+      yield { type: 'job', jobId: JOB_ID, model: 'fake' };
+      yield { type: 'content', text: `回声：${prompt}` };
+      yield { type: 'done', jobId: JOB_ID };
+    },
+  };
+
+  it('streams SSE events and finishes with done', async () => {
+    const app = await buildApp(config, { systemChat: fakeChat });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/system/chat',
+      payload: { prompt: '你好' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/event-stream');
+    const events = response.body
+      .split('\n\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line.replace(/^data: /, '')));
+    expect(events).toEqual([
+      { type: 'job', jobId: JOB_ID, model: 'fake' },
+      { type: 'content', text: '回声：你好' },
+      { type: 'done', jobId: JOB_ID },
+    ]);
+  });
+
+  it('emits an in-band error event when the stream fails midway', async () => {
+    const brokenChat: SystemChatService = {
+      async *stream() {
+        yield { type: 'job', jobId: JOB_ID, model: 'fake' };
+        throw new Error('boom');
+      },
+    };
+    const app = await buildApp(config, { systemChat: brokenChat });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/system/chat',
+      payload: { prompt: '你好' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('"type":"error"');
+  });
+
+  it('rejects an empty prompt', async () => {
+    const app = await buildApp(config, { systemChat: fakeChat });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/system/chat',
+      payload: { prompt: '' },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('returns 503 when chat is not configured', async () => {
+    const app = await buildApp(config);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/system/chat',
+      payload: { prompt: '你好' },
+    });
+
+    expect(response.statusCode).toBe(503);
   });
 });

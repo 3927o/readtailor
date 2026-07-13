@@ -38,6 +38,9 @@ importers:
       '@readtailor/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@readtailor/model':
+        specifier: workspace:*
+        version: link:../../packages/model
       '@readtailor/observability':
         specifier: workspace:*
         version: link:../../packages/observability
@@ -158,6 +161,8 @@ importers:
       drizzle-kit:
         specifier: ^0.31.0
         version: 0.31.10
+
+  packages/model: {}
 
   packages/observability:
     dependencies:

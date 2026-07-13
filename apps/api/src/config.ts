@@ -7,6 +7,9 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env) {
     host: readString(env, 'API_HOST', '0.0.0.0'),
     databaseUrl: readOptionalString(env, 'DATABASE_URL'),
     redisUrl: readOptionalString(env, 'REDIS_URL'),
+    modelBaseUrl: readOptionalString(env, 'MODEL_API_BASE_URL'),
+    modelApiKey: readOptionalString(env, 'MODEL_API_KEY'),
+    modelName: readOptionalString(env, 'MODEL_NAME'),
     port: readInteger(env, 'API_PORT', 3001, { min: 1, max: 65_535 }),
     webOrigins: readString(
       env,

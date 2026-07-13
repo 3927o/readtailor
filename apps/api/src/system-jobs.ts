@@ -40,6 +40,7 @@ export function createSystemJobService(options: {
         id: row.id,
         kind: row.kind,
         status: row.status as SystemJobStatus,
+        result: (row.result as Record<string, unknown> | null) ?? null,
         createdAt: row.createdAt.toISOString(),
         completedAt: row.completedAt?.toISOString() ?? null,
       };
