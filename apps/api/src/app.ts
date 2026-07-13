@@ -4,6 +4,7 @@ import Fastify from 'fastify';
 import { Type } from '@sinclair/typebox';
 import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
 import {
+  type DependencyStatus,
   EnqueueSystemPingResponseSchema,
   ErrorResponseSchema,
   HealthResponseSchema,
@@ -18,9 +19,31 @@ import type { SystemJobService } from './system-jobs';
 const UUID_PATTERN =
   '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
 
+// 冷启动首次探测要覆盖跨区 TLS 握手，超时给足 5 秒。
+const HEALTH_PROBE_TIMEOUT_MS = 5000;
+
+export type HealthProbe = () => Promise<void>;
+
 export interface AppDeps {
   systemJobs?: SystemJobService | undefined;
   systemChat?: SystemChatService | undefined;
+  healthProbes?: Record<string, HealthProbe> | undefined;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`probe timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
 }
 
 export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
@@ -40,15 +63,38 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       schema: {
         response: {
           200: HealthResponseSchema,
+          503: HealthResponseSchema,
         },
       },
     },
-    async () => ({
-      service: 'api',
-      status: 'ok' as const,
-      version: '0.0.0',
-      timestamp: new Date().toISOString(),
-    }),
+    async (request, reply) => {
+      const probes = Object.entries(deps.healthProbes ?? {});
+      const dependencies: Record<string, DependencyStatus> = {};
+      await Promise.all(
+        probes.map(async ([name, probe]) => {
+          try {
+            await withTimeout(probe(), HEALTH_PROBE_TIMEOUT_MS);
+            dependencies[name] = 'ok';
+          } catch (error) {
+            request.log.warn({ err: error, dependency: name }, 'health probe failed');
+            dependencies[name] = 'error';
+          }
+        }),
+      );
+
+      const degraded = Object.values(dependencies).includes('error');
+      if (degraded) {
+        reply.code(503);
+      }
+
+      return {
+        service: 'api',
+        status: degraded ? ('degraded' as const) : ('ok' as const),
+        version: '0.0.0',
+        timestamp: new Date().toISOString(),
+        ...(probes.length > 0 ? { dependencies } : {}),
+      };
+    },
   );
 
   app.post(

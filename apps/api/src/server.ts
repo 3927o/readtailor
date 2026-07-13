@@ -1,6 +1,6 @@
 import { createDatabase } from '@readtailor/database';
 import { createFakeModelEngine, createOpenAiCompatibleEngine } from '@readtailor/model';
-import { createSystemQueue } from '@readtailor/queue';
+import { createSystemQueue, pingSystemQueue } from '@readtailor/queue';
 import { buildApp } from './app';
 import { loadApiConfig } from './config';
 import { createSystemChatService } from './system-chat';
@@ -28,7 +28,19 @@ const systemChat = database
   ? createSystemChatService({ db: database.db, engine: modelEngine })
   : undefined;
 
-const app = await buildApp(config, { systemJobs, systemChat });
+const healthProbes: Record<string, () => Promise<void>> = {};
+if (database) {
+  healthProbes.database = async () => {
+    await database.client`select 1`;
+  };
+}
+if (systemQueue) {
+  healthProbes.redis = async () => {
+    await pingSystemQueue(systemQueue);
+  };
+}
+
+const app = await buildApp(config, { systemJobs, systemChat, healthProbes });
 
 app.log.info({ model: modelEngine.name }, 'model engine ready');
 if (!systemJobs) {

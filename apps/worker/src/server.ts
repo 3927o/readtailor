@@ -90,8 +90,28 @@ if (queueWorker) {
     });
 }
 
+const probeDatabase = async (): Promise<'ok' | 'error' | 'not_configured'> => {
+  if (!database) {
+    return 'not_configured';
+  }
+  try {
+    await Promise.race([
+      database.client`select 1`,
+      new Promise((_resolve, reject) =>
+        // 冷启动首次探测要覆盖跨区 TLS 握手，超时给足 5 秒。
+        setTimeout(() => reject(new Error('database probe timed out')), 5000),
+      ),
+    ]);
+    return 'ok';
+  } catch (error) {
+    logger.warn({ err: error }, 'database health probe failed');
+    return 'error';
+  }
+};
+
 app.get('/health', async (_request, reply) => {
-  const ready = queueStatus === 'connected';
+  const databaseStatus = await probeDatabase();
+  const ready = queueStatus === 'connected' && databaseStatus === 'ok';
   if (!ready) {
     reply.code(503);
   }
@@ -100,6 +120,7 @@ app.get('/health', async (_request, reply) => {
     service: 'worker',
     status: ready ? ('ok' as const) : ('degraded' as const),
     queue: queueStatus,
+    database: databaseStatus,
     version: '0.0.0',
     timestamp: new Date().toISOString(),
   };

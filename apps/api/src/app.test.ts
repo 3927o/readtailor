@@ -20,6 +20,48 @@ function createFakeService(job: SystemJob | null): SystemJobService {
 
 const config = loadApiConfig({ LOG_LEVEL: 'silent' });
 
+describe('GET /v1/health', () => {
+  it('reports ok without configured probes', async () => {
+    const app = await buildApp(config);
+    const response = await app.inject({ method: 'GET', url: '/v1/health' });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.status).toBe('ok');
+    expect(body.dependencies).toBeUndefined();
+  });
+
+  it('reports dependency status when all probes pass', async () => {
+    const app = await buildApp(config, {
+      healthProbes: {
+        database: async () => {},
+        redis: async () => {},
+      },
+    });
+    const response = await app.inject({ method: 'GET', url: '/v1/health' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().dependencies).toEqual({ database: 'ok', redis: 'ok' });
+  });
+
+  it('returns 503 degraded when a probe fails', async () => {
+    const app = await buildApp(config, {
+      healthProbes: {
+        database: async () => {},
+        redis: async () => {
+          throw new Error('redis down');
+        },
+      },
+    });
+    const response = await app.inject({ method: 'GET', url: '/v1/health' });
+
+    expect(response.statusCode).toBe(503);
+    const body = response.json();
+    expect(body.status).toBe('degraded');
+    expect(body.dependencies).toEqual({ database: 'ok', redis: 'error' });
+  });
+});
+
 describe('POST /v1/system/ping', () => {
   it('enqueues a job and returns its id', async () => {
     const app = await buildApp(config, { systemJobs: createFakeService(null) });

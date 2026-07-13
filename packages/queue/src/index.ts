@@ -27,6 +27,12 @@ export function createSystemQueue(redisUrl: string) {
 export type SystemQueue = ReturnType<typeof createSystemQueue>;
 export type SystemQueueJob = Job<SystemJobPayload>;
 
+export async function pingSystemQueue(queue: SystemQueue): Promise<void> {
+  // BullMQ 把 client 类型收窄成了不含 ping 的最小接口，这里的连接实际是 ioredis 实例。
+  const client = (await queue.client) as unknown as IORedis;
+  await client.ping();
+}
+
 export function createSystemWorker(options: {
   redisUrl: string;
   concurrency: number;

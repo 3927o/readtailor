@@ -1,10 +1,14 @@
 import { type Static, Type } from '@sinclair/typebox';
 
+export const DependencyStatusSchema = Type.Union([Type.Literal('ok'), Type.Literal('error')]);
+export type DependencyStatus = Static<typeof DependencyStatusSchema>;
+
 export const HealthResponseSchema = Type.Object({
   service: Type.String(),
   status: Type.Union([Type.Literal('ok'), Type.Literal('degraded')]),
   version: Type.String(),
   timestamp: Type.String(),
+  dependencies: Type.Optional(Type.Record(Type.String(), DependencyStatusSchema)),
 });
 export type HealthResponse = Static<typeof HealthResponseSchema>;
 

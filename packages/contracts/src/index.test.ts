@@ -13,6 +13,27 @@ describe('HealthResponseSchema', () => {
       }),
     ).toBe(true);
   });
+
+  it('accepts optional dependency statuses and rejects unknown values', () => {
+    const base = {
+      service: 'api',
+      status: 'degraded',
+      version: '0.0.0',
+      timestamp: '2026-07-13T00:00:00.000Z',
+    };
+    expect(
+      Value.Check(HealthResponseSchema, {
+        ...base,
+        dependencies: { database: 'ok', redis: 'error' },
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(HealthResponseSchema, {
+        ...base,
+        dependencies: { database: 'down' },
+      }),
+    ).toBe(false);
+  });
 });
 
 describe('SystemJobPayloadSchema', () => {
