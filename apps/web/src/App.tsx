@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import type { HealthResponse } from '@readtailor/contracts';
 import { Route, Routes } from 'react-router';
+import { EmptyState } from './components/core/EmptyState';
+import { Kicker } from './components/core/Kicker';
 import { ReaderPage } from './reader/ReaderPage';
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001';
@@ -33,16 +35,14 @@ function ShelfPage() {
       <main className="shelf">
         <div className="section-heading">
           <div>
-            <p className="kicker">LIBRARY · 书架</p>
+            <Kicker>LIBRARY · 书架</Kicker>
             <h1>你的书</h1>
           </div>
         </div>
 
-        <section className="empty-shelf" aria-labelledby="empty-title">
-          <div className="quote-corners" aria-hidden="true">⌜　⌟</div>
-          <h2 id="empty-title">书架还空着</h2>
-          <p>第一本书准备好后，会出现在这里。</p>
-        </section>
+        <EmptyState title="书架还空着">
+          第一本书准备好后，会出现在这里。
+        </EmptyState>
       </main>
     </div>
   );

@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
+import { ProgressBar } from '../components/chrome/ProgressBar';
+import { Segmented } from '../components/core/Segmented';
+import { Slider } from '../components/core/Slider';
 import { getReaderDocument } from './api';
 import type { ReaderOutlineItem } from './api';
 import { getOutlineDepth, prepareBookContent } from './content';
@@ -21,6 +24,12 @@ const defaultSettings: ReaderSettings = {
   contentWidth: 720,
   theme: 'system',
 };
+
+const themeOptions: ReadonlyArray<{ value: ThemeSetting; label: string }> = [
+  { value: 'system', label: '跟随系统' },
+  { value: 'paper', label: '浅色' },
+  { value: 'night', label: '深色' },
+];
 
 function resolvedTheme(theme: ThemeSetting, prefersDark: boolean): 'paper' | 'night' {
   return theme === 'system' ? (prefersDark ? 'night' : 'paper') : theme;
@@ -136,9 +145,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
 
   return (
     <div className="reader-shell" data-rt-theme={theme === 'night' ? 'night' : undefined}>
-      <div className="reader-progress-track" aria-hidden="true">
-        <span style={{ width: `${scrollProgress}%` }} />
-      </div>
+      <ProgressBar value={scrollProgress} aria-label="阅读滚动进度" />
       <header className="reader-toolbar">
         <Link className="reader-icon-button" to="/" aria-label="返回书架" title="返回书架">‹</Link>
         <button className="reader-tool-button" type="button" onClick={() => setTocOpen(true)}>
@@ -264,25 +271,17 @@ function SettingsPanel({ settings, update, close }: {
   return (
     <aside className="reader-settings" aria-label="阅读设置">
       <header><strong>阅读设置</strong><button type="button" onClick={close} aria-label="关闭阅读设置">×</button></header>
-      <label>
-        <span>字号 <output>{settings.fontSize}px</output></span>
-        <input type="range" min="15" max="24" step="1" value={settings.fontSize} onChange={(event) => update({ fontSize: Number(event.target.value) })} />
-      </label>
-      <label>
-        <span>行距 <output>{settings.lineHeight.toFixed(2)}</output></span>
-        <input type="range" min="1.55" max="2.35" step="0.1" value={settings.lineHeight} onChange={(event) => update({ lineHeight: Number(event.target.value) })} />
-      </label>
-      <label>
-        <span>正文宽度 <output>{settings.contentWidth}px</output></span>
-        <input type="range" min="560" max="880" step="40" value={settings.contentWidth} onChange={(event) => update({ contentWidth: Number(event.target.value) })} />
-      </label>
+      <Slider label="字号" min={15} max={24} value={settings.fontSize} onChange={(fontSize) => update({ fontSize })} showValue format={(value) => `${value}px`} />
+      <Slider label="行距" min={1.55} max={2.35} step={0.1} value={settings.lineHeight} onChange={(lineHeight) => update({ lineHeight })} showValue format={(value) => value.toFixed(2)} />
+      <Slider label="正文宽度" min={560} max={880} step={40} value={settings.contentWidth} onChange={(contentWidth) => update({ contentWidth })} showValue format={(value) => `${value}px`} />
       <fieldset>
         <legend>主题</legend>
-        <div className="reader-segmented">
-          {([['system', '跟随系统'], ['paper', '浅色'], ['night', '深色']] as const).map(([value, label]) => (
-            <button key={value} type="button" data-active={settings.theme === value} onClick={() => update({ theme: value })}>{label}</button>
-          ))}
-        </div>
+        <Segmented
+          label="阅读主题"
+          value={settings.theme}
+          onChange={(theme) => update({ theme })}
+          options={themeOptions}
+        />
       </fieldset>
     </aside>
   );
