@@ -82,7 +82,7 @@ GET /v1/books/:bookId/assets/*
 
 - `design/README.md`
 - `design/prototypes/readtailor-mvp.dc.html`：完整响应式 MVP 原型。
-- `design/prototypes/readtailor-mobile.dc.html`：移动端独立原型。
+- `design/prototypes/readtailor-mvp-phone-preview.dc.html`：主原型的固定手机壳预览。
 - `design/design-system/README.md`：视觉规则、tokens、组件和 UI kits。
 - `design/design-system/ui_kits/reader/`：正式阅读器界面参考。
 
@@ -90,18 +90,21 @@ GET /v1/books/:bookId/assets/*
 
 ## 设计与原型迁移
 
-当前原型是 Design Canvas 可交互原型：主原型覆盖完整响应式流程，移动原型补充窄屏交互。它们用于
-表达页面结构、操作节奏、桌面/移动布局和品牌气质，不是可以直接放进 Vite 的生产应用。
+当前主原型是 Design Canvas 可交互原型，覆盖完整响应式流程。项目从 0 到 1 实现时，页面结构、
+操作节奏、桌面/移动布局和品牌气质主要参考该原型；产品行为和数据契约仍以 PRD、contracts 与架构
+文档为准。原型不是可以直接放进 Vite 的生产应用。
 
-`design-system/` 是迁移的主要视觉来源，已经包含颜色、字体、间距、动效、阅读主题、React 组件和
-阅读器 UI kit。现有组件可以作为正式实现的起点，但 Design Canvas 的 `x-dc`、`sc-if`、`x-import`、
-全局 bundle、mock 数据、定时器和 localStorage 状态只属于原型运行机制。
+`design-system/` 包含颜色、字体、间距、动效、阅读主题、React 组件和阅读器 UI kit，为 0 到 1 实现
+提供基础能力。0 到 1 基线完成后，后续新增功能主要参考 design system，在已经落地的产品界面上增量
+扩展。Design Canvas 的 `x-dc`、`sc-if`、`x-import`、全局 bundle、mock 数据、定时器和 localStorage
+状态只属于原型运行机制。
 
 迁移心法：
 
-- 迁移视觉与交互意图，不迁移原型运行时。
+- 0 到 1 阶段主要对照主原型迁移视觉、布局和交互意图，不迁移原型运行时。
 - 先复用 tokens 和组件语言，再用正常 React、路由和服务端状态重建页面。
 - 桌面与移动端使用同一套功能和业务组件，通过响应式布局改变工具栏、抽屉和 bottom sheet 的呈现。
+- 0 到 1 基线完成后，新增功能主要依据 design system，并与现有产品体验保持一致。
 - 原型中的 mock 进度、计时、生成和问答逻辑不能成为业务实现依据；数据行为以 PRD、阅读契约和技术
   方案为准。
 - 原型与 PRD 都没有明确的功能细节，在实现对应交互前向产品方确认，不从 mock 内容自行推导需求。
@@ -187,6 +190,6 @@ fixtures/   一个小型 EPUB 输入样例，不是已完成的 ready package
 - 产品源：`docs/architecture/agent_design.md`、`docs/product/product_prd.md`、
   `docs/contracts/reading_contract.md` 有修改；两版技术
   方案文件尚未跟踪。
-- 设计源：`prototypes/readtailor-mobile.dc.html`、`prototypes/readtailor-mvp.dc.html` 有未提交修改。
+- 设计源：`prototypes/readtailor-mvp.dc.html` 有未提交修改。
 
 这些当前文件有意被包含，不应退回对应仓库的旧提交版本。

@@ -4,6 +4,12 @@
 
 ReadTailor (裁读, "tailor-read") is an **AI reading companion**: it doesn't summarise a book *for* you, it walks *with* you so you actually finish it. It learns who you are, then tailors a book — a pre-reading brief, paved-in annotations (lead-ins, glosses, fill-ins, margin notes), and an in-line AI you can ask anything — so a hard book becomes finishable.
 
+## Project usage
+
+- During the 0-to-1 implementation, use `../prototypes/readtailor-mvp.dc.html` as the primary reference for page composition, end-to-end flow, responsive layout, and interaction rhythm. Product behavior and data contracts still come from the PRD, contracts, and architecture documents.
+- After the 0-to-1 baseline is complete, use this design system as the primary reference for new features: reuse its tokens, components, and general rules while staying consistent with the implemented product.
+- The prototype runtime, mock data, timers, and local state are demonstration mechanisms, not production contracts.
+
 ---
 
 ## Sources and references
