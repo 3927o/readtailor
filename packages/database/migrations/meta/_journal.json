@@ -15,6 +15,34 @@
       "when": 1783938096831,
       "tag": "0001_last_sebastian_shaw",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783942505334,
+      "tag": "0002_brown_wrecking_crew",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783942633218,
+      "tag": "0003_soft_epoch",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783943426945,
+      "tag": "0004_tired_nicolaos",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1783944300699,
+      "tag": "0005_fresh_sharon_ventura",
+      "breakpoints": true
     }
   ]
 }

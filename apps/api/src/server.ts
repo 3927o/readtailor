@@ -1,15 +1,28 @@
 import { createDatabase } from '@readtailor/database';
 import { createFakeModelEngine, createOpenAiCompatibleEngine } from '@readtailor/model';
 import { createSystemQueue, pingSystemQueue } from '@readtailor/queue';
+import { createObjectStorage } from '@readtailor/storage';
 import { buildApp } from './app';
+import { createBookService, createDatabaseBookRepository } from './books';
 import { loadApiConfig } from './config';
 import { createSystemChatService } from './system-chat';
 import { createSystemJobService } from './system-jobs';
 
 const config = loadApiConfig();
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 const database = config.databaseUrl ? createDatabase(config.databaseUrl) : undefined;
 const systemQueue = config.redisUrl ? createSystemQueue(config.redisUrl) : undefined;
+const objectStorage = createObjectStorage({
+  localRoot: config.objectStorageLocalRoot
+    ? resolve(repoRoot, config.objectStorageLocalRoot)
+    : undefined,
+  bucket: config.objectStorageBucket,
+  endpoint: config.objectStorageEndpoint,
+  region: config.objectStorageRegion,
+  accessKeyId: config.objectStorageAccessKeyId,
+  secretAccessKey: config.objectStorageSecretAccessKey,
+});
 const systemJobs =
   database && systemQueue
     ? createSystemJobService({ db: database.db, queue: systemQueue })
@@ -36,6 +49,13 @@ const modelEngine =
 const systemChat = database
   ? createSystemChatService({ db: database.db, engine: modelEngine })
   : undefined;
+const books =
+  database && objectStorage
+    ? createBookService({
+        repository: createDatabaseBookRepository(database.db),
+        storage: objectStorage,
+      })
+    : undefined;
 
 const healthProbes: Record<string, () => Promise<void>> = {};
 if (database) {
@@ -48,8 +68,13 @@ if (systemQueue) {
     await pingSystemQueue(systemQueue);
   };
 }
+if (objectStorage) {
+  healthProbes.objectStorage = async () => {
+    await objectStorage.list('health-probe');
+  };
+}
 
-const app = await buildApp(config, { systemJobs, systemChat, healthProbes });
+const app = await buildApp(config, { systemJobs, systemChat, healthProbes, books });
 
 app.log.info({ model: modelEngine.name }, 'model engine ready');
 if (!modelConfigured) {
@@ -60,6 +85,9 @@ if (!systemJobs) {
 }
 if (!systemChat) {
   app.log.warn('system chat disabled: DATABASE_URL is required');
+}
+if (!books) {
+  app.log.warn('book catalog disabled: DATABASE_URL and object storage are both required');
 }
 
 const shutdown = async (signal: string) => {
@@ -76,3 +104,5 @@ process.once('SIGINT', () => void shutdown('SIGINT'));
 process.once('SIGTERM', () => void shutdown('SIGTERM'));
 
 await app.listen({ host: config.host, port: config.port });
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';

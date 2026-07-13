@@ -9,5 +9,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit --pretty false",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.850.0"
   }
 }

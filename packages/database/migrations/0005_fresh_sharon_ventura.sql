@@ -1,0 +1,5 @@
+ALTER TABLE "normalization_runs" ADD CONSTRAINT "normalization_runs_status_valid" CHECK ("normalization_runs"."status" in ('running', 'completed', 'failed'));--> statement-breakpoint
+ALTER TABLE "normalization_runs" ADD CONSTRAINT "normalization_runs_completion_valid" CHECK ((("normalization_runs"."status" = 'running' and "normalization_runs"."completed_at" is null) or ("normalization_runs"."status" in ('completed', 'failed') and "normalization_runs"."completed_at" is not null)));--> statement-breakpoint
+ALTER TABLE "shared_books" ADD CONSTRAINT "shared_books_status_valid" CHECK ("shared_books"."status" in ('queued', 'normalizing', 'indexing', 'ready', 'failed'));--> statement-breakpoint
+ALTER TABLE "shared_books" ADD CONSTRAINT "shared_books_ready_has_package" CHECK ("shared_books"."status" <> 'ready' or "shared_books"."current_package_id" is not null);--> statement-breakpoint
+ALTER TABLE "source_uploads" ADD CONSTRAINT "source_uploads_status_valid" CHECK ("source_uploads"."status" in ('stored', 'failed'));

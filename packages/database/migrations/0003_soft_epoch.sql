@@ -1,0 +1,1 @@
+ALTER TABLE "shared_books" ADD CONSTRAINT "shared_books_current_package_id_book_packages_id_fk" FOREIGN KEY ("current_package_id") REFERENCES "public"."book_packages"("id") ON DELETE no action ON UPDATE no action;

@@ -8,11 +8,13 @@ import {
   EnqueueSystemPingResponseSchema,
   ErrorResponseSchema,
   HealthResponseSchema,
+  SharedBookSchema,
   SystemChatRequestSchema,
   SystemJobSchema,
 } from '@readtailor/contracts';
 import { createLogger } from '@readtailor/observability';
 import type { ApiConfig } from './config';
+import type { BookService } from './books';
 import type { SystemChatEvent, SystemChatService } from './system-chat';
 import type { SystemJobService } from './system-jobs';
 
@@ -28,6 +30,32 @@ export interface AppDeps {
   systemJobs?: SystemJobService | undefined;
   systemChat?: SystemChatService | undefined;
   healthProbes?: Record<string, HealthProbe> | undefined;
+  books?: BookService | undefined;
+}
+
+const bookIdParams = Type.Object({
+  id: Type.String({ pattern: UUID_PATTERN }),
+});
+
+function assetContentType(path: string): string {
+  const extension = path.split('.').pop()?.toLowerCase();
+  return (
+    {
+      avif: 'image/avif',
+      gif: 'image/gif',
+      jpeg: 'image/jpeg',
+      jpg: 'image/jpeg',
+      png: 'image/png',
+      svg: 'image/svg+xml',
+      webp: 'image/webp',
+      mp3: 'audio/mpeg',
+      mp4: 'video/mp4',
+      ogg: 'audio/ogg',
+      webm: 'video/webm',
+      woff: 'font/woff',
+      woff2: 'font/woff2',
+    }[extension ?? ''] ?? 'application/octet-stream'
+  );
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -116,6 +144,96 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
 
       const { jobId } = await deps.systemJobs.enqueuePing();
       return reply.code(202).send({ jobId });
+    },
+  );
+
+  app.get(
+    '/v1/books/:id',
+    {
+      schema: {
+        params: bookIdParams,
+        response: {
+          200: SharedBookSchema,
+          404: ErrorResponseSchema,
+          503: ErrorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.books) {
+        return reply.code(503).send({ error: 'book catalog is not configured' });
+      }
+      const book = await deps.books.getBook(request.params.id);
+      return book ?? reply.code(404).send({ error: 'ready book not found' });
+    },
+  );
+
+  app.get(
+    '/v1/books/:id/manifest',
+    { schema: { params: bookIdParams } },
+    async (request, reply) => {
+      if (!deps.books) {
+        return reply.code(503).send({ error: 'book catalog is not configured' });
+      }
+      const manifest = await deps.books.getManifest(request.params.id);
+      return manifest ?? reply.code(404).send({ error: 'book manifest not found' });
+    },
+  );
+
+  app.get(
+    '/v1/books/:id/content',
+    { schema: { params: bookIdParams } },
+    async (request, reply) => {
+      if (!deps.books) {
+        return reply.code(503).send({ error: 'book catalog is not configured' });
+      }
+      const content = await deps.books.getContent(request.params.id);
+      if (!content) {
+        return reply.code(404).send({ error: 'book content not found' });
+      }
+      return reply.type('text/html; charset=utf-8').send(Buffer.from(content));
+    },
+  );
+
+  app.get(
+    '/v1/books/:id/profile',
+    { schema: { params: bookIdParams } },
+    async (request, reply) => {
+      if (!deps.books) {
+        return reply.code(503).send({ error: 'book catalog is not configured' });
+      }
+      const profile = await deps.books.getProfile(request.params.id);
+      return profile ?? reply.code(404).send({ error: 'book profile not found' });
+    },
+  );
+
+  app.get(
+    '/v1/books/:id/assets/*',
+    {
+      schema: {
+        params: Type.Object({
+          id: Type.String({ pattern: UUID_PATTERN }),
+          '*': Type.String({ minLength: 1 }),
+        }),
+      },
+    },
+    async (request, reply) => {
+      if (!deps.books) {
+        return reply.code(503).send({ error: 'book catalog is not configured' });
+      }
+      const path = request.params['*'];
+      const asset = await deps.books.getAsset(request.params.id, path);
+      if (!asset) {
+        return reply.code(404).send({ error: 'book asset not found' });
+      }
+      reply.header('x-content-type-options', 'nosniff');
+      if (path.toLowerCase().endsWith('.svg')) {
+        reply.header(
+          'content-security-policy',
+          "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+        );
+      }
+      return reply.type(assetContentType(path)).send(Buffer.from(asset));
     },
   );
 

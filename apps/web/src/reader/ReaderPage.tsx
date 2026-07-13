@@ -83,12 +83,6 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     ),
     [document],
   );
-  const currentNode = document.manifest.nodes.find((item) => item.order === currentOrder)
-    ?? document.manifest.nodes[0];
-  const currentOutline = [...document.manifest.outline]
-    .filter((item) => item.first_node_order <= currentOrder)
-    .at(-1);
-
   useEffect(() => {
     const root = scrollRoot.current;
     if (!root) return;
@@ -102,6 +96,17 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     root.querySelectorAll<HTMLElement>('[data-node-order]').forEach((element) => observer.observe(element));
     return () => observer.disconnect();
   }, [prepared]);
+
+  useEffect(() => {
+    const closeOverlays = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setTocOpen(false);
+      setSettingsOpen(false);
+      setNote(null);
+    };
+    window.addEventListener('keydown', closeOverlays);
+    return () => window.removeEventListener('keydown', closeOverlays);
+  }, []);
 
   const handleScroll = () => {
     const root = scrollRoot.current;
@@ -142,30 +147,38 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     .filter((node) => node.order < currentOrder)
     .reduce((sum, node) => sum + node.character_count, 0);
   const textProgress = totalCharacters > 0 ? Math.round((charactersBefore / totalCharacters) * 100) : 0;
+  const activeSectionId = [...document.manifest.outline]
+    .filter((item) => item.first_node_order <= currentOrder)
+    .at(-1)?.section_id;
+  const openToc = () => {
+    setSettingsOpen(false);
+    setTocOpen(true);
+  };
+  const openSettings = () => {
+    setTocOpen(false);
+    setSettingsOpen(true);
+  };
 
   return (
     <div className="reader-shell" data-rt-theme={theme === 'night' ? 'night' : undefined}>
       <ProgressBar value={scrollProgress} aria-label="阅读滚动进度" />
-      <header className="reader-toolbar">
-        <Link className="reader-icon-button" to="/" aria-label="返回书架" title="返回书架">‹</Link>
-        <button className="reader-tool-button" type="button" onClick={() => setTocOpen(true)}>
-          <span aria-hidden="true">≡</span><span>目录</span>
-        </button>
-        <div className="reader-location" title={currentOutline?.title || currentNode?.title}>
-          <strong>{document.book.title}</strong>
-          <span>{currentOutline?.title || currentNode?.title || '正文'}</span>
-        </div>
-        <span className="reader-percent" aria-label={`全书进度 ${textProgress}%`}>{textProgress}%</span>
-        <button
-          className="reader-icon-button reader-aa-button"
-          type="button"
-          onClick={() => setSettingsOpen((open) => !open)}
-          aria-expanded={settingsOpen}
-          aria-label="阅读设置"
-          title="阅读设置"
-        >Aa</button>
-      </header>
+      <div className="reader-chrome">
+        <header className="reader-toolbar">
+          <Link className="reader-back-button" to="/" aria-label="返回书架" title="返回书架">‹</Link>
+          <div className="reader-title" title={document.book.title}>{document.book.title}</div>
+          <div className="reader-desktop-actions">
+            <ReaderAction glyph="≡" label="目录" onClick={openToc} />
+            <ReaderAction glyph="Aa" label="设置" onClick={openSettings} />
+          </div>
+        </header>
+      </div>
 
+      <nav className="reader-mobile-bar" aria-label="阅读工具">
+        <ReaderAction glyph="≡" label="目录" onClick={openToc} />
+        <ReaderAction glyph="Aa" label="阅读设置" onClick={openSettings} />
+      </nav>
+
+      {settingsOpen && <button className="reader-modal-scrim" type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭阅读设置" />}
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
@@ -185,11 +198,21 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
           onClick={handleContentClick}
         >
           <header className="reader-book-heading">
-            <p className="reader-kicker">ORIGINAL TEXT · 原文阅读</p>
+            <div className="reader-chapter-kicker">
+              <span>原文阅读 · Original text</span>
+              <i aria-hidden="true" />
+              <span>全书 {textProgress}%</span>
+            </div>
             <h1>{document.book.title}</h1>
-            <p>{document.book.authors.join(' · ') || '作者未详'}</p>
+            <p><span aria-hidden="true">◷</span>{document.book.authors.join(' · ') || '作者未详'}</p>
           </header>
-          {prepared.nodes.map((node) => <ReadingNode key={`${node.section_id}:${node.segment}`} node={node} />)}
+          {prepared.nodes.map((node) => (
+            <ReadingNode
+              key={`${node.section_id}:${node.segment}`}
+              node={node}
+              bookTitle={document.book.title}
+            />
+          ))}
           <footer className="reader-end"><span>⌜</span> 本书原文到此结束 <span>⌟</span></footer>
         </main>
       </div>
@@ -198,19 +221,29 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
         open={tocOpen}
         title={document.book.title}
         outline={document.manifest.outline}
-        currentOrder={currentOrder}
+        activeSectionId={activeSectionId}
         close={() => setTocOpen(false)}
         jump={jumpToOrder}
       />
       <NoteDialog note={note} close={() => setNote(null)} />
+      <div className="reader-bottom-fade" aria-hidden="true" />
     </div>
   );
 }
 
-function ReadingNode({ node }: { node: RenderedNode }) {
+function ReaderAction({ glyph, label, onClick }: { glyph: string; label: string; onClick: () => void }) {
+  return (
+    <button className="reader-action" type="button" onClick={onClick} aria-label={label} title={label}>
+      <span aria-hidden="true">{glyph}</span>
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function ReadingNode({ node, bookTitle }: { node: RenderedNode; bookTitle: string }) {
   return (
     <section className="reader-node" data-node-order={node.order} id={`reader-node-${node.order}`}>
-      {node.headings.map((heading) => (
+      {node.headings.filter((heading) => heading.title.trim() !== bookTitle.trim()).map((heading) => (
         <div
           key={heading.section_id}
           className="reader-outline-heading"
@@ -224,11 +257,11 @@ function ReadingNode({ node }: { node: RenderedNode }) {
   );
 }
 
-function TocDrawer({ open, title, outline, currentOrder, close, jump }: {
+function TocDrawer({ open, title, outline, activeSectionId, close, jump }: {
   open: boolean;
   title: string;
   outline: ReaderOutlineItem[];
-  currentOrder: number;
+  activeSectionId: string | undefined;
   close: () => void;
   jump: (order: number) => void;
 }) {
@@ -236,13 +269,15 @@ function TocDrawer({ open, title, outline, currentOrder, close, jump }: {
     <>
       <button className="reader-scrim" data-open={open} onClick={close} aria-label="关闭目录" tabIndex={open ? 0 : -1} />
       <aside className="toc-drawer" data-open={open} aria-hidden={!open} aria-label="本书目录">
+        <div className="reader-sheet-handle" aria-hidden="true" />
         <header>
-          <div><span>CONTENTS · 目录</span><strong>{title}</strong></div>
+          <div><span>目录 · Contents</span><strong>{title}</strong></div>
           <button className="reader-icon-button" type="button" onClick={close} aria-label="关闭目录">×</button>
         </header>
+        <p className="toc-description">进度只算原文位置，原书注释不计入。</p>
         <nav>
           {outline.map((item) => {
-            const active = item.first_node_order === currentOrder;
+            const active = item.section_id === activeSectionId;
             return (
               <button
                 key={item.section_id}
@@ -270,11 +305,21 @@ function SettingsPanel({ settings, update, close }: {
 }) {
   return (
     <aside className="reader-settings" aria-label="阅读设置">
-      <header><strong>阅读设置</strong><button type="button" onClick={close} aria-label="关闭阅读设置">×</button></header>
-      <Slider label="字号" min={15} max={24} value={settings.fontSize} onChange={(fontSize) => update({ fontSize })} showValue format={(value) => `${value}px`} />
-      <Slider label="行距" min={1.55} max={2.35} step={0.1} value={settings.lineHeight} onChange={(lineHeight) => update({ lineHeight })} showValue format={(value) => value.toFixed(2)} />
-      <Slider label="正文宽度" min={560} max={880} step={40} value={settings.contentWidth} onChange={(contentWidth) => update({ contentWidth })} showValue format={(value) => `${value}px`} />
-      <fieldset>
+      <div className="reader-sheet-handle" aria-hidden="true" />
+      <header><strong>阅读设置 · Aa</strong><button type="button" onClick={close} aria-label="关闭阅读设置">×</button></header>
+      <div className="reader-setting-row">
+        <span>字号</span>
+        <Slider label="字号" min={15} max={24} value={settings.fontSize} onChange={(fontSize) => update({ fontSize })} showValue format={(value) => `${value}px`} />
+      </div>
+      <div className="reader-setting-row reader-setting-wide">
+        <span>行距</span>
+        <Slider label="行距" min={1.55} max={2.35} step={0.1} value={settings.lineHeight} onChange={(lineHeight) => update({ lineHeight })} showValue format={(value) => value.toFixed(2)} />
+      </div>
+      <div className="reader-setting-row reader-setting-wide">
+        <span>版心</span>
+        <Slider label="正文宽度" min={560} max={880} step={40} value={settings.contentWidth} onChange={(contentWidth) => update({ contentWidth })} showValue format={(value) => `${value}px`} />
+      </div>
+      <fieldset className="reader-setting-row">
         <legend>主题</legend>
         <Segmented
           label="阅读主题"
@@ -292,7 +337,8 @@ function NoteDialog({ note, close }: { note: OriginalNote | null; close: () => v
   return (
     <div className="note-dialog-wrap" role="presentation" onClick={close}>
       <aside className="note-dialog" role="dialog" aria-modal="true" aria-label="原书注" onClick={(event) => event.stopPropagation()}>
-        <header><span>BOOK NOTE · 原书注</span><button type="button" onClick={close} aria-label="关闭原书注">×</button></header>
+        <div className="reader-sheet-handle" aria-hidden="true" />
+        <header><span>原书注 · Book note</span><button type="button" onClick={close} aria-label="关闭原书注">×</button></header>
         <div dangerouslySetInnerHTML={{ __html: note.html }} />
       </aside>
     </div>

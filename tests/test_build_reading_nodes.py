@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-from build_reading_nodes import ReadingNodeBuilder, extract_blocks
+from build_reading_nodes import ReadingNodeBuilder, build_manifest, extract_blocks
 
 
 class ReadingNodeBuilderTests(unittest.TestCase):
@@ -133,6 +134,152 @@ class ReadingNodeBuilderTests(unittest.TestCase):
                 ("p", "definition"),
             ],
         )
+
+    def test_character_counts_and_absolute_positions_use_utf16(self) -> None:
+        nodes = self.build("""
+          <section id="chapter-1" data-type="chapter"><h1>One</h1>
+            <p>A😀</p><figure><img src="assets/a.png"><figcaption>图</figcaption></figure>
+          </section>
+          <section id="chapter-2" data-type="chapter"><h1>Two</h1><p>中</p></section>
+        """)
+
+        first, second = nodes
+        self.assertEqual(first.character_count, 4)
+        self.assertEqual(second.character_count, 1)
+        self.assertEqual(first.node_absolute_start, 0)
+        self.assertEqual(second.node_absolute_start, 4)
+        self.assertEqual(
+            first.as_dict()["blocks"],
+            [
+                {
+                    "block_index": 1,
+                    "kind": "p",
+                    "block_absolute_start": 0,
+                    "block_utf16_length": 3,
+                },
+                {
+                    "block_index": 2,
+                    "kind": "figure",
+                    "block_absolute_start": 3,
+                    "block_utf16_length": 0,
+                },
+                {
+                    "block_index": 3,
+                    "kind": "figcaption",
+                    "block_absolute_start": 3,
+                    "block_utf16_length": 1,
+                },
+            ],
+        )
+
+
+class ReadingManifestTests(unittest.TestCase):
+    def build_manifest(self, body: str) -> dict[str, object]:
+        html = f"""<!doctype html><html lang="zh-CN"><head><title>测试书</title></head><body>
+        <main id="book" data-type="book">{body}</main></body></html>"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "book.normalized.html"
+            input_path.write_text(html, encoding="utf-8")
+            first = build_manifest(input_path)
+            second = build_manifest(input_path)
+        self.assertEqual(first, second)
+        return first
+
+    def test_manifest_has_complete_outline_and_tailoring_eligibility(self) -> None:
+        manifest = self.build_manifest("""
+          <section id="frontmatter" data-role="frontmatter">
+            <section id="preface" data-type="preface"><h1>前言</h1><p>开场</p></section>
+          </section>
+          <section id="bodymatter" data-role="bodymatter">
+            <p>区域文字</p>
+            <section id="part-1" data-type="part"><h1>第一部</h1>
+              <section id="chapter-1" data-type="chapter"><h2>第一章</h2><p>正文</p></section>
+              <section id="chapter-media" data-type="chapter"><h2>图章</h2><figure><img src="assets/a.png"></figure></section>
+            </section>
+          </section>
+          <section id="backmatter" data-role="backmatter">
+            <section id="appendix" data-type="appendix"><h1>附录</h1><p>材料</p></section>
+          </section>
+        """)
+
+        self.assertEqual(manifest["version"], "reading-nodes-1.0")
+        self.assertEqual(
+            manifest["tailoring_eligibility_version"],
+            "tailoring-eligibility-1.0",
+        )
+        self.assertEqual(
+            manifest["outline"],
+            [
+                {
+                    "section_id": "preface",
+                    "data_type": "preface",
+                    "title": "前言",
+                    "parent_section_id": None,
+                    "first_node_order": 1,
+                },
+                {
+                    "section_id": "part-1",
+                    "data_type": "part",
+                    "title": "第一部",
+                    "parent_section_id": None,
+                    "first_node_order": 3,
+                },
+                {
+                    "section_id": "chapter-1",
+                    "data_type": "chapter",
+                    "title": "第一章",
+                    "parent_section_id": "part-1",
+                    "first_node_order": 3,
+                },
+                {
+                    "section_id": "chapter-media",
+                    "data_type": "chapter",
+                    "title": "图章",
+                    "parent_section_id": "part-1",
+                    "first_node_order": 4,
+                },
+                {
+                    "section_id": "appendix",
+                    "data_type": "appendix",
+                    "title": "附录",
+                    "parent_section_id": None,
+                    "first_node_order": 5,
+                },
+            ],
+        )
+
+        eligibility = {
+            node["section_id"]: (
+                node["tailoring_eligible"],
+                node["exclusion_reason"],
+            )
+            for node in manifest["nodes"]
+        }
+        self.assertEqual(eligibility["preface"], (False, "non_bodymatter"))
+        self.assertEqual(eligibility["bodymatter"], (False, "excluded_data_type"))
+        self.assertEqual(eligibility["chapter-1"], (True, None))
+        self.assertEqual(eligibility["chapter-media"], (False, "no_text_block"))
+        self.assertEqual(eligibility["appendix"], (False, "non_bodymatter"))
+
+    def test_manifest_position_index_does_not_copy_original_content(self) -> None:
+        manifest = self.build_manifest("""
+          <section id="bodymatter" data-role="bodymatter">
+            <section id="chapter-1" data-type="chapter"><h1>第一章</h1>
+              <p>A😀</p><p>秘密正文</p>
+            </section>
+            <section id="chapter-2" data-type="chapter"><h1>第二章</h1><p>中</p></section>
+          </section>
+        """)
+
+        first, second = manifest["nodes"]
+        self.assertEqual(first["character_count"], 7)
+        self.assertEqual(first["node_absolute_start"], 0)
+        self.assertEqual(second["character_count"], 1)
+        self.assertEqual(second["node_absolute_start"], 7)
+        self.assertEqual(manifest["book_total_characters"], 8)
+        self.assertNotIn("content_html", first)
+        self.assertTrue(all("text" not in block for block in first["blocks"]))
+        self.assertNotIn("秘密正文", str(manifest))
 
 
 if __name__ == "__main__":

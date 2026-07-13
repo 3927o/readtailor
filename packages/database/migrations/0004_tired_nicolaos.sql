@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "normalization_runs_one_running_per_book" ON "normalization_runs" USING btree ("shared_book_id") WHERE "normalization_runs"."status" = 'running';

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=../../.env src/server.ts",
+    "ingest:fixture": "tsx --env-file-if-exists=../../.env src/ingest-fixture.ts",
     "build": "tsup",
     "start": "node --env-file-if-exists=../../.env dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
@@ -14,6 +15,7 @@
     "@readtailor/database": "workspace:*",
     "@readtailor/observability": "workspace:*",
     "@readtailor/queue": "workspace:*",
+    "@readtailor/storage": "workspace:*",
     "bullmq": "^5.56.0",
     "drizzle-orm": "^0.44.0",
     "fastify": "^5.4.0",

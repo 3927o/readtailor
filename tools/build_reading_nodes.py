@@ -33,12 +33,17 @@ class Block:
     kind: str
     text: str
 
+    @property
+    def utf16_length(self) -> int:
+        return utf16_length(self.text)
+
 
 @dataclass(frozen=True)
 class Segment:
     html: str
     character_count: int
     block_count: int
+    blocks: tuple[Block, ...]
 
 
 @dataclass(frozen=True)
@@ -53,8 +58,33 @@ class ReadingNode:
     character_count: int
     block_count: int
     content_html: str
+    blocks: tuple[Block, ...]
+    node_absolute_start: int = 0
+
+    @property
+    def exclusion_reason(self) -> str | None:
+        if self.region != "bodymatter":
+            return "non_bodymatter"
+        if self.data_type not in {"chapter", "section", "subsection"}:
+            return "excluded_data_type"
+        if not any(block.text.strip() for block in self.blocks):
+            return "no_text_block"
+        return None
 
     def as_dict(self, html_file: str | None = None) -> dict[str, object]:
+        block_dicts: list[dict[str, object]] = []
+        block_absolute_start = self.node_absolute_start
+        for block_index, block in enumerate(self.blocks, start=1):
+            block_dicts.append(
+                {
+                    "block_index": block_index,
+                    "kind": block.kind,
+                    "block_absolute_start": block_absolute_start,
+                    "block_utf16_length": block.utf16_length,
+                }
+            )
+            block_absolute_start += block.utf16_length
+
         result: dict[str, object] = {
             "section_id": self.section_id,
             "segment": self.segment,
@@ -65,10 +95,19 @@ class ReadingNode:
             "parent_section_id": self.parent_section_id,
             "character_count": self.character_count,
             "block_count": self.block_count,
+            "tailoring_eligible": self.exclusion_reason is None,
+            "exclusion_reason": self.exclusion_reason,
+            "node_absolute_start": self.node_absolute_start,
+            "blocks": block_dicts,
         }
         if html_file is not None:
             result["html_file"] = html_file
         return result
+
+
+def utf16_length(value: str) -> int:
+    """Return the number of UTF-16 code units used by a JavaScript string."""
+    return len(value.encode("utf-16-le")) // 2
 
 
 def is_boundary(element: PageElement) -> bool:
@@ -151,7 +190,9 @@ def extract_blocks(html: str) -> list[Block]:
 
         if element.name == "figcaption":
             if element.find("p", recursive=False) is None:
-                blocks.append(Block(kind="figcaption", text=_text_projection(element)))
+                text = _text_projection(element)
+                if text.strip():
+                    blocks.append(Block(kind="figcaption", text=text))
             continue
 
         if element.name in MEDIA_BLOCK_NAMES:
@@ -183,15 +224,53 @@ def make_segment(parts: Iterable[PageElement]) -> Segment | None:
     if not text and not has_media:
         return None
 
+    blocks = tuple(extract_blocks(html))
     return Segment(
         html=html,
-        character_count=len(text),
-        block_count=len(extract_blocks(html)),
+        character_count=sum(block.utf16_length for block in blocks),
+        block_count=len(blocks),
+        blocks=blocks,
     )
 
 
 def direct_boundaries(element: Tag) -> list[Tag]:
     return [child for child in element.children if is_boundary(child)]
+
+
+def build_outline(book: Tag, nodes: list[ReadingNode]) -> list[dict[str, object]]:
+    """Build the complete semantic section tree, including grouping sections."""
+    node_order_by_section: dict[str, list[int]] = {}
+    for node in nodes:
+        node_order_by_section.setdefault(node.section_id, []).append(node.order)
+
+    outline: list[dict[str, object]] = []
+    for element in book.find_all("section", attrs={"data-type": True}):
+        section_id = str(element.get("id") or "")
+        if not section_id:
+            raise ValueError("semantic section is missing required id")
+
+        parent = element.find_parent("section", attrs={"data-type": True})
+        subtree_ids = [section_id]
+        subtree_ids.extend(
+            str(descendant.get("id"))
+            for descendant in element.find_all("section", attrs={"data-type": True})
+            if descendant.get("id")
+        )
+        descendant_orders = [
+            order
+            for descendant_id in subtree_ids
+            for order in node_order_by_section.get(descendant_id, [])
+        ]
+        outline.append(
+            {
+                "section_id": section_id,
+                "data_type": str(element["data-type"]),
+                "title": own_title(element),
+                "parent_section_id": str(parent.get("id")) if parent else None,
+                "first_node_order": min(descendant_orders) if descendant_orders else None,
+            }
+        )
+    return outline
 
 
 class ReadingNodeBuilder:
@@ -255,6 +334,10 @@ class ReadingNodeBuilder:
                         character_count=event.character_count,
                         block_count=event.block_count,
                         content_html=event.html,
+                        blocks=event.blocks,
+                        node_absolute_start=sum(
+                            node.character_count for node in self.nodes
+                        ),
                     )
                 )
             else:
@@ -302,6 +385,10 @@ class ReadingNodeBuilder:
                         character_count=event.character_count,
                         block_count=event.block_count,
                         content_html=event.html,
+                        blocks=event.blocks,
+                        node_absolute_start=sum(
+                            node.character_count for node in self.nodes
+                        ),
                     )
                 )
             else:
@@ -345,6 +432,9 @@ def build_manifest(
     soup = BeautifulSoup(raw, "html.parser")
     builder = ReadingNodeBuilder(soup)
     nodes = builder.build()
+    book = soup.select_one('main#book[data-type="book"]')
+    if not isinstance(book, Tag):
+        raise ValueError('missing main#book[data-type="book"]')
 
     title = soup.find("title")
     html = soup.find("html")
@@ -364,10 +454,13 @@ def build_manifest(
 
     return {
         "version": "reading-nodes-1.0",
+        "tailoring_eligibility_version": "tailoring-eligibility-1.0",
         "document": {
             "title": title.get_text(" ", strip=True) if title else "",
             "language": str(html.get("lang") or "und") if isinstance(html, Tag) else "und",
         },
+        "outline": build_outline(book, nodes),
+        "book_total_characters": sum(node.character_count for node in nodes),
         "node_count": len(node_dicts),
         "nodes": node_dicts,
         "warnings": builder.warnings,

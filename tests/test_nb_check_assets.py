@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-from nb_check import AssetChecker, FidelityChecker
+from nb_check import AssetChecker, EpubBaseline, FidelityChecker
 
 
 class FakeBaseline:
@@ -84,6 +84,50 @@ class AssetCheckerTests(unittest.TestCase):
             checker.check_image_recall()
 
             self.assertTrue(any("[图片丢失]" in error for error in checker.errors))
+
+
+class FidelityTextDiffTests(unittest.TestCase):
+    def test_endnote_reordering_is_reported_but_does_not_block(self) -> None:
+        baseline = EpubBaseline.__new__(EpubBaseline)
+        baseline._docs = [
+            (
+                "chapter.xhtml",
+                BeautifulSoup(
+                    '<body><p>正文<a epub:type="noteref" href="#n1">[1]</a></p></body>',
+                    "html.parser",
+                ),
+            ),
+            (
+                "notes.xhtml",
+                BeautifulSoup(
+                    '<body><section epub:type="rearnotes">'
+                    '<aside epub:type="rearnote"><p>'
+                    '<a epub:type="noteref" href="chapter.xhtml">[1]</a>注一</p></aside>'
+                    '<aside epub:type="rearnote"><p>注二</p></aside>'
+                    "</section></body>",
+                    "html.parser",
+                ),
+            ),
+            ("afterword.xhtml", BeautifulSoup("<body><p>译后记</p></body>", "html.parser")),
+        ]
+
+        self.assertEqual(baseline.visible_text(), "正文[1][1]注一注二译后记")
+        self.assertEqual(baseline.note_counts(), (1, 2))
+
+        product = BeautifulSoup(
+            '<body><main><section data-role="bodymatter"><p>正文[1]</p></section>'
+            '<section data-role="backmatter"><p>译后记</p></section>'
+            '<section data-role="notes"><div data-role="note"><p>注一</p></div>'
+            '<div data-role="note"><p>注二</p></div></section></main></body>',
+            "html.parser",
+        )
+        checker = FidelityChecker(product, baseline, Path("."))
+        checker.check_char_recall()
+
+        self.assertEqual(checker.errors, [])
+        self.assertLess(checker.metrics["char_recall"], 1.0)
+        self.assertEqual(checker.metrics["char_recall_gate"], "advisory")
+        self.assertTrue(any("非阻断" in warning for warning in checker.warnings))
 
 
 if __name__ == "__main__":

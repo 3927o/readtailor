@@ -1,6 +1,11 @@
 import { Value } from '@sinclair/typebox/value';
 import { describe, expect, it } from 'vitest';
-import { HealthResponseSchema, SystemJobPayloadSchema, SystemJobSchema } from './index';
+import {
+  HealthResponseSchema,
+  SharedBookSchema,
+  SystemJobPayloadSchema,
+  SystemJobSchema,
+} from './index';
 
 describe('HealthResponseSchema', () => {
   it('accepts the service health contract', () => {
@@ -79,5 +84,32 @@ describe('SystemJobSchema', () => {
         completedAt: null,
       }),
     ).toBe(false);
+  });
+});
+
+describe('SharedBookSchema', () => {
+  it('accepts a ready book with an immutable package', () => {
+    expect(
+      Value.Check(SharedBookSchema, {
+        id: 'book-id',
+        epubSha256: 'a'.repeat(64),
+        status: 'ready',
+        title: 'Book',
+        authors: ['Author'],
+        language: 'zh',
+        coverPath: 'assets/cover.jpg',
+        identifiers: { isbn: '123' },
+        publisher: null,
+        publishedDate: null,
+        sourceFilename: 'book.epub',
+        package: {
+          id: 'package-id',
+          version: 'v1',
+          contractVersion: 'nb-1.0',
+          manifestVersion: 'reading-nodes-1.0',
+          createdAt: '2026-07-13T00:00:00.000Z',
+        },
+      }),
+    ).toBe(true);
   });
 });

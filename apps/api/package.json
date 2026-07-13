@@ -18,6 +18,7 @@
     "@readtailor/model": "workspace:*",
     "@readtailor/observability": "workspace:*",
     "@readtailor/queue": "workspace:*",
+    "@readtailor/storage": "workspace:*",
     "@sinclair/typebox": "^0.34.0",
     "bullmq": "^5.56.0",
     "drizzle-orm": "^0.44.0",

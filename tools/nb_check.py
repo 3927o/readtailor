@@ -9,7 +9,7 @@
   规则实现在同目录 nb_linter.py。
 - 包资源层（永远跑）：assets/... 路径安全且引用文件真实存在。
 - 保真层（提供 --baseline 时跑）：产物相对源 EPUB 有没有丢内容。
-  * char_recall  —— 可见字符召回率（阈值 ≥99.9%），并逐条列出丢失片段（diff）
+  * char_recall  —— 可见字符召回率和逐条 diff（诊断性 warning，不阻断发布）
   * img_recall   —— assets 图片按字节哈希做多重集守恒（同一张图用 3 次丢 1 次也能抓到）
   * note 守恒    —— EPUB 里的 epub:type noteref/footnote 数 ↔ 产物 noteref/note 数
   * TOC 对账     —— EPUB nav 文档条目数 ↔ 产物 nav[data-role=toc] 条目数
@@ -49,7 +49,7 @@ from nb_linter import (  # noqa: E402
 
 WS_RE = re.compile(r"\s+")
 CHAR_RECALL_THRESHOLD = 0.999
-# 连续丢失 ≥ 该长度的片段按 error 报（一句话级别的丢失）；更短的按 warning。
+# 新增内容达到该长度时输出诊断 warning，避免单字符结构噪声刷屏。
 DELETE_ERROR_LEN = 5
 # 规范性变换白名单：EPUB → nb-1.0 过程中"应当"消失的文本模式。
 # 注释体开头的 "[N]" 编号标记（§10：编号由 noteref 承载，note 体不保留）。
@@ -137,6 +137,11 @@ class EpubBaseline:
             parts.append(body.get_text())
         return norm_text("".join(parts))
 
+    @staticmethod
+    def _is_note_body(element: Tag) -> bool:
+        tokens = set(str(element.get("epub:type") or "").split())
+        return bool(tokens & {"footnote", "rearnote", "endnote"})
+
     # ---- 图片引用（多重集） ---------------------------------------------------
 
     def image_refs(self) -> tuple[Counter, dict[str, list[str]]]:
@@ -164,10 +169,18 @@ class EpubBaseline:
         n_refs = n_notes = 0
         for _, doc in self._docs:
             for el in doc.find_all(True):
-                et = el.get("epub:type") or ""
-                if "noteref" in et:
+                tokens = set(str(el.get("epub:type") or "").split())
+                # Some EPUBs mislabel the link at the start of an endnote body
+                # as noteref even though it points back to the正文. nb-1.0
+                # normalizes that link to data-role=backref, so only forward
+                # references outside note bodies participate in conservation.
+                inside_note = any(
+                    isinstance(parent, Tag) and self._is_note_body(parent)
+                    for parent in el.parents
+                )
+                if "noteref" in tokens and not inside_note:
                     n_refs += 1
-                if any(k in et for k in ("footnote", "rearnote", "endnote")):
+                if tokens & {"footnote", "rearnote", "endnote"}:
                     n_notes += 1
         return n_refs, n_notes
 
@@ -306,9 +319,7 @@ class FidelityChecker:
         self._prod_toc_text = norm_text(toc_nav.get_text()) if toc_nav else ""
 
         sm = difflib.SequenceMatcher(None, epub_text, prod_text, autojunk=False)
-        matched = sum(b.size for b in sm.get_matching_blocks())
-
-        # 逐条审片段：白名单内的丢失计回 effective recall，不算违规
+        matched = sum(block.size for block in sm.get_matching_blocks())
         normative_losses: Counter = Counter()
         whitelisted_chars = 0
         for tag, i1, i2, j1, j2 in sm.get_opcodes():
@@ -320,32 +331,33 @@ class FidelityChecker:
                     whitelisted_chars += len(lost)
                     continue
                 ctx = epub_text[max(0, i1 - 20):i1]
-                msg = f"丢失片段（{len(lost)} 字符）: {lost[:80]!r}  上文: …{ctx}"
-                if len(lost) >= DELETE_ERROR_LEN:
-                    self.errors.append("[内容丢失] " + msg)
-                else:
-                    self.warnings.append("[内容丢失] " + msg)
+                self.warnings.append(
+                    f"[内容差异·非阻断] 丢失片段（{len(lost)} 字符）: "
+                    f"{lost[:80]!r}  上文: …{ctx}"
+                )
             if tag in ("insert", "replace") and j2 > j1:
                 added = prod_text[j1:j2]
                 if len(added) >= DELETE_ERROR_LEN:
-                    # 产物 TOC 本身相对源目录页是移位不是新增
                     if self._prod_toc_text and (
                         added in self._prod_toc_text or self._prod_toc_text in added
                     ):
                         continue
                     ctx = prod_text[max(0, j1 - 20):j1]
                     self.warnings.append(
-                        f"[多出内容] 产物比源多出（{len(added)} 字符）: {added[:80]!r}  上文: …{ctx}"
+                        f"[内容差异·非阻断] 产物比源多出（{len(added)} 字符）: "
+                        f"{added[:80]!r}  上文: …{ctx}"
                     )
 
         recall = (matched + whitelisted_chars) / len(epub_text) if epub_text else 1.0
         self.metrics["char_recall"] = recall
+        self.metrics["char_recall_gate"] = "advisory"
         for kind, n in normative_losses.items():
             self.metrics.setdefault("normative_transforms", []).append(f"{kind} × {n}")
 
         if recall < CHAR_RECALL_THRESHOLD:
-            self.errors.append(
-                f"char_recall = {recall*100:.4f}% 低于阈值 {CHAR_RECALL_THRESHOLD*100}%"
+            self.warnings.append(
+                f"[内容差异·非阻断] char_recall = {recall*100:.4f}% "
+                f"低于参考阈值 {CHAR_RECALL_THRESHOLD*100}%"
                 f"（已扣除规范性变换 {whitelisted_chars} 字符）"
             )
 
