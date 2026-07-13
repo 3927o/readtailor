@@ -60,7 +60,9 @@ export type SourceUploadStatus = Static<typeof SourceUploadStatusSchema>;
 export const SharedBookStatusSchema = Type.Union([
   Type.Literal('queued'),
   Type.Literal('normalizing'),
+  Type.Literal('validating'),
   Type.Literal('indexing'),
+  Type.Literal('analyzing'),
   Type.Literal('ready'),
   Type.Literal('failed'),
 ]);
@@ -72,6 +74,32 @@ export const NormalizationRunStatusSchema = Type.Union([
   Type.Literal('failed'),
 ]);
 export type NormalizationRunStatus = Static<typeof NormalizationRunStatusSchema>;
+
+export const NormalizationAttemptStatusSchema = Type.Union([
+  Type.Literal('running'),
+  Type.Literal('succeeded'),
+  Type.Literal('failed'),
+  Type.Literal('abandoned'),
+]);
+export type NormalizationAttemptStatus = Static<typeof NormalizationAttemptStatusSchema>;
+
+export const NormalizationValidationPhaseSchema = Type.Union([
+  Type.Literal('agent'),
+  Type.Literal('worker_final'),
+  Type.Literal('package'),
+]);
+export type NormalizationValidationPhase = Static<
+  typeof NormalizationValidationPhaseSchema
+>;
+
+export const NormalizationValidationOutcomeSchema = Type.Union([
+  Type.Literal('passed'),
+  Type.Literal('passed_with_warnings'),
+  Type.Literal('failed'),
+]);
+export type NormalizationValidationOutcome = Static<
+  typeof NormalizationValidationOutcomeSchema
+>;
 
 export const BookPackageSummarySchema = Type.Object({
   id: Type.String(),

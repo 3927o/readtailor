@@ -62,6 +62,36 @@ GET /v1/books/:bookId/assets/*
 `nb_check.py --baseline` 中字符 diff 和 `char_recall` 是非阻断 warning；结构、资源路径和图片守恒等
 确定性错误仍会阻断 package 发布。
 
+### 正式 EPUB 清洗与发布
+
+正式入口使用 Worker 内的 Pi Agent 和一个 attempt 专属的 E2B sandbox：
+
+```bash
+pnpm --filter @readtailor/database db:migrate
+pnpm book:ingest:agent /absolute/path/to/book.epub
+```
+
+除数据库和对象存储外，需要配置：
+
+```text
+MODEL_API_BASE_URL
+MODEL_API_KEY
+MODEL_NAME（或 NORMALIZATION_MODEL_NAME / BOOK_ANALYSIS_MODEL_NAME）
+E2B_API_KEY
+```
+
+每个自动 attempt 都创建全新的 Agent session 和 E2B sandbox；同一 attempt 内的多次脚本修改和执行
+复用该 sandbox，EPUB 只上传一次。sandbox 明确禁网，只允许 Agent 读取当前源书、读规范、写/patch
+`normalize.py`、运行固定 normalizer/validator 命令和检查输出。脚本以非 sandbox owner 用户执行，不能
+修改只读源文件、规范和校验器。
+
+Agent 必须在完整校验达到 0 blocking error 后调用 `finish_normalization`。该动作绑定源 EPUB、脚本、
+输出 inventory、校验报告的 SHA-256 以及校验器版本；warning 会记录但不阻断。Worker 随后下载
+同一份候选产物并独立重跑完整校验，确定性生成 reading manifest，再运行只读 Book Analysis Agent
+生成共享 `book_profile.json`。完整 package 逐对象不可变上传并回读验 hash 后，才在数据库事务中
+创建 package/profile、切换 `current_package_id` 并把书标为 `ready`。E2B 永远不接触数据库、对象
+存储或模型密钥，也不执行发布。
+
 这是 ReadTailor 新 TypeScript 网页产品的实现交接包。源仓库中的 Rust CLI、历史实验目录和大型输出
 不属于新产品架构依据，未包含在本包中。
 

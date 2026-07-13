@@ -1,0 +1,1219 @@
+{
+  "id": "e9c7b6a7-d5ea-463c-9d74-94152a09a976",
+  "prevId": "c6578917-d6f6-4d67-9e25-94d76222e287",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.book_packages": {
+      "name": "book_packages",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "shared_book_id": {
+          "name": "shared_book_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "producer_attempt_id": {
+          "name": "producer_attempt_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version": {
+          "name": "version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "contract_version": {
+          "name": "contract_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "manifest_version": {
+          "name": "manifest_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "object_prefix": {
+          "name": "object_prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "file_hashes": {
+          "name": "file_hashes",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "validation_summary": {
+          "name": "validation_summary",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "package_manifest_object_key": {
+          "name": "package_manifest_object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "package_manifest_sha256": {
+          "name": "package_manifest_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "book_packages_book_version_unique": {
+          "name": "book_packages_book_version_unique",
+          "columns": [
+            {
+              "expression": "shared_book_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "book_packages_object_prefix_unique": {
+          "name": "book_packages_object_prefix_unique",
+          "columns": [
+            {
+              "expression": "object_prefix",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "book_packages_shared_book_id_shared_books_id_fk": {
+          "name": "book_packages_shared_book_id_shared_books_id_fk",
+          "tableFrom": "book_packages",
+          "tableTo": "shared_books",
+          "columnsFrom": [
+            "shared_book_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "book_packages_producer_attempt_id_normalization_attempts_id_fk": {
+          "name": "book_packages_producer_attempt_id_normalization_attempts_id_fk",
+          "tableFrom": "book_packages",
+          "tableTo": "normalization_attempts",
+          "columnsFrom": [
+            "producer_attempt_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.book_profiles": {
+      "name": "book_profiles",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "package_id": {
+          "name": "package_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "object_key": {
+          "name": "object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "book_profiles_package_unique": {
+          "name": "book_profiles_package_unique",
+          "columns": [
+            {
+              "expression": "package_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "book_profiles_package_id_book_packages_id_fk": {
+          "name": "book_profiles_package_id_book_packages_id_fk",
+          "tableFrom": "book_profiles",
+          "tableTo": "book_packages",
+          "columnsFrom": [
+            "package_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.normalization_artifacts": {
+      "name": "normalization_artifacts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "normalization_attempt_id": {
+          "name": "normalization_attempt_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "object_key": {
+          "name": "object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "byte_size": {
+          "name": "byte_size",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "normalization_artifacts_attempt_kind_revision_unique": {
+          "name": "normalization_artifacts_attempt_kind_revision_unique",
+          "columns": [
+            {
+              "expression": "normalization_attempt_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "revision",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "normalization_artifacts_object_key_unique": {
+          "name": "normalization_artifacts_object_key_unique",
+          "columns": [
+            {
+              "expression": "object_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "normalization_artifacts_normalization_attempt_id_normalization_attempts_id_fk": {
+          "name": "normalization_artifacts_normalization_attempt_id_normalization_attempts_id_fk",
+          "tableFrom": "normalization_artifacts",
+          "tableTo": "normalization_attempts",
+          "columnsFrom": [
+            "normalization_attempt_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "normalization_artifacts_revision_positive": {
+          "name": "normalization_artifacts_revision_positive",
+          "value": "\"normalization_artifacts\".\"revision\" > 0"
+        },
+        "normalization_artifacts_byte_size_nonnegative": {
+          "name": "normalization_artifacts_byte_size_nonnegative",
+          "value": "\"normalization_artifacts\".\"byte_size\" >= 0"
+        },
+        "normalization_artifacts_sha256_valid": {
+          "name": "normalization_artifacts_sha256_valid",
+          "value": "\"normalization_artifacts\".\"sha256\" ~ '^[0-9a-f]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.normalization_attempts": {
+      "name": "normalization_attempts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "normalization_run_id": {
+          "name": "normalization_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt_no": {
+          "name": "attempt_no",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sandbox_provider": {
+          "name": "sandbox_provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sandbox_id": {
+          "name": "sandbox_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "agent_session_id": {
+          "name": "agent_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_model": {
+          "name": "agent_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "turn_count": {
+          "name": "turn_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "tool_call_count": {
+          "name": "tool_call_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "script_sha256": {
+          "name": "script_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_inventory_sha256": {
+          "name": "output_inventory_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "validator_version": {
+          "name": "validator_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "validation_report_sha256": {
+          "name": "validation_report_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "host_output_inventory_sha256": {
+          "name": "host_output_inventory_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "host_validator_version": {
+          "name": "host_validator_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "host_validation_report_sha256": {
+          "name": "host_validation_report_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "blocking_error_count": {
+          "name": "blocking_error_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "warning_count": {
+          "name": "warning_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_class": {
+          "name": "error_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_summary": {
+          "name": "error_summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "normalization_attempts_run_number_unique": {
+          "name": "normalization_attempts_run_number_unique",
+          "columns": [
+            {
+              "expression": "normalization_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "attempt_no",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "normalization_attempts_one_running_per_run": {
+          "name": "normalization_attempts_one_running_per_run",
+          "columns": [
+            {
+              "expression": "normalization_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"normalization_attempts\".\"status\" = 'running'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "normalization_attempts_normalization_run_id_normalization_runs_id_fk": {
+          "name": "normalization_attempts_normalization_run_id_normalization_runs_id_fk",
+          "tableFrom": "normalization_attempts",
+          "tableTo": "normalization_runs",
+          "columnsFrom": [
+            "normalization_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "normalization_attempts_number_positive": {
+          "name": "normalization_attempts_number_positive",
+          "value": "\"normalization_attempts\".\"attempt_no\" > 0"
+        },
+        "normalization_attempts_status_valid": {
+          "name": "normalization_attempts_status_valid",
+          "value": "\"normalization_attempts\".\"status\" in ('running', 'succeeded', 'failed', 'abandoned')"
+        },
+        "normalization_attempts_completion_valid": {
+          "name": "normalization_attempts_completion_valid",
+          "value": "((\"normalization_attempts\".\"status\" = 'running' and \"normalization_attempts\".\"completed_at\" is null) or (\"normalization_attempts\".\"status\" in ('succeeded', 'failed', 'abandoned') and \"normalization_attempts\".\"completed_at\" is not null))"
+        },
+        "normalization_attempts_finish_binding_complete": {
+          "name": "normalization_attempts_finish_binding_complete",
+          "value": "(\"normalization_attempts\".\"script_sha256\" is null and \"normalization_attempts\".\"output_inventory_sha256\" is null and \"normalization_attempts\".\"validator_version\" is null and \"normalization_attempts\".\"validation_report_sha256\" is null) or (\"normalization_attempts\".\"script_sha256\" is not null and \"normalization_attempts\".\"output_inventory_sha256\" is not null and \"normalization_attempts\".\"validator_version\" is not null and \"normalization_attempts\".\"validation_report_sha256\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.normalization_runs": {
+      "name": "normalization_runs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "shared_book_id": {
+          "name": "shared_book_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_upload_id": {
+          "name": "source_upload_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "step": {
+          "name": "step",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt": {
+          "name": "attempt",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "error_summary": {
+          "name": "error_summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "normalization_runs_one_running_per_book": {
+          "name": "normalization_runs_one_running_per_book",
+          "columns": [
+            {
+              "expression": "shared_book_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"normalization_runs\".\"status\" = 'running'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "normalization_runs_shared_book_id_shared_books_id_fk": {
+          "name": "normalization_runs_shared_book_id_shared_books_id_fk",
+          "tableFrom": "normalization_runs",
+          "tableTo": "shared_books",
+          "columnsFrom": [
+            "shared_book_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "normalization_runs_source_upload_id_source_uploads_id_fk": {
+          "name": "normalization_runs_source_upload_id_source_uploads_id_fk",
+          "tableFrom": "normalization_runs",
+          "tableTo": "source_uploads",
+          "columnsFrom": [
+            "source_upload_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "normalization_runs_status_valid": {
+          "name": "normalization_runs_status_valid",
+          "value": "\"normalization_runs\".\"status\" in ('running', 'completed', 'failed')"
+        },
+        "normalization_runs_completion_valid": {
+          "name": "normalization_runs_completion_valid",
+          "value": "((\"normalization_runs\".\"status\" = 'running' and \"normalization_runs\".\"completed_at\" is null) or (\"normalization_runs\".\"status\" in ('completed', 'failed') and \"normalization_runs\".\"completed_at\" is not null))"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.normalization_validations": {
+      "name": "normalization_validations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "normalization_attempt_id": {
+          "name": "normalization_attempt_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "phase": {
+          "name": "phase",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invocation_no": {
+          "name": "invocation_no",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "validator_version": {
+          "name": "validator_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "script_sha256": {
+          "name": "script_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "output_inventory_sha256": {
+          "name": "output_inventory_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "report_sha256": {
+          "name": "report_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "report_object_key": {
+          "name": "report_object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "exit_code": {
+          "name": "exit_code",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "blocking_error_count": {
+          "name": "blocking_error_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "warning_count": {
+          "name": "warning_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "metrics": {
+          "name": "metrics",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "normalization_validations_attempt_phase_invocation_unique": {
+          "name": "normalization_validations_attempt_phase_invocation_unique",
+          "columns": [
+            {
+              "expression": "normalization_attempt_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "phase",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "invocation_no",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "normalization_validations_normalization_attempt_id_normalization_attempts_id_fk": {
+          "name": "normalization_validations_normalization_attempt_id_normalization_attempts_id_fk",
+          "tableFrom": "normalization_validations",
+          "tableTo": "normalization_attempts",
+          "columnsFrom": [
+            "normalization_attempt_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "normalization_validations_phase_valid": {
+          "name": "normalization_validations_phase_valid",
+          "value": "\"normalization_validations\".\"phase\" in ('agent', 'worker_final', 'package')"
+        },
+        "normalization_validations_outcome_valid": {
+          "name": "normalization_validations_outcome_valid",
+          "value": "\"normalization_validations\".\"outcome\" in ('passed', 'passed_with_warnings', 'failed')"
+        },
+        "normalization_validations_invocation_positive": {
+          "name": "normalization_validations_invocation_positive",
+          "value": "\"normalization_validations\".\"invocation_no\" > 0"
+        },
+        "normalization_validations_errors_nonnegative": {
+          "name": "normalization_validations_errors_nonnegative",
+          "value": "\"normalization_validations\".\"blocking_error_count\" >= 0"
+        },
+        "normalization_validations_warnings_nonnegative": {
+          "name": "normalization_validations_warnings_nonnegative",
+          "value": "\"normalization_validations\".\"warning_count\" >= 0"
+        },
+        "normalization_validations_script_sha_valid": {
+          "name": "normalization_validations_script_sha_valid",
+          "value": "\"normalization_validations\".\"script_sha256\" ~ '^[0-9a-f]{64}$'"
+        },
+        "normalization_validations_output_sha_valid": {
+          "name": "normalization_validations_output_sha_valid",
+          "value": "\"normalization_validations\".\"output_inventory_sha256\" ~ '^[0-9a-f]{64}$'"
+        },
+        "normalization_validations_report_sha_valid": {
+          "name": "normalization_validations_report_sha_valid",
+          "value": "\"normalization_validations\".\"report_sha256\" ~ '^[0-9a-f]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.shared_books": {
+      "name": "shared_books",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "epub_sha256": {
+          "name": "epub_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authors": {
+          "name": "authors",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "language": {
+          "name": "language",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cover_path": {
+          "name": "cover_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "identifiers": {
+          "name": "identifiers",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "publisher": {
+          "name": "publisher",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "published_date": {
+          "name": "published_date",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_filename": {
+          "name": "source_filename",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "current_package_id": {
+          "name": "current_package_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_summary": {
+          "name": "error_summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "shared_books_epub_sha256_unique": {
+          "name": "shared_books_epub_sha256_unique",
+          "columns": [
+            {
+              "expression": "epub_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "shared_books_current_package_id_book_packages_id_fk": {
+          "name": "shared_books_current_package_id_book_packages_id_fk",
+          "tableFrom": "shared_books",
+          "tableTo": "book_packages",
+          "columnsFrom": [
+            "current_package_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "shared_books_status_valid": {
+          "name": "shared_books_status_valid",
+          "value": "\"shared_books\".\"status\" in ('queued', 'normalizing', 'validating', 'indexing', 'analyzing', 'ready', 'failed')"
+        },
+        "shared_books_ready_has_package": {
+          "name": "shared_books_ready_has_package",
+          "value": "\"shared_books\".\"status\" <> 'ready' or \"shared_books\".\"current_package_id\" is not null"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.source_uploads": {
+      "name": "source_uploads",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "shared_book_id": {
+          "name": "shared_book_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_object_key": {
+          "name": "source_object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_filename": {
+          "name": "source_filename",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "media_type": {
+          "name": "media_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "byte_size": {
+          "name": "byte_size",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "epub_sha256": {
+          "name": "epub_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "source_uploads_object_key_unique": {
+          "name": "source_uploads_object_key_unique",
+          "columns": [
+            {
+              "expression": "source_object_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "source_uploads_shared_book_id_shared_books_id_fk": {
+          "name": "source_uploads_shared_book_id_shared_books_id_fk",
+          "tableFrom": "source_uploads",
+          "tableTo": "shared_books",
+          "columnsFrom": [
+            "shared_book_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "source_uploads_status_valid": {
+          "name": "source_uploads_status_valid",
+          "value": "\"source_uploads\".\"status\" in ('stored', 'failed')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.system_jobs": {
+      "name": "system_jobs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payload": {
+          "name": "payload",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result": {
+          "name": "result",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

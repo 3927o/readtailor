@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -28,6 +30,33 @@ def soup_with_image(src: str) -> BeautifulSoup:
 
 
 class AssetCheckerTests(unittest.TestCase):
+    def test_cli_writes_machine_readable_problem_levels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            product = root / "book.normalized.html"
+            report = root / "report.json"
+            product.write_text("<html><body>invalid</body></html>", encoding="utf-8")
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parents[1] / "tools" / "nb_check.py"),
+                    str(product),
+                    "--json-report",
+                    str(report),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            payload = json.loads(report.read_text(encoding="utf-8"))
+
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(payload["version"], "nb-check-1.0")
+            self.assertGreater(payload["totals"]["errors"], 0)
+            self.assertIn("errors", payload["sections"]["structure"])
+            self.assertFalse(payload["sections"]["fidelity"]["verified"])
+
     def test_existing_asset_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -25,6 +25,7 @@ import argparse
 import difflib
 import hashlib
 import html as html_mod
+import json
 import os
 import posixpath
 import re
@@ -49,6 +50,7 @@ from nb_linter import (  # noqa: E402
 
 WS_RE = re.compile(r"\s+")
 CHAR_RECALL_THRESHOLD = 0.999
+VALIDATOR_VERSION = "nb-check-1.0"
 # 新增内容达到该长度时输出诊断 warning，避免单字符结构噪声刷屏。
 DELETE_ERROR_LEN = 5
 # 规范性变换白名单：EPUB → nb-1.0 过程中"应当"消失的文本模式。
@@ -460,6 +462,10 @@ def main() -> int:
         "--baseline",
         help="源 EPUB 路径（提供后加跑保真层；也接受 raw.html 用于调试）",
     )
+    ap.add_argument(
+        "--json-report",
+        help="同时把含问题级别、分层计数和指标的机器可读报告写到指定路径",
+    )
     args = ap.parse_args()
 
     with open(args.product, encoding="utf-8") as f:
@@ -494,6 +500,7 @@ def main() -> int:
 
     fid_errors: list[str] = []
     fid_warnings: list[str] = []
+    fid_metrics: dict[str, object] = {}
 
     # ---- 保真层 ----
     if args.baseline:
@@ -504,6 +511,7 @@ def main() -> int:
             fc = FidelityChecker(product_soup, baseline, assets.package_root)
             fc.run()
             fid_errors, fid_warnings = fc.errors, fc.warnings
+            fid_metrics = fc.metrics
             for e in fid_errors:
                 print("[错误] " + e)
             for w in fid_warnings:
@@ -528,6 +536,36 @@ def main() -> int:
     n_warn = len(struct["warnings"]) + len(assets.warnings) + len(fid_warnings)
     print()
     print(f"—— 总计：{n_err} 个错误，{n_warn} 个警告 ——")
+    if args.json_report:
+        report = {
+            "version": VALIDATOR_VERSION,
+            "product": os.path.basename(args.product),
+            "baseline": os.path.basename(args.baseline) if args.baseline else None,
+            "sections": {
+                "structure": {
+                    "errors": struct["errors"],
+                    "warnings": struct["warnings"],
+                },
+                "assets": {
+                    "errors": assets.errors,
+                    "warnings": assets.warnings,
+                    "metrics": assets.metrics,
+                },
+                "fidelity": {
+                    "errors": fid_errors,
+                    "warnings": fid_warnings,
+                    "metrics": fid_metrics,
+                    "verified": bool(args.baseline and args.baseline.lower().endswith(".epub")),
+                },
+            },
+            "totals": {"errors": n_err, "warnings": n_warn},
+        }
+        report_path = Path(args.json_report)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     if n_err:
         return 1
     if n_warn:

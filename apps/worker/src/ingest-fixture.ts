@@ -13,10 +13,18 @@ import {
   sharedBooks,
   sourceUploads,
 } from '@readtailor/database';
-import { createObjectStorage, type ObjectStorage } from '@readtailor/storage';
+import {
+  publishImmutablePackage,
+  validateNormalizedCandidate,
+} from '@readtailor/normalized-book';
+import {
+  createObjectStorage,
+  ObjectNotFoundError,
+  type ObjectStorage,
+} from '@readtailor/storage';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const PACKAGE_VERSION = 'nb-1.0-v1';
+const PACKAGE_VERSION = 'nb-1.0-v2';
 const CONTRACT_VERSION = 'nb-1.0';
 const MANIFEST_VERSION = 'reading-nodes-1.0';
 
@@ -160,19 +168,6 @@ function createBookProfile(manifest: ReadingManifest) {
   };
 }
 
-function contentType(path: string): string | undefined {
-  const extension = path.split('.').pop()?.toLowerCase();
-  return {
-    html: 'text/html; charset=utf-8',
-    json: 'application/json',
-    txt: 'text/plain; charset=utf-8',
-    jpeg: 'image/jpeg',
-    jpg: 'image/jpeg',
-    png: 'image/png',
-    svg: 'image/svg+xml',
-  }[extension ?? ''];
-}
-
 async function putImmutable(
   storage: ObjectStorage,
   key: string,
@@ -209,8 +204,11 @@ async function packageInventoryIsComplete(
       if (sha256(bytes) !== expectedHash) {
         return false;
       }
-    } catch {
-      return false;
+    } catch (error) {
+      if (error instanceof ObjectNotFoundError) {
+        return false;
+      }
+      throw error;
     }
   }
   return true;
@@ -425,12 +423,21 @@ async function main(): Promise<void> {
     if (sha256(manifestBytes) !== sha256(rebuiltManifestBytes)) {
       throw new Error('reading manifest is not deterministic for the immutable normalized HTML');
     }
-    const validationOutput = await runCommand(
-      'python3',
-      [join(REPO_ROOT, 'tools/nb_check.py'), normalizedHtml, '--baseline', sourcePath],
-      { cwd: REPO_ROOT, allowedExitCodes: [0, 2] },
+    const hostValidation = await validateNormalizedCandidate({
+      repoRoot: REPO_ROOT,
+      sourceEpubPath: sourcePath,
+      outputDirectory: packageDir,
+      normalizerScript: await readFile(join(REPO_ROOT, 'tools/normalize_fixed_epub.py')),
+    });
+    await writeFile(
+      join(packageDir, 'validation_report.txt'),
+      hostValidation.humanReport,
+      'utf8',
     );
-    await writeFile(join(packageDir, 'validation_report.txt'), validationOutput, 'utf8');
+    await writeFile(
+      join(packageDir, 'validation_report.json'),
+      hostValidation.reportBytes,
+    );
 
     const normalizationReport = JSON.parse(
       await readFile(join(packageDir, 'normalization_report.json'), 'utf8'),
@@ -461,12 +468,20 @@ async function main(): Promise<void> {
     }
 
     const objectPrefix = `books/${epubSha256}/packages/${PACKAGE_VERSION}`;
-    const fileHashes: Record<string, string> = {};
-    for (const file of files) {
-      const bytes = await readFile(join(packageDir, file));
-      fileHashes[file] = sha256(bytes);
-      await putImmutable(storage, `${objectPrefix}/${file}`, bytes, contentType(file));
-    }
+    const publication = await publishImmutablePackage({
+      storage,
+      packageDirectory: packageDir,
+      objectPrefix,
+      requiredFiles: [
+        'book.normalized.html',
+        'reading_manifest.json',
+        'book_profile.json',
+        'normalization_report.json',
+        'validation_report.txt',
+        'validation_report.json',
+      ],
+    });
+    const fileHashes = publication.fileHashes;
 
     const proposedPackageId = randomUUID();
     const profileBytes = await readFile(join(packageDir, 'book_profile.json'));
@@ -484,9 +499,13 @@ async function main(): Promise<void> {
           objectPrefix,
           fileHashes,
           validationSummary: {
-            validator: 'nb_check.py',
+            validator: hostValidation.binding.validatorVersion,
             baselineSha256: epubSha256,
-            acceptedExitCodes: [0, 2],
+            exitCode: hostValidation.exitCode,
+            blockingErrorCount: hostValidation.binding.blockingErrorCount,
+            warningCount: hostValidation.binding.warningCount,
+            outputInventorySha256: hostValidation.binding.outputInventorySha256,
+            validationReportSha256: hostValidation.binding.validationReportSha256,
           },
         })
         .onConflictDoNothing({ target: [bookPackages.sharedBookId, bookPackages.version] });

@@ -12,6 +12,7 @@
     "dev:api": "pnpm --filter @readtailor/api dev",
     "dev:worker": "pnpm --filter @readtailor/worker dev",
     "book:ingest:fixture": "pnpm --filter @readtailor/worker ingest:fixture",
+    "book:ingest:agent": "pnpm --filter @readtailor/worker ingest:agent",
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",
     "test:ts": "vitest run",

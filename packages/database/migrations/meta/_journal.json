@@ -43,6 +43,27 @@
       "when": 1783944300699,
       "tag": "0005_fresh_sharon_ventura",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783951089600,
+      "tag": "0006_robust_amphibian",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783953013176,
+      "tag": "0007_glamorous_tomorrow_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783953602292,
+      "tag": "0008_perfect_ares",
+      "breakpoints": true
     }
   ]
 }

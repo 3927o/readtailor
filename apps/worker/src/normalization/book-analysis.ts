@@ -1,0 +1,220 @@
+import { randomUUID } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import {
+  runBookAnalysisAgent,
+  type BookAnalysisToolbox,
+  type BookProfile,
+  type ToolTextResult,
+} from '@readtailor/agent-kit';
+import { runCommand } from '@readtailor/normalized-book';
+
+type ManifestNode = {
+  section_id: string;
+  segment: number;
+  order: number;
+  region: string;
+  data_type: string;
+  title: string;
+  character_count: number;
+  block_count: number;
+  tailoring_eligible: boolean;
+};
+
+type ReadingManifest = {
+  version: string;
+  document: { title: string; language: string };
+  outline: unknown[];
+  book_total_characters: number;
+  node_count: number;
+  nodes: ManifestNode[];
+};
+
+type NormalizationReport = {
+  metadata: {
+    title: string;
+    authors: string[];
+    language: string;
+    cover_path: string | null;
+    identifiers: Record<string, string>;
+    publisher: string | null;
+    published_date: string | null;
+    source_filename: string;
+  };
+};
+
+async function runAnalysisHelper(options: {
+  repoRoot: string;
+  packageDirectory: string;
+  args: string[];
+  signal?: AbortSignal;
+}): Promise<ToolTextResult> {
+  const result = await runCommand(
+    'python3',
+    [
+      join(options.repoRoot, 'tools/book_analysis.py'),
+      ...options.args,
+      join(options.packageDirectory, 'book.normalized.html'),
+    ],
+    {
+      cwd: options.repoRoot,
+      timeoutMs: 3 * 60_000,
+      ...(options.signal ? { signal: options.signal } : {}),
+    },
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(`book analysis helper failed: ${(result.stdout + result.stderr).slice(-4000)}`);
+  }
+  if (result.truncated) throw new Error('book analysis helper output was truncated');
+  return { text: result.stdout, details: { exitCode: result.exitCode } };
+}
+
+export async function createBookAnalysisToolbox(options: {
+  repoRoot: string;
+  packageDirectory: string;
+}): Promise<{
+  toolbox: BookAnalysisToolbox;
+  manifest: ReadingManifest;
+  normalizationReport: NormalizationReport;
+}> {
+  const [manifest, normalizationReport] = await Promise.all([
+    readFile(join(options.packageDirectory, 'reading_manifest.json'), 'utf8').then(
+      (value) => JSON.parse(value) as ReadingManifest,
+    ),
+    readFile(join(options.packageDirectory, 'normalization_report.json'), 'utf8').then(
+      (value) => JSON.parse(value) as NormalizationReport,
+    ),
+  ]);
+  if (manifest.version !== 'reading-nodes-1.0' || !Array.isArray(manifest.nodes)) {
+    throw new Error('book analysis requires a valid reading-nodes-1.0 manifest');
+  }
+  if (!normalizationReport.metadata?.title) {
+    throw new Error('book analysis requires normalization metadata');
+  }
+  const eligibleKeys = new Set(
+    manifest.nodes
+      .filter((node) => node.tailoring_eligible)
+      .map((node) => `${node.section_id}\0${node.segment}`),
+  );
+
+  const toolbox: BookAnalysisToolbox = {
+    async getBookMetadata() {
+      return {
+        text: JSON.stringify(
+          {
+            ...normalizationReport.metadata,
+            node_count: manifest.node_count,
+            tailoring_eligible_node_count: eligibleKeys.size,
+            book_total_characters: manifest.book_total_characters,
+          },
+          null,
+          2,
+        ),
+      };
+    },
+    async getBookOutline(input) {
+      const offset = input.offset ?? 0;
+      const limit = input.limit ?? 100;
+      return {
+        text: JSON.stringify(
+          {
+            ...(offset === 0 ? { outline: manifest.outline } : {}),
+            nodes: manifest.nodes.slice(offset, offset + limit),
+            offset,
+            next_offset: offset + limit < manifest.nodes.length ? offset + limit : null,
+            total: manifest.nodes.length,
+          },
+          null,
+          2,
+        ),
+      };
+    },
+    readBookNode(input, signal) {
+      return runAnalysisHelper({
+        ...options,
+        args: [
+          'read',
+          '--section-id',
+          input.sectionId,
+          '--segment',
+          String(input.segment),
+          '--max-characters',
+          String(input.maxCharacters ?? 6000),
+        ],
+        ...(signal ? { signal } : {}),
+      });
+    },
+    searchBook(input, signal) {
+      return runAnalysisHelper({
+        ...options,
+        args: ['search', '--query', input.query, '--limit', String(input.limit ?? 20)],
+        ...(signal ? { signal } : {}),
+      });
+    },
+    getNodeStats(input, signal) {
+      return runAnalysisHelper({
+        ...options,
+        args: [
+          'stats',
+          '--section-id',
+          input.sectionId,
+          '--segment',
+          String(input.segment),
+        ],
+        ...(signal ? { signal } : {}),
+      });
+    },
+    async saveBookProfile(profile) {
+      const candidates = profile.trial_candidates;
+      const minimum = Math.min(9, eligibleKeys.size);
+      if (eligibleKeys.size === 0) {
+        throw new Error('book has no tailoring-eligible nodes for trial candidates');
+      }
+      if (candidates.length < minimum || candidates.length > Math.min(15, eligibleKeys.size)) {
+        throw new Error(
+          `book profile needs ${minimum}–${Math.min(15, eligibleKeys.size)} trial candidates`,
+        );
+      }
+      const seen = new Set<string>();
+      for (const candidate of candidates) {
+        const key = `${candidate.section_id}\0${candidate.segment}`;
+        if (!eligibleKeys.has(key)) {
+          throw new Error(`trial candidate is missing or not tailoring eligible: ${key}`);
+        }
+        if (seen.has(key)) throw new Error(`duplicate trial candidate: ${key}`);
+        seen.add(key);
+      }
+      const serialized = JSON.stringify(profile);
+      if (serialized.length > 50_000) throw new Error('book profile exceeds the 50 KB limit');
+    },
+  };
+
+  return { toolbox, manifest, normalizationReport };
+}
+
+export async function analyzeBookPackage(options: {
+  repoRoot: string;
+  packageDirectory: string;
+  modelApiBaseUrl: string;
+  modelApiKey: string;
+  modelName: string;
+  maxTurns?: number;
+  timeoutMs?: number;
+}): Promise<{ profile: BookProfile; turns: number; toolCalls: number }> {
+  const { toolbox } = await createBookAnalysisToolbox(options);
+  const result = await runBookAnalysisAgent({
+    apiBaseUrl: options.modelApiBaseUrl,
+    apiKey: options.modelApiKey,
+    modelName: options.modelName,
+    toolbox,
+    sessionId: randomUUID(),
+    ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
+    ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+  });
+  await writeFile(
+    join(options.packageDirectory, 'book_profile.json'),
+    `${JSON.stringify(result.profile, null, 2)}\n`,
+    'utf8',
+  );
+  return result;
+}
