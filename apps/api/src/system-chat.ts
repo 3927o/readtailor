@@ -29,30 +29,34 @@ export function createSystemChatService(options: {
         throw new Error('failed to insert system job');
       }
 
-      yield { type: 'job', jobId: row.id, model: engine.name };
+      let settled = false;
+      const settle = async (patch: Partial<typeof systemJobs.$inferInsert>) => {
+        settled = true;
+        await db.update(systemJobs).set(patch).where(eq(systemJobs.id, row.id));
+      };
 
-      let reply = '';
       try {
+        yield { type: 'job', jobId: row.id, model: engine.name };
+
+        let reply = '';
         for await (const event of engine.streamChat(prompt)) {
           if (event.type === 'content') {
             reply += event.text;
           }
           yield event;
         }
+
+        await settle({ status: 'completed', completedAt: new Date(), result: { reply } });
+        yield { type: 'done', jobId: row.id };
       } catch (error) {
-        await db
-          .update(systemJobs)
-          .set({ status: 'failed' })
-          .where(eq(systemJobs.id, row.id));
+        await settle({ status: 'failed' });
         throw error;
+      } finally {
+        if (!settled) {
+          // 客户端中途断开时生成器被提前 return，不走 catch，在这里兜底落终态。
+          await settle({ status: 'failed' });
+        }
       }
-
-      await db
-        .update(systemJobs)
-        .set({ status: 'completed', completedAt: new Date(), result: { reply } })
-        .where(eq(systemJobs.id, row.id));
-
-      yield { type: 'done', jobId: row.id };
     },
   };
 }
