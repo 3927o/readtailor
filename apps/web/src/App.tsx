@@ -1,12 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
+import type { HealthResponse } from '@readtailor/contracts';
 import { Route, Routes } from 'react-router';
-
-type HealthResponse = {
-  service: string;
-  status: 'ok' | 'degraded';
-  version: string;
-  timestamp: string;
-};
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001';
 

@@ -9,6 +9,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@readtailor/contracts": "workspace:*",
     "@tanstack/react-query": "^5.81.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

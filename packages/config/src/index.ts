@@ -30,6 +30,25 @@ export function readNumber(env: NodeJS.ProcessEnv, name: string, fallback: numbe
   return number;
 }
 
+export function readInteger(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number,
+  options: { min?: number; max?: number } = {},
+): number {
+  const number = readNumber(env, name, fallback);
+  if (!Number.isInteger(number)) {
+    throw new Error(`Environment variable ${name} must be an integer`);
+  }
+  if (options.min !== undefined && number < options.min) {
+    throw new Error(`Environment variable ${name} must be at least ${options.min}`);
+  }
+  if (options.max !== undefined && number > options.max) {
+    throw new Error(`Environment variable ${name} must be at most ${options.max}`);
+  }
+  return number;
+}
+
 export function readLogLevel(
   env: NodeJS.ProcessEnv,
   name: string,

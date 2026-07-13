@@ -8,7 +8,7 @@
 
 ## 当前工程
 
-项目使用 Node.js 22 LTS 和 pnpm 10。首次安装：
+项目使用 Node.js 24 和 pnpm 10。首次安装：
 
 ```bash
 pnpm install

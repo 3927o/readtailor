@@ -4,7 +4,7 @@ export default defineConfig({
   entry: ['src/server.ts'],
   format: ['esm'],
   platform: 'node',
-  target: 'node22',
+  target: 'node24',
   clean: true,
   sourcemap: true,
   noExternal: [/^@readtailor\//],

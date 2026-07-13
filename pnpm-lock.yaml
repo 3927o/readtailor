@@ -54,6 +54,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@readtailor/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@tanstack/react-query':
         specifier: ^5.81.0
         version: 5.101.2(react@19.2.7)
