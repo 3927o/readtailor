@@ -15,6 +15,7 @@ ReadTailor (裁读, "tailor-read") is an **AI reading companion**: it doesn't su
 ## Sources and references
 
 - **Chinese design guide:** [`references/design-guide.zh-CN.md`](references/design-guide.zh-CN.md).
+- **Reader content typography:** [`references/reader-content-typography.zh-CN.md`](references/reader-content-typography.zh-CN.md) — normative EPUB body, emphasis, quote, list, table, media, code, and note rules.
 - **Current machine-readable source:** `styles.css`, `tokens/`, `_ds_manifest.json`, and the component contracts under `components/`.
 - **Historical product references:** `public/zara.html` supplied the original full-text reading-companion patterns; `public/bp.html` supplied the editorial pitch patterns. Those source files are not part of this repository. Their reusable results live in `ui_kits/reader/` and `ui_kits/pitch/`.
 
@@ -39,8 +40,8 @@ The copy is the brand as much as the visuals. It reads like a **private letter**
 
 ## VISUAL FOUNDATIONS
 
-- **Color.** ~90% of any screen is warm paper + ink/grey. Green is a *highlighter*, never a fill area — it lights emphasis words (`<em>` in italic deep-green), selected chips, the CTA, a progress dot, an annotation card's left edge. Paper is `#FAFAF6` (never pure white); ink is `#0A0A09` (never pure black). The lone non-green color is brick-red `#b4452f`, **form errors only**.
-- **Type — the two-voice system.** (1) **Serif** 上元明朝 (LanternMingA) / Noto Serif SC = the *letter*: narration, headings, reading body. (2) **Sans** 未来荧黑 (Glow Sans SC) / Noto Sans SC = the *product UI*: anything inside the phone shell / controls. (3) **Mono** JetBrains Mono = *chrome*: kickers, issue lines, always uppercase + 0.12–0.22em tracking. The phone shell re-points the serif/mono tokens to the sans, so "this is a product, that is a letter" is felt automatically.
+- **Color.** ~90% of any screen is warm paper + ink/grey. Green is a *highlighter*, never a fill area — it lights ReadTailor-authored emphasis words (`<em>` in italic deep-green), selected chips, the CTA, a progress dot, an annotation card's left edge. Publisher-owned EPUB `<em>` stays italic in the current text color; it never inherits the product emphasis green. Paper is `#FAFAF6` (never pure white); ink is `#0A0A09` (never pure black). The lone non-green color is brick-red `#b4452f`, **form errors only**.
+- **Type — the two-voice system.** (1) **Serif** = the *letter*: 上元明朝 (LanternMingA) for narration and headings; the quieter system Songti SC for long-form reading, with Noto Serif SC as the portable fallback. (2) **Sans** 未来荧黑 (Glow Sans SC) / Noto Sans SC = the *product UI*: anything inside the phone shell / controls. (3) **Mono** JetBrains Mono = *chrome*: kickers, issue lines, always uppercase + 0.12–0.22em tracking. The phone shell re-points the serif/mono tokens to the sans, so "this is a product, that is a letter" is felt automatically.
 - **Backgrounds.** Flat warm paper. No photography, no full-bleed imagery, no gradients-as-decoration, no textures. The only "gradient" is a 96px bottom fade dissolving leaving text into the paper, and a 2px green progress sliver.
 - **Layout.** Generous: stage padding ~110px/64px; content measures stay narrow (38ch narration, 720px reading, 1000px demo). One-sentence-per-screen discrete paging on the landing; centred narrow column. Fixed elements: top masthead (frosted), top progress bar, bottom dot-nav.
 - **Motion.** Slow, soft, with lift — almost everything on one curve `cubic-bezier(.2,.7,.2,1)`. Signature: **char-by-char reveal** (each glyph opacity 0→1 + translateY 0.24em→0 + blur 2→0, ~55ms stagger, longer pause at punctuation). Scenes fade + rise on enter. Controls inside the product fade *plainly* (no rise/blur) — controls shouldn't "perform" like a sentence. Always honor `prefers-reduced-motion`.
@@ -73,7 +74,7 @@ There is **no image logo** — the brand mark is typographic: `裁读` (serif, t
 - `styles.css` — the one file consumers link (an `@import` manifest only).
 - `tokens/` — `fonts.css` (webfonts), `colors.css`, `themes.css` (reading themes: default paper, `[data-rt-theme="sepia"]` 纸黄, `[data-rt-theme="night"]` 夜间 — reader view only), `typography.css`, `spacing.css`, `motion.css`.
 
-**Foundations** (`guidelines/*.card.html`) — specimen cards in the Design System tab: color (surfaces / ink / green / rules), type (display / reading / UI / mono), spacing (scale / radius / measures / shadow+easing), brand (wordmark / annotation card / mark legend).
+**Foundations** (`guidelines/*.card.html`) — specimen cards in the Design System tab: color (surfaces / ink / green / rules), type (display / reading baseline / reader content / UI / mono), spacing (scale / radius / measures / shadow+easing), brand (wordmark / annotation card / mark legend). The complete normative reader-content rules live in [`references/reader-content-typography.zh-CN.md`](references/reader-content-typography.zh-CN.md).
 
 **Components** (`components/<group>/`) — React primitives, namespace `window.ReadTailorDesignSystem_…`:
 - `core/` — **Button** (green pill, 3 variants), **Chip** (pill toggle / tag), **Kicker** (mono section label), **Toggle** (settings switch), **Slider** (字号/行距 range), **Segmented** (2–4 option control), **TextField** (boxed input + error), **Toast** (frosted passing note), **EmptyState** (⌜ ⌟ quiet empty view).
@@ -94,4 +95,4 @@ There is **no image logo** — the brand mark is typographic: `裁读` (serif, t
 
 ## CAVEATS / SUBSTITUTIONS
 
-- **Display webfonts are CDN-only.** 上元明朝 (LanternMingA) and 未来荧黑 (Glow Sans SC) load from ZeoSeven's subset-on-demand CDN; there are no local binaries to vendor. Offline, the stacks fall back to **Noto Serif SC / Noto Sans SC** (also CDN, Google Fonts). If you have the licensed font files, drop them in `assets/fonts/` and add local `@font-face` rules to `tokens/fonts.css`.
+- **Display webfonts are CDN-only.** 上元明朝 (LanternMingA) and 未来荧黑 (Glow Sans SC) load from ZeoSeven's subset-on-demand CDN; there are no local binaries to vendor. Long-form reading prefers the local **Songti SC** system font on Apple platforms and falls back to **Noto Serif SC** elsewhere. If you have licensed font files, drop them in `assets/fonts/` and add local `@font-face` rules to `tokens/fonts.css`.

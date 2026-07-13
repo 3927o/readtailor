@@ -62,7 +62,7 @@
 
 **排版细节**：
 - 大字 `clamp(28px, 3.4vw, 42px)`，行高 1.5–1.55，字距 `-0.005em`（微收紧）。
-- 强调词用 `<em>` 斜体 + 深绿色。
+- 裁读自有文案中的强调词用 `<em>` 斜体 + 深绿色。EPUB 原书内容不适用这条规则，原书 `<em>` 保持正文颜色。
 - 正文阅读区行高高达 1.9–1.95，段落首行缩进 2em（中文书籍排版习惯）。
 - `text-wrap: pretty` 避免孤行。
 
@@ -137,6 +137,7 @@
 
 - 全局样式入口：[`../styles.css`](../styles.css)
 - 设计 token：[`../tokens/`](../tokens/)
+- 阅读器原文排版：[`reader-content-typography.zh-CN.md`](reader-content-typography.zh-CN.md)
 - 组件实现与使用说明：[`../components/`](../components/)
 - 阅读器与 Pitch 示例：[`../ui_kits/`](../ui_kits/)
 - 阅读 App 模板：[`../templates/reader-app/`](../templates/reader-app/)

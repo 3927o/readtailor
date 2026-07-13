@@ -3,13 +3,14 @@
    Two display webfonts come from ZeoSeven (subset-on-demand CDN):
      · LanternMingA  上元明朝  — the "letter" voice (modern Ming serif)   id 419
      · Glow Sans SC   未来荧黑  — the product-UI voice (geometric sans)     id 537
-   The chrome faces (Noto Serif SC, Noto Sans SC, JetBrains Mono) come
-   from Google Fonts.
+   Portable fallback faces (Noto Serif SC, Noto Sans SC, JetBrains Mono)
+   come from Google Fonts. Long-form reading prefers the local Songti SC
+   system face where available, then falls back to Noto Serif SC.
 
    NOTE: these are CDN-hosted webfonts, not local binaries. ZeoSeven
    serves them as on-demand subsets, so there is nothing to vendor into
    assets/. Consuming projects must be online for the two display faces
-   to load; the stacks fall back to Noto Serif SC / Noto Sans SC offline.
+   to load; display stacks fall back to Noto Serif SC / Noto Sans SC.
    ─────────────────────────────────────────────────────────────────── */
 
 /* Google Fonts — Noto Serif SC, Noto Sans SC, JetBrains Mono */

@@ -10,6 +10,7 @@ Read **README.md** in this skill first — it holds the full design guide: the "
 
 ## What's here
 - `styles.css` + `tokens/` — the design tokens and webfont rules. Link `styles.css` and reference `var(--rt-*)`.
+- `references/reader-content-typography.zh-CN.md` — normative rules for publisher-owned EPUB text: emphasis, quotes, lists, tables, media, code, notes, and normalization boundaries.
 - `guidelines/*.card.html` — foundation specimens (color, type, spacing, brand).
 - `components/<group>/` — React primitives (core: Button, Chip, Kicker, Toggle, Slider, Segmented, TextField, Toast, EmptyState · reading: AnnotationCard, Mark, BriefCard · library: BookCover, BookListItem, ShelfGrid, SearchField · chrome: Masthead, ProgressBar, NavDots, PhoneFrame, BottomNav, TOCList, ReaderToolbar). Each has a `.jsx`, a `.d.ts` props contract, and a `.prompt.md` usage note.
 - `ui_kits/reader/` and `ui_kits/pitch/` — full-screen recreations of the product reading view and the pitch landing.
@@ -18,7 +19,7 @@ Read **README.md** in this skill first — it holds the full design guide: the "
 
 ## How to work
 - **Visual artifacts** (slides, mocks, throwaway prototypes): copy the assets/tokens you need and produce static HTML the user can open. Link `styles.css`, reuse the components, and stay inside the brand (warm paper, ink, one sage-green accent, two-voice type, huge whitespace).
-- **Production code:** read the rules here and the component `.prompt.md` files to design as an expert in the brand.
+- **Production code:** read the rules here and the component `.prompt.md` files to design as an expert in the brand. For reader body, heading inline content, or original notes, read `references/reader-content-typography.zh-CN.md` first; do not apply the brand's green `<em>` treatment to publisher-owned text.
 
 ## Non-negotiables (the brand dies without these)
 - Warm paper `#FAFAF6`, never pure white; warm ink `#0A0A09`, never pure black; **green `#2F6A52` is a highlighter, never a fill**.

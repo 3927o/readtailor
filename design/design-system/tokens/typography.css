@@ -1,8 +1,8 @@
 /* ───────────────────────────────────────────────────────────────────
    ReadTailor 裁读 · Typography — the "two-voice" system
    Three voices, each with a job:
-     1. SERIF (上元明朝 / Noto Serif SC) — the LETTER. Narration, headings,
-        body. Literary, modern Ming — NOT retro kai/楷.
+     1. SERIF — the LETTER. 上元明朝 for display; Songti SC for long-form
+        reading. Literary, modern Ming/Song — NOT retro kai/楷.
      2. SANS  (未来荧黑 / Noto Sans SC)  — the PRODUCT UI. Anything inside
         the phone shell / interactive controls. Geometric, quiet.
      3. MONO  (JetBrains Mono)          — editorial CHROME. Kickers, issue
@@ -12,8 +12,8 @@
   /* ── families ── */
   /* the LETTER voice — modern Ming serif (display + reading) */
   --rt-serif: 'LanternMingA', 'Noto Serif SC', 'Songti SC', 'Source Han Serif SC', Georgia, serif; /* @kind font */
-  /* plain reading serif for long-form body (Noto Serif first, no display quirk) */
-  --rt-read:  'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', Georgia, serif; /* @kind font */
+  /* quieter system Song for long-form body; Noto stays the portable web fallback */
+  --rt-read:  'Songti SC', 'STSong', 'Source Han Serif SC', 'Noto Serif SC', Georgia, serif; /* @kind font */
   /* general sans */
   --rt-sans:  'Noto Sans SC', 'PingFang SC', system-ui, sans-serif; /* @kind font */
   /* the PRODUCT-UI voice — geometric sans (used inside the phone shell) */

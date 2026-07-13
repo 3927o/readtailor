@@ -1,0 +1,120 @@
+<!-- @dsCard group="Type" viewport="920x900" name="Reader Content Typography" subtitle="EPUB semantics on paper — emphasis, quotes, lists, tables, code, captions" -->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--rt-bg); color: var(--rt-ink); }
+  .page { width: min(100%, 860px); margin: 0 auto; padding: 38px 42px 48px; }
+  .kicker { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; color: var(--rt-green); font-family: var(--rt-mono); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; }
+  .kicker::before { width: 28px; border-top: 1px solid var(--rt-green); content: ''; }
+  h1 { margin: 0; font-family: var(--rt-serif); font-size: 28px; font-weight: 600; letter-spacing: 0; }
+  .lede { max-width: 62ch; margin: 8px 0 30px; color: var(--rt-ink-3); font-family: var(--rt-demo); font-size: 12px; line-height: 1.75; }
+  .specimen { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr); gap: 40px; align-items: start; }
+  .label { margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px dashed var(--rt-rule); color: var(--rt-ink-3); font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.16em; text-transform: uppercase; }
+  .rt-reader-content { color: var(--rt-ink); font-family: var(--rt-read); font-size: var(--rt-reading-size); font-weight: 400; line-height: 1.95; letter-spacing: 0; overflow-wrap: anywhere; }
+  .rt-reader-content p { margin: 0 0 0.8em; text-indent: 2em; }
+  .rt-reader-content > p[data-after-heading],
+  .rt-reader-content [data-role='separator'] + p,
+  .rt-reader-content blockquote p,
+  .rt-reader-content li p,
+  .rt-reader-content td p,
+  .rt-reader-content th p,
+  .rt-reader-content figcaption p { text-indent: 0; }
+  .rt-reader-content strong,
+  .rt-reader-content b { color: inherit; font-weight: 600; }
+  .rt-reader-content em,
+  .rt-reader-content i { color: inherit; font-style: italic; }
+  .rt-reader-content u { color: inherit; text-decoration-color: currentColor; text-decoration-thickness: 1px; text-underline-offset: 0.14em; }
+  .rt-reader-content a:not([data-role='noteref']) { color: inherit; text-decoration-color: var(--rt-rule); text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
+  .rt-reader-content a:not([data-role='noteref']):hover { color: var(--rt-green-deep); text-decoration-color: currentColor; }
+  .rt-reader-content a[data-role='noteref'] { margin-inline: 0.12em; color: var(--rt-green); font-family: var(--rt-demo); font-size: 0.7em; font-weight: 500; text-decoration: none; vertical-align: super; }
+  .rt-reader-content blockquote { margin: 1.8em 0; padding-inline-start: 1.25em; border-inline-start: 1px solid var(--rt-rule); color: var(--rt-ink-2); }
+  .rt-reader-content blockquote p:last-child { margin-bottom: 0; }
+  .rt-reader-content ul,
+  .rt-reader-content ol { margin: 1.2em 0; padding-inline-start: 1.7em; }
+  .rt-reader-content li { margin: 0.45em 0; padding-inline-start: 0.12em; }
+  .rt-reader-content li::marker { color: var(--rt-ink-3); }
+  .rt-reader-content [data-role='separator'] { width: 72px; margin: 2.4em auto; border-top: 1px solid var(--rt-rule); }
+  [data-role='table-scroll'] { max-width: 100%; margin: 0 0 24px; overflow-x: auto; }
+  table { width: 100%; min-width: 300px; border-collapse: collapse; color: var(--rt-ink-2); font-family: var(--rt-demo); font-size: 13px; line-height: 1.65; }
+  caption { margin-bottom: 8px; color: var(--rt-ink-3); font-size: 12px; text-align: left; }
+  th { color: var(--rt-ink); font-weight: 600; }
+  thead th { background: var(--rt-bg-2); }
+  th[scope='row'] { background: transparent; }
+  tfoot th,
+  tfoot td { border-top: 1px solid var(--rt-rule); font-weight: 600; }
+  th,
+  td { padding: 8px 10px; border-bottom: 1px solid var(--rt-rule); text-align: left; vertical-align: top; }
+  td[data-align='number'] { font-variant-numeric: tabular-nums; text-align: right; }
+  code { padding: 0.08em 0.3em; border: 1px solid var(--rt-rule); border-radius: 3px; background: var(--rt-bg-2); font-family: var(--rt-mono); font-size: 0.84em; }
+  pre { max-width: 100%; margin: 1.8em 0; overflow-x: auto; padding: 1.1em 1.2em; border: 1px solid var(--rt-rule); border-radius: 6px; background: var(--rt-bg-2); color: var(--rt-ink-2); font-family: var(--rt-mono); font-size: 13px; line-height: 1.7; }
+  pre code { padding: 0; border: 0; background: transparent; font-size: inherit; }
+  figure { margin: 2.2em 0; }
+  .figure-demo { display: grid; min-height: 104px; place-items: center; border-top: 1px solid var(--rt-rule); border-bottom: 1px solid var(--rt-rule); color: var(--rt-ink-3); font-family: var(--rt-serif); font-size: 24px; }
+  figcaption { margin-top: 10px; color: var(--rt-ink-3); font-family: var(--rt-demo); font-size: 12px; line-height: 1.65; }
+  .principle { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; margin-top: 30px; padding-top: 14px; border-top: 1px dashed var(--rt-rule); color: var(--rt-ink-3); font-family: var(--rt-mono); font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; }
+  .principle strong { color: var(--rt-green-deep); font-weight: 500; }
+  .principle a { color: inherit; text-underline-offset: 3px; }
+  @media (max-width: 700px) {
+    .page { padding: 30px 22px 40px; }
+    .specimen { grid-template-columns: 1fr; gap: 28px; }
+  }
+</style>
+</head>
+<body>
+  <main class="page">
+    <div class="kicker">Type · Reader Content</div>
+    <h1>原书的语义，安静地留在纸上</h1>
+    <p class="lede">原文强调不借用品牌色；表格、代码和引用各自可读，同时仍属于同一张纸。</p>
+
+    <div class="specimen">
+      <section>
+        <div class="label">Prose · Emphasis · Quote · List</div>
+        <article class="rt-reader-content">
+          <p data-after-heading>阅读器保留作者的语气，也统一纸张上的节奏。<strong>加粗是更重的一笔</strong>，不是新的颜色；<em>斜体是声音的侧转</em>，也不冒充裁读注释。原书的<u>下划线</u>保持中性，脚注入口<a data-role="noteref" href="#note-1">[1]</a>才使用交互绿。</p>
+          <div data-role="separator" aria-hidden="true"></div>
+          <p>分节后的第一段不缩进。普通<a href="https://example.com">外部链接</a>以细下划线存在，不打断连续阅读。</p>
+          <blockquote>
+            <p>引用不是注释卡。它只退后半步，用一条中性规则线与正文区分。</p>
+          </blockquote>
+          <ol>
+            <li>保留原书结构与编号。</li>
+            <li>列表项不做段首缩进。</li>
+          </ol>
+        </article>
+      </section>
+
+      <section>
+        <div class="label">Data · Code · Figure</div>
+        <div data-role="table-scroll" tabindex="0" aria-label="可横向滚动的表格样例">
+          <table>
+            <caption>表一 · 阅读节奏</caption>
+            <thead><tr><th scope="col">元素</th><th scope="col">规则</th><th scope="col">值</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">正文</th><td>阅读衬线</td><td data-align="number">18px</td></tr>
+              <tr><th scope="row">行高</th><td>宽松</td><td data-align="number">1.95</td></tr>
+            </tbody>
+            <tfoot><tr><th scope="row">缩进</th><td>中文段首</td><td data-align="number">2em</td></tr></tfoot>
+          </table>
+        </div>
+        <pre><code>.reader-content strong {
+  color: inherit;
+  font-weight: 600;
+}</code></pre>
+        <figure>
+          <div class="figure-demo" role="img" aria-label="留白中的细线图形样例">⌜  图  ⌟</div>
+          <figcaption>图注使用安静的 UI 字体，不缩进，也不与正文争夺层级。</figcaption>
+        </figure>
+      </section>
+    </div>
+
+    <div class="principle">
+      <strong>Book owns semantics · Reader owns typography</strong>
+      <a href="../references/reader-content-typography.zh-CN.md">完整规范</a>
+    </div>
+  </main>
+</body>
+</html>

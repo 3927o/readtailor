@@ -38,8 +38,8 @@
         "message": "Raw px value — use a design-system spacing token via var()."
       },
       {
-        "selector": "Literal[value=/font-family\\s*:\\s*(?!['\\\"]?(?:JetBrains Mono|Noto Sans SC|Noto Serif SC))/i]",
-        "message": "Font not provided by the design system. Available: JetBrains Mono, Noto Sans SC, Noto Serif SC."
+        "selector": "Literal[value=/font-family\\s*:\\s*(?!['\\\"]?(?:JetBrains Mono|Noto Sans SC|Noto Serif SC|Songti SC))/i]",
+        "message": "Font not provided by the design system. Available: JetBrains Mono, Noto Sans SC, Noto Serif SC, Songti SC."
       },
       {
         "selector": "JSXOpeningElement[name.name='AnnotationCard'] > JSXAttribute > JSXIdentifier[name!=/^(?:kind|kicker|title|anchor|trigger|bullets|children|key|ref|className|style|children)$/]",
@@ -408,7 +408,8 @@
     "fontFamilies": [
       "JetBrains Mono",
       "Noto Sans SC",
-      "Noto Serif SC"
+      "Noto Serif SC",
+      "Songti SC"
     ]
   }
 }
