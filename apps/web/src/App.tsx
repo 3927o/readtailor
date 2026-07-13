@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import type { HealthResponse } from '@readtailor/contracts';
 import { Route, Routes } from 'react-router';
+import { ReaderPage } from './reader/ReaderPage';
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001';
 
@@ -50,6 +51,7 @@ function ShelfPage() {
 export function App() {
   return (
     <Routes>
+      <Route path="/books/:bookId/read" element={<ReaderPage />} />
       <Route path="*" element={<ShelfPage />} />
     </Routes>
   );
