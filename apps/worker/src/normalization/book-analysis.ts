@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   runBookAnalysisAgent,
   type AgentTraceHandler,
+  type BookAnalysisAgentEvent,
   type BookAnalysisToolbox,
   type BookProfile,
   type ToolTextResult,
@@ -183,6 +184,7 @@ export async function analyzeBookPackage(options: {
   modelName: string;
   maxTurns?: number;
   timeoutMs?: number;
+  onEvent?: (event: BookAnalysisAgentEvent) => void | Promise<void>;
   onTrace?: AgentTraceHandler;
 }): Promise<{ profile: BookProfile; turns: number; toolCalls: number }> {
   const { toolbox } = await createBookAnalysisToolbox(options);
@@ -194,6 +196,7 @@ export async function analyzeBookPackage(options: {
     sessionId: randomUUID(),
     ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
     ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.onEvent ? { onEvent: options.onEvent } : {}),
     ...(options.onTrace ? { onTrace: options.onTrace } : {}),
   });
   await writeFile(

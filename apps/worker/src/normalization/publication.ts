@@ -116,6 +116,11 @@ export async function publishValidatedNormalization(options: {
       modelName: options.analysisModelName,
       ...(options.analysisMaxTurns ? { maxTurns: options.analysisMaxTurns } : {}),
       ...(options.analysisTimeoutMs ? { timeoutMs: options.analysisTimeoutMs } : {}),
+      onEvent: async () => {
+        // analyze 阶段和 normalize 一样每个 agent 动作打一次心跳，避免长分析被误判为孤儿。
+        // attempt 此时已 succeeded，heartbeat 对 attempt 行是 no-op，只刷新 run 心跳。
+        await repository.heartbeat(options.candidate.attemptId, options.normalizationRunId);
+      },
       onTrace: (event) => {
         options.logger.info(
           { normalizationRunId: options.normalizationRunId, agentTrace: event },

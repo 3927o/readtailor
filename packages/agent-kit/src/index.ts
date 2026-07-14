@@ -1067,6 +1067,16 @@ const BOOK_ANALYSIS_SYSTEM_PROMPT = `你是 ReadTailor 的共享书籍分析 Age
 const BOOK_ANALYSIS_INITIAL_PROMPT =
   '分析当前书籍并生成共享 book profile。候选池通常为 9–15 个；若全书可裁读节点不足 9 个，则使用全部可裁读节点。';
 
+export type BookAnalysisAgentEvent =
+  | { type: 'turn_started'; turn: number }
+  | { type: 'tool_started'; toolCallId: string; toolName: string }
+  | {
+      type: 'tool_finished';
+      toolCallId: string;
+      toolName: string;
+      succeeded: boolean;
+    };
+
 export async function runBookAnalysisAgent(options: {
   apiBaseUrl: string;
   apiKey: string;
@@ -1075,6 +1085,7 @@ export async function runBookAnalysisAgent(options: {
   sessionId: string;
   maxTurns?: number;
   timeoutMs?: number;
+  onEvent?: (event: BookAnalysisAgentEvent) => void | Promise<void>;
   onTrace?: AgentTraceHandler;
 }): Promise<{ profile: BookProfile; turns: number; toolCalls: number }> {
   let profile: BookProfile | undefined;
@@ -1187,7 +1198,7 @@ export async function runBookAnalysisAgent(options: {
     getApiKey: () => options.apiKey,
     toolExecution: 'sequential',
   });
-  agent.subscribe((event) => {
+  agent.subscribe(async (event: AgentEvent) => {
     if (event.type === 'turn_start') {
       if (turns >= maxTurns) {
         limitExceeded = true;
@@ -1195,8 +1206,21 @@ export async function runBookAnalysisAgent(options: {
         return;
       }
       turns += 1;
+      await options.onEvent?.({ type: 'turn_started', turn: turns });
     } else if (event.type === 'tool_execution_start') {
       toolCalls += 1;
+      await options.onEvent?.({
+        type: 'tool_started',
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+      });
+    } else if (event.type === 'tool_execution_end') {
+      await options.onEvent?.({
+        type: 'tool_finished',
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        succeeded: !event.isError,
+      });
     }
   });
   subscribeAgentTrace(agent, {
