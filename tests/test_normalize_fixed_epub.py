@@ -112,6 +112,27 @@ class NormalizeFixedEpubTests(unittest.TestCase):
             self.assertEqual(sermon.find(recursive=False).name, "h3")
             self.assertEqual(sermon.find("section", recursive=False).find(recursive=False).name, "h4")
 
+            # §4.2.3 首选：说教内部的编号小节各自独立成 <section data-type="subsection">，
+            # 不再是 data-role="unit" 裸路标，从而进入下游 outline 目录、可锚点跳转。
+            self.assertFalse(soup.select('[data-role="unit"]'))
+            self.assertEqual(len(soup.select('section[data-type="subsection"]')), 112)
+            prologue = soup.select_one('section#body-part0007[data-type="chapter"]')
+            prologue_subs = prologue.find_all(
+                "section", attrs={"data-type": "subsection"}, recursive=False
+            )
+            self.assertEqual(
+                [sub["id"] for sub in prologue_subs],
+                [f"body-part0007-sub-{n:03d}" for n in range(1, 11)],
+            )
+            self.assertEqual(prologue.find(recursive=False).name, "h3")
+            self.assertEqual([sub.find(recursive=False).name for sub in prologue_subs], ["h4"] * 10)
+            # section 深度里的编号小节按 §4.2 的 DOM 深度→N 落到 <h5>
+            gift = soup.select_one('section#body-part0029[data-type="section"]')
+            gift_subs = gift.find_all(
+                "section", attrs={"data-type": "subsection"}, recursive=False
+            )
+            self.assertEqual([sub.find(recursive=False).name for sub in gift_subs], ["h5"] * 3)
+
             result = NbBookLinter(html).run_all_checks()
             self.assertEqual(result["errors"], [], "\n".join(result["errors"]))
 

@@ -25,7 +25,7 @@ import {
 } from '@readtailor/storage';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const PACKAGE_VERSION = 'nb-1.0-v2';
+const PACKAGE_VERSION = 'nb-1.0-v3';
 const CONTRACT_VERSION = 'nb-1.0';
 const MANIFEST_VERSION = 'reading-nodes-1.0';
 
@@ -235,6 +235,7 @@ async function main(): Promise<void> {
       .select({
         bookId: sharedBooks.id,
         packageId: bookPackages.id,
+        version: bookPackages.version,
         objectPrefix: bookPackages.objectPrefix,
         fileHashes: bookPackages.fileHashes,
         profileObjectKey: bookProfiles.objectKey,
@@ -247,6 +248,9 @@ async function main(): Promise<void> {
       .limit(1);
     if (
       ready &&
+      // 只有当现行包的版本与目标 PACKAGE_VERSION 一致时才复用；否则（升版本 =
+      // normalize/打包逻辑变更）必须重跑发布新版本，不能被旧 ready 包挡住。
+      ready.version === PACKAGE_VERSION &&
       ready.profileObjectKey === `${ready.objectPrefix}/book_profile.json` &&
       ready.profileSha256 === ready.fileHashes['book_profile.json'] &&
       (await packageInventoryIsComplete(storage, ready.objectPrefix, ready.fileHashes))

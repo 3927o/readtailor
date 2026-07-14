@@ -582,17 +582,26 @@ class FixedEpubNormalizer:
         source_children: Optional[list[NavigableString | Tag]] = None,
         section_id: Optional[str] = None,
     ) -> Tag:
+        resolved_id = section_id or self.file_target_ids[href]
         section = self._new_tag(
             soup,
             "section",
             **{
-                "id": section_id or self.file_target_ids[href],
+                "id": resolved_id,
                 "data-type": data_type,
                 "data-src-file": PurePosixPath(href).name,
             },
         )
         body = self.docs[href].find("body") or self.docs[href]
+        source_name = PurePosixPath(href).name
+        subsection_level = min(heading_level + 1, 6)
         heading_index = 0
+        subsection_index = 0
+        # 章内出现第二个及以后的标题（本 fixture 里是说教内部的编号小节 1、2、3…）
+        # 按 §4.2.3 首选建模：各自独立成 <section data-type="subsection">，标题即
+        # 编号、带机械 id，随后的内容归入该 subsection。这样每个小节可锚点跳转、
+        # 会进入下游 outline 目录（build_reading_nodes 只枚举 section[data-type]）。
+        current_target: Tag = section
         for child in source_children if source_children is not None else list(body.children):
             if isinstance(child, Tag) and HEADING_RE.match(local_name(child).lower()):
                 heading_index += 1
@@ -604,23 +613,32 @@ class FixedEpubNormalizer:
                         heading["id"] = self.source_id_targets[(href, str(child["id"]))]
                     self._copy_children(child, heading, soup, href)
                     section.append(heading)
+                    current_target = section
                 else:
-                    unit = self._new_tag(
+                    subsection_index += 1
+                    subsection = self._new_tag(
                         soup,
-                        "div",
-                        **{"data-role": "unit", "data-unit-num": str(heading_index - 1)},
+                        "section",
+                        **{
+                            "id": f"{resolved_id}-sub-{subsection_index:03d}",
+                            "data-type": "subsection",
+                            "data-src-file": source_name,
+                        },
                     )
+                    sub_heading = self._new_tag(soup, f"h{subsection_level}")
                     if child.get("id"):
-                        unit["id"] = self.source_id_targets[(href, str(child["id"]))]
-                    self._copy_children(child, unit, soup, href)
-                    section.append(unit)
+                        sub_heading["id"] = self.source_id_targets[(href, str(child["id"]))]
+                    self._copy_children(child, sub_heading, soup, href)
+                    subsection.append(sub_heading)
+                    section.append(subsection)
+                    current_target = subsection
                 continue
             copied = self._copy_node(child, soup, href)
             if isinstance(copied, list):
                 for item in copied:
-                    section.append(item)
+                    current_target.append(item)
             elif copied is not None:
-                section.append(copied)
+                current_target.append(copied)
 
         self._remove_empty_nodes(section)
         first_tag = next((child for child in section.children if isinstance(child, Tag)), None)
