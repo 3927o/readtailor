@@ -1,4 +1,4 @@
-import type { TailoredContent, WorkflowStatus } from '../user-books/api';
+import type { TailoredContent, TextRange, WorkflowStatus } from '../user-books/api';
 
 export interface ReaderBook {
   id: string;
@@ -106,6 +106,20 @@ export interface ReadNode {
   segment: number;
 }
 
+// §11.7 — a reader highlight over a [start,end) range within one node. `note` null → plain highlight,
+// non-null → highlight with a note. `quoteSnapshot` is the standard-text slice captured server-side at
+// highlight time, for the list view and drift fallback.
+export interface Highlight {
+  id: string;
+  sectionId: string;
+  segment: number;
+  range: TextRange;
+  note: string | null;
+  quoteSnapshot: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export const defaultReadingSettings: ReadingSettings = {
   fontSize: 18,
   lineHeight: 1.95,
@@ -127,6 +141,8 @@ export interface ReaderBootstrap {
   settings: ReadingSettings;
   // §11.4 nodes already marked read.
   readNodes: ReadNode[];
+  // §11.7 the book's highlights, rendered into the first-paint mark pass.
+  highlights: Highlight[];
 }
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
@@ -207,6 +223,7 @@ interface RawReaderBootstrap {
   resumePosition: ReaderResumePosition | null;
   settings: ReadingSettings;
   readNodes: ReadNode[];
+  highlights: Highlight[];
   enhancements: Array<{
     sectionId: string;
     segment: number;
@@ -225,6 +242,7 @@ function mapReaderBootstrap(raw: RawReaderBootstrap): ReaderBootstrap {
     resumePosition: raw.resumePosition ?? null,
     settings: raw.settings ?? defaultReadingSettings,
     readNodes: raw.readNodes ?? [],
+    highlights: raw.highlights ?? [],
     enhancements: raw.enhancements.map((enhancement) => ({
       sectionId: enhancement.sectionId,
       segment: enhancement.segment,
@@ -308,4 +326,49 @@ export async function markReadNode(userBookId: string, node: ReadNode): Promise<
     },
   ));
   return body.readNodes;
+}
+
+// §11.7 — create a highlight (optionally with a note). The server validates the range against the
+// node's blocks and returns the stored highlight with its stable id.
+export async function createHighlight(
+  userBookId: string,
+  input: { sectionId: string; segment: number; range: TextRange; note?: string },
+): Promise<Highlight> {
+  const body = await readJson<{ highlight: Highlight }>(await fetch(
+    `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/highlights`,
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  ));
+  return body.highlight;
+}
+
+// §11.7 — set or clear a highlight's note (null/blank clears the note, keeps the highlight).
+export async function updateHighlightNote(
+  userBookId: string,
+  highlightId: string,
+  note: string | null,
+): Promise<Highlight> {
+  const body = await readJson<{ highlight: Highlight }>(await fetch(
+    `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/highlights/${encodeURIComponent(highlightId)}`,
+    {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ note }),
+    },
+  ));
+  return body.highlight;
+}
+
+// §11.7 — delete a highlight (row + its note). Returns the deleted id.
+export async function deleteHighlight(userBookId: string, highlightId: string): Promise<string> {
+  const body = await readJson<{ id: string }>(await fetch(
+    `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/highlights/${encodeURIComponent(highlightId)}`,
+    { method: 'DELETE', credentials: 'include' },
+  ));
+  return body.id;
 }

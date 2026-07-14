@@ -6,6 +6,11 @@ import type {
   ApproveStrategyRequest,
   ApproveStrategyResponse,
   BookReaderProfile,
+  CreateHighlightRequest,
+  DeleteHighlightResponse,
+  Highlight,
+  HighlightListResponse,
+  HighlightResponse,
   InterviewQuestion,
   InterviewStateResponse,
   InterviewStreamEvent,
@@ -21,6 +26,7 @@ import type {
   Strategy,
   StrategyReviewResponse,
   TextRange,
+  UpdateHighlightNoteRequest,
   TrialCandidate,
   SubmitInterviewAnswerRequest,
   SubmitStrategyFeedbackRequest,
@@ -34,6 +40,7 @@ import { DEFAULT_READING_SETTINGS } from '@readtailor/contracts';
 import {
   bookPackages,
   bookReaderProfileVersions,
+  highlights,
   interviewAnswers,
   interviewMessages,
   interviewSessions,
@@ -289,25 +296,49 @@ function mapFragments(fragments: Array<{
   }));
 }
 
+// Shared range-against-blocks bounds check for both trial fragments and highlights (§11.7): the range
+// must lie within the node's actual blocks, offsets within each block's standard-text length, and be
+// non-empty. `label` names the caller so the rejection reads sensibly ('试读片段' / '划线').
 function assertRangeWithinBlocks(
   blocks: Array<{ block_index: number; text: string }>,
   range: TextRange,
+  label = '试读片段',
 ) {
   const byIndex = new Map(blocks.map((block) => [block.block_index, block]));
   const startBlock = byIndex.get(range.start.blockIndex);
   const endBlock = byIndex.get(range.end.blockIndex);
   if (!startBlock || !endBlock || range.start.blockIndex > range.end.blockIndex) {
-    throw new UserBookError('试读片段范围超出候选节点', 409);
+    throw new UserBookError(`${label}范围超出节点`, 409);
   }
   if (range.start.offset < 0 || range.start.offset > startBlock.text.length) {
-    throw new UserBookError('试读片段起点越界', 409);
+    throw new UserBookError(`${label}起点越界`, 409);
   }
   if (range.end.offset < 0 || range.end.offset > endBlock.text.length) {
-    throw new UserBookError('试读片段终点越界', 409);
+    throw new UserBookError(`${label}终点越界`, 409);
   }
   if (range.start.blockIndex === range.end.blockIndex && range.start.offset >= range.end.offset) {
-    throw new UserBookError('试读片段范围为空', 409);
+    throw new UserBookError(`${label}范围为空`, 409);
   }
+}
+
+// The standard-text slice a highlight range covers (reading_contract §2.5), joined across blocks with
+// a newline so a multi-block quote reads naturally. Capped so a long cross-block selection can't bloat
+// the row; the snapshot is only for list display and drift fallback, not an authority.
+const HIGHLIGHT_QUOTE_MAX = 2000;
+function quoteFromBlocks(
+  blocks: Array<{ block_index: number; text: string }>,
+  range: TextRange,
+): string {
+  const byIndex = new Map(blocks.map((block) => [block.block_index, block]));
+  const parts: string[] = [];
+  for (let index = range.start.blockIndex; index <= range.end.blockIndex; index += 1) {
+    const block = byIndex.get(index);
+    if (!block) continue;
+    const from = index === range.start.blockIndex ? range.start.offset : 0;
+    const to = index === range.end.blockIndex ? range.end.offset : block.text.length;
+    parts.push(block.text.slice(from, to));
+  }
+  return parts.join('\n').slice(0, HIGHLIGHT_QUOTE_MAX);
 }
 
 // Bridges the agent's push-based `onStream` callback to a pull-based async generator so the
@@ -1314,13 +1345,39 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
     return row?.settings ?? DEFAULT_READING_SETTINGS;
   };
 
+  // §11.7 — map a highlight row to the flat-columns → nested-range contract shape.
+  const mapHighlight = (row: typeof highlights.$inferSelect): Highlight => ({
+    id: row.id,
+    sectionId: row.sectionId,
+    segment: row.segment,
+    range: {
+      start: { blockIndex: row.startBlockIndex, offset: row.startOffset },
+      end: { blockIndex: row.endBlockIndex, offset: row.endOffset },
+    },
+    note: row.note,
+    quoteSnapshot: row.quoteSnapshot,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  });
+
+  // §11.7 — all highlights for a book, oldest first, so the reader renders and lists them in a stable
+  // creation order. Delivered with bootstrap and re-read for the standalone list endpoint.
+  const loadHighlights = async (userBookId: string): Promise<Highlight[]> => {
+    const rows = await db
+      .select()
+      .from(highlights)
+      .where(eq(highlights.userBookId, userBookId))
+      .orderBy(asc(highlights.createdAt));
+    return rows.map(mapHighlight);
+  };
+
   const buildReaderBootstrap = async (
     userBookId: string,
     sharedBookId: string,
     strategyVersionId: string,
     strategyDraftVersionId: string,
   ): Promise<ReaderBootstrap> => {
-    const [strategy, draft, generations, resume, settings, readRows] = await Promise.all([
+    const [strategy, draft, generations, resume, settings, readRows, highlightList] = await Promise.all([
       db.select().from(strategyVersions).where(eq(strategyVersions.id, strategyVersionId)).limit(1).then((rows) => rows[0]),
       db.select().from(strategyDraftVersions).where(eq(strategyDraftVersions.id, strategyDraftVersionId)).limit(1).then((rows) => rows[0]),
       db.select().from(nodeGenerations).where(and(eq(nodeGenerations.userBookId, userBookId), eq(nodeGenerations.generationScope, 'formal'))).orderBy(asc(nodeGenerations.createdAt)),
@@ -1329,6 +1386,7 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       db.select({ sectionId: readerReadNodes.sectionId, segment: readerReadNodes.segment })
         .from(readerReadNodes)
         .where(eq(readerReadNodes.userBookId, userBookId)),
+      loadHighlights(userBookId),
     ]);
     if (!strategy || !draft) throw new UserBookError('正式处理方式不存在', 409);
     return {
@@ -1357,6 +1415,7 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
         : null,
       settings,
       readNodes: readRows.map((row) => ({ sectionId: row.sectionId, segment: row.segment })),
+      highlights: highlightList,
     };
   };
 
@@ -1805,6 +1864,78 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
         .from(readerReadNodes)
         .where(eq(readerReadNodes.userBookId, userBookId));
       return { readNodes: rows.map((row) => ({ sectionId: row.sectionId, segment: row.segment })) };
+    },
+
+    // §11.7 — the book's highlights (standalone list; the reader gets them via bootstrap too).
+    async listHighlights(userBookId: string): Promise<HighlightListResponse> {
+      await getOwnedBook(userBookId);
+      return { highlights: await loadHighlights(userBookId) };
+    },
+
+    // §11.7 — create a highlight (optionally with a note). Validates the range against the node's
+    // actual blocks (same coordinate system as annotation anchors); an out-of-range range is rejected
+    // outright, no fuzzy match. Captures the standard-text quote + manifest version at creation time.
+    async createHighlight(userBookId: string, input: CreateHighlightRequest): Promise<HighlightResponse> {
+      const owned = await getOwnedBook(userBookId);
+      if (owned.userBook.workflowStatus !== 'active_reading') {
+        throw new UserBookError('尚未完成试读确认', 409);
+      }
+      const { html } = await getManifestAndHtml(owned.sharedBook.id);
+      let source;
+      try {
+        source = extractNodeSourceFromHtml(html, input.sectionId, input.segment);
+      } catch {
+        throw new UserBookError('划线引用的阅读节点不存在', 409);
+      }
+      assertRangeWithinBlocks(source.blocks, input.range, '划线');
+      const note = input.note?.trim() ? input.note.trim() : null;
+      const [row] = await db
+        .insert(highlights)
+        .values({
+          userBookId,
+          sectionId: input.sectionId,
+          segment: input.segment,
+          startBlockIndex: input.range.start.blockIndex,
+          startOffset: input.range.start.offset,
+          endBlockIndex: input.range.end.blockIndex,
+          endOffset: input.range.end.offset,
+          manifestVersion: (await getManifestMeta(options.books, owned.sharedBook.id)).version,
+          note,
+          quoteSnapshot: quoteFromBlocks(source.blocks, input.range),
+        })
+        .returning();
+      return { highlight: mapHighlight(row!) };
+    },
+
+    // §11.7 — edit or clear a highlight's note. A blank/null note clears it but keeps the highlight
+    // (delete-note ≠ delete-highlight). Ownership is enforced via getOwnedBook so a foreign book id
+    // can't touch another user's row.
+    async updateHighlightNote(
+      userBookId: string,
+      highlightId: string,
+      input: UpdateHighlightNoteRequest,
+    ): Promise<HighlightResponse> {
+      await getOwnedBook(userBookId);
+      const note = input.note?.trim() ? input.note.trim() : null;
+      const [row] = await db
+        .update(highlights)
+        .set({ note, updatedAt: new Date() })
+        .where(and(eq(highlights.id, highlightId), eq(highlights.userBookId, userBookId)))
+        .returning();
+      if (!row) throw new UserBookError('划线不存在', 404);
+      return { highlight: mapHighlight(row) };
+    },
+
+    // §11.7 — delete a highlight (row + its note). Does not cascade to any 问 AI conversation, which
+    // snapshots the origin range rather than referencing highlights.id (§12 开放问题 1).
+    async deleteHighlight(userBookId: string, highlightId: string): Promise<DeleteHighlightResponse> {
+      await getOwnedBook(userBookId);
+      const [row] = await db
+        .delete(highlights)
+        .where(and(eq(highlights.id, highlightId), eq(highlights.userBookId, userBookId)))
+        .returning({ id: highlights.id });
+      if (!row) throw new UserBookError('划线不存在', 404);
+      return { id: row.id };
     },
   };
 }

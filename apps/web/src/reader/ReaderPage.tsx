@@ -6,16 +6,20 @@ import { Segmented } from '../components/core/Segmented';
 import { Slider } from '../components/core/Slider';
 import { AssistanceContent, BriefCard } from '../user-books/components';
 import {
+  createHighlight,
   defaultReadingSettings,
+  deleteHighlight,
   getReaderBootstrap,
   getReaderDocument,
   markReadNode,
   putReadingSettings,
   reportReaderFocus,
   saveReaderPositionBeacon,
+  updateHighlightNote,
 } from './api';
 import type {
   ContentWidthSetting,
+  Highlight,
   ObservedReaderAnchor,
   ReaderBootstrap,
   ReaderNode,
@@ -31,6 +35,7 @@ import {
   getOutlineDepth,
   nearestReaderAnchor,
   prepareBookContent,
+  rangeFromSelection,
   readingBlocks,
 } from './content';
 import type { AnchorProbe } from './content';
@@ -40,6 +45,24 @@ import { NotePopover, popoverPlacement } from './NotePopover';
 import type { ActivePopover } from './NotePopover';
 
 type ReaderSettings = ReadingSettings;
+
+type NodeRange = Highlight['range'];
+type PopoverPlacement = Omit<ActivePopover, 'body'>;
+
+// A finished text selection inside one reading node, ready to become a highlight (§11.7). The range
+// is already folded to block/offset; `placement` positions the floating action toolbar.
+interface SelectionDraft {
+  sectionId: string;
+  segment: number;
+  range: NodeRange;
+  placement: PopoverPlacement;
+}
+
+// The highlight note editor: composing a note for a brand-new highlight, or viewing/editing an
+// existing one (with delete-note / delete-highlight affordances). §11.7.
+type HighlightEditorState =
+  | { mode: 'create'; sectionId: string; segment: number; range: NodeRange; placement: PopoverPlacement }
+  | { mode: 'edit'; highlight: Highlight; placement: PopoverPlacement };
 
 const defaultSettings: ReaderSettings = defaultReadingSettings;
 
@@ -62,6 +85,13 @@ function readCachedSettings(): ReaderSettings | null {
   } catch {
     return null;
   }
+}
+
+// The reading-node content root containing a DOM node, or null if the node sits outside原文 (heading,
+// tailored block, gap). Used to confine a highlight selection to one node (§11.7 不跨节点).
+function contentRootOf(node: Node): HTMLElement | null {
+  const element = node instanceof Element ? node : node.parentElement;
+  return element?.closest<HTMLElement>('.reader-original') ?? null;
 }
 
 // Fold a DOM point (from the caret APIs) back to a block-relative UTF-16 offset. Returns
@@ -195,6 +225,12 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const [popover, setPopover] = useState<ActivePopover | null>(null);
   const [scrollProgress, setScrollProgress] = useState(0);
   const [chromeHidden, setChromeHidden] = useState(false);
+  // §11.7 highlights: seeded once from bootstrap and mutated locally on CRUD, so a focus-report
+  // response (which overwrites the bootstrap cache) can't drop a just-created highlight. Presentation
+  // for the mark pass + the list view; never feeds block/offset/progress.
+  const [highlights, setHighlights] = useState<Highlight[]>(() => document.bootstrap.highlights);
+  const [selectionDraft, setSelectionDraft] = useState<SelectionDraft | null>(null);
+  const [highlightEditor, setHighlightEditor] = useState<HighlightEditorState | null>(null);
   const scrollRoot = useRef<HTMLDivElement>(null);
   const lastScrollTop = useRef(0);
   // Layout-anchor state (§6.2): `committedEnhancementVersion` tracks which enhancement content is
@@ -309,6 +345,19 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     }
     return map;
   }, [annotationsByNode]);
+  // §11.7 highlights grouped by node key for the mark pass, and a flat id lookup so a click on a
+  // highlight mark opens its editor.
+  const highlightsByNode = useMemo(() => {
+    const map = new Map<string, Highlight[]>();
+    for (const highlight of highlights) {
+      const key = `${highlight.sectionId}:${highlight.segment}`;
+      const list = map.get(key);
+      if (list) list.push(highlight);
+      else map.set(key, [highlight]);
+    }
+    return map;
+  }, [highlights]);
+  const highlightById = useMemo(() => new Map(highlights.map((item) => [item.id, item])), [highlights]);
   const prepared = useMemo(
     () => prepareBookContent(
       document.html,
@@ -316,12 +365,20 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       document.manifest.outline,
       document.assetBaseUrl,
       annotationsByNode,
+      highlightsByNode,
     ),
-    [annotationsByNode, document.assetBaseUrl, document.html, document.manifest],
+    [annotationsByNode, highlightsByNode, document.assetBaseUrl, document.html, document.manifest],
   );
-  const enhancementVersion = document.bootstrap.enhancements
-    .map((item) => `${item.sectionId}:${item.segment}:${item.status}:${item.tailoredContent ? 'content' : 'empty'}`)
-    .join('|');
+  // Layout-anchor key (§6.2): change when enhancement content OR the highlight marks change, so the
+  // pre-commit snapshot below keeps the current paragraph visually put across either re-render. Note
+  // text is included because it flips a mark's dataset; a `<mark>` reflows nothing, but keying on it
+  // costs nothing and keeps the anchor honest if that ever changes.
+  const enhancementVersion = [
+    document.bootstrap.enhancements
+      .map((item) => `${item.sectionId}:${item.segment}:${item.status}:${item.tailoredContent ? 'content' : 'empty'}`)
+      .join('|'),
+    highlights.map((item) => `${item.id}:${item.note ? 'n' : '_'}`).join(','),
+  ].join('§');
 
   // getSnapshotBeforeUpdate-equivalent: when the enhancement content is about to change the DOM,
   // snapshot the current node's viewport top from the *old* DOM during render — before React commits
@@ -609,6 +666,8 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       setSettingsOpen(false);
       setBookInfoOpen(false);
       setPopover(null);
+      setSelectionDraft(null);
+      setHighlightEditor(null);
     };
     window.addEventListener('keydown', closeOverlays);
     return () => window.removeEventListener('keydown', closeOverlays);
@@ -619,6 +678,44 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     window.addEventListener('resize', closePopover);
     return () => window.removeEventListener('resize', closePopover);
   }, []);
+
+  // §11.7 selection → highlight toolbar. When the reader finishes a text selection inside ONE reading
+  // node, fold it to a block range (rangeFromSelection) and float the action toolbar over it. A
+  // collapsed selection, or one that leaves the node (cross-node highlights aren't allowed), clears
+  // the toolbar. Runs on mouseup / touchend (deferred a tick so the selection is finalized).
+  useEffect(() => {
+    const root = scrollRoot.current;
+    if (!root) return;
+    const evaluate = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+        setSelectionDraft(null);
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      const startRoot = contentRootOf(range.startContainer);
+      if (!startRoot || startRoot !== contentRootOf(range.endContainer)) {
+        setSelectionDraft(null);
+        return;
+      }
+      const textRange = rangeFromSelection(startRoot, range);
+      const nodeEl = startRoot.closest<HTMLElement>('[data-node-order]');
+      const sectionId = nodeEl?.dataset.sectionId;
+      const segment = Number(nodeEl?.dataset.segment ?? Number.NaN);
+      if (!textRange || !sectionId || !Number.isFinite(segment)) {
+        setSelectionDraft(null);
+        return;
+      }
+      setSelectionDraft({ sectionId, segment, range: textRange, placement: popoverPlacement(range.getBoundingClientRect()) });
+    };
+    const onFinish = () => window.setTimeout(evaluate, 0);
+    root.addEventListener('mouseup', onFinish);
+    root.addEventListener('touchend', onFinish);
+    return () => {
+      root.removeEventListener('mouseup', onFinish);
+      root.removeEventListener('touchend', onFinish);
+    };
+  }, [prepared]);
 
   const handleScroll = () => {
     const root = scrollRoot.current;
@@ -633,6 +730,9 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     }
     lastScrollTop.current = root.scrollTop;
     setPopover(null);
+    // Anchored overlays (§11.7) misalign once the page scrolls, so dismiss them like the note popover.
+    setSelectionDraft(null);
+    setHighlightEditor(null);
     // Debounced position report (§11.5): saves intra-node scroll position and grows the window
     // when the settled node changes.
     schedulePositionReport();
@@ -658,6 +758,72 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       : undefined);
   };
 
+  // §11.7 highlight CRUD. Highlights are held in local state (seeded from bootstrap) so a create/edit/
+  // delete reflects immediately; each call reconciles the returned row into that state. Failures are
+  // swallowed — a missed highlight is recoverable on reload and must never crash the reader.
+  const clearNativeSelection = () => window.getSelection()?.removeAllRanges();
+  const commitHighlight = async (
+    target: { sectionId: string; segment: number; range: NodeRange },
+    note: string | undefined,
+  ): Promise<Highlight | null> => {
+    try {
+      const trimmed = note?.trim();
+      const created = await createHighlight(document.userBookId, {
+        sectionId: target.sectionId,
+        segment: target.segment,
+        range: target.range,
+        ...(trimmed ? { note: trimmed } : {}),
+      });
+      setHighlights((current) => [...current, created]);
+      return created;
+    } catch {
+      return null;
+    }
+  };
+  const saveHighlightNote = async (highlightId: string, note: string): Promise<void> => {
+    try {
+      const updated = await updateHighlightNote(document.userBookId, highlightId, note.trim() ? note.trim() : null);
+      setHighlights((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    } catch {
+      // keep the editor open so the reader can retry
+    }
+  };
+  const removeHighlight = async (highlightId: string): Promise<void> => {
+    try {
+      await deleteHighlight(document.userBookId, highlightId);
+      setHighlights((current) => current.filter((item) => item.id !== highlightId));
+    } catch {
+      // keep the editor open so the reader can retry
+    }
+  };
+  // Toolbar actions: 划线 saves a plain highlight now; 划线+笔记 opens the note composer over the
+  // selection (the highlight is created on save, in one call).
+  const highlightSelection = () => {
+    if (!selectionDraft) return;
+    void commitHighlight(selectionDraft, undefined);
+    setSelectionDraft(null);
+    clearNativeSelection();
+  };
+  const composeHighlightNote = () => {
+    if (!selectionDraft) return;
+    setHighlightEditor({
+      mode: 'create',
+      sectionId: selectionDraft.sectionId,
+      segment: selectionDraft.segment,
+      range: selectionDraft.range,
+      placement: selectionDraft.placement,
+    });
+    setSelectionDraft(null);
+    setPopover(null);
+  };
+  const jumpToHighlight = (highlightId: string) => {
+    setBookInfoOpen(false);
+    // A cross-block highlight renders one mark per block sharing the id; the first is its start.
+    scrollRoot.current
+      ?.querySelector<HTMLElement>(`[data-highlight-id="${highlightId}"]`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
   const handleContentClick = (event: React.MouseEvent<HTMLElement>) => {
     setChromeHidden(false);
     const tailoredAnchor = (event.target as HTMLElement).closest<HTMLElement>('[data-annotation-id]');
@@ -665,6 +831,17 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       const content = annotationContentById.get(tailoredAnchor.dataset.annotationId);
       if (!content) return;
       setPopover({ body: { kind: 'tailored', content }, ...popoverPlacement(tailoredAnchor.getBoundingClientRect()) });
+      return;
+    }
+    // §11.7: click a highlight mark → open its note editor (view / edit note, delete note, delete
+    // highlight). Annotation is checked first so an overlap favors opening the 裁读注.
+    const highlightMark = (event.target as HTMLElement).closest<HTMLElement>('[data-highlight-id]');
+    if (highlightMark?.dataset.highlightId) {
+      const highlight = highlightById.get(highlightMark.dataset.highlightId);
+      if (!highlight) return;
+      setPopover(null);
+      setSelectionDraft(null);
+      setHighlightEditor({ mode: 'edit', highlight, placement: popoverPlacement(highlightMark.getBoundingClientRect()) });
       return;
     }
     const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[href]');
@@ -755,6 +932,8 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
           title={document.book.title}
           briefing={document.bootstrap.briefing}
           strategySummary={document.bootstrap.strategySummary}
+          highlights={highlights}
+          jumpToHighlight={jumpToHighlight}
           close={() => setBookInfoOpen(false)}
         />
       )}
@@ -799,6 +978,43 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
         jump={jumpToOrder}
       />
       <NotePopover popover={popover} close={() => setPopover(null)} />
+      {selectionDraft && !highlightEditor ? (
+        <SelectionToolbar
+          placement={selectionDraft.placement}
+          onHighlight={highlightSelection}
+          onHighlightWithNote={composeHighlightNote}
+          onDismiss={() => {
+            setSelectionDraft(null);
+            clearNativeSelection();
+          }}
+        />
+      ) : null}
+      {highlightEditor ? (
+        <HighlightPopover
+          editor={highlightEditor}
+          onSubmit={async (note) => {
+            if (highlightEditor.mode === 'create') {
+              await commitHighlight(highlightEditor, note);
+              clearNativeSelection();
+            } else {
+              await saveHighlightNote(highlightEditor.highlight.id, note);
+            }
+            setHighlightEditor(null);
+          }}
+          onDeleteNote={async () => {
+            if (highlightEditor.mode === 'edit') await saveHighlightNote(highlightEditor.highlight.id, '');
+            setHighlightEditor(null);
+          }}
+          onDeleteHighlight={async () => {
+            if (highlightEditor.mode === 'edit') await removeHighlight(highlightEditor.highlight.id);
+            setHighlightEditor(null);
+          }}
+          onClose={() => {
+            if (highlightEditor.mode === 'create') clearNativeSelection();
+            setHighlightEditor(null);
+          }}
+        />
+      ) : null}
       <div className="reader-bottom-fade" aria-hidden="true" />
     </div>
   );
@@ -956,10 +1172,12 @@ function SettingsPanel({ settings, update, close }: {
   );
 }
 
-function BookInfoPanel({ title, briefing, strategySummary, close }: {
+function BookInfoPanel({ title, briefing, strategySummary, highlights, jumpToHighlight, close }: {
   title: string;
   briefing: string;
   strategySummary: string;
+  highlights: Highlight[];
+  jumpToHighlight: (highlightId: string) => void;
   close: () => void;
 }) {
   const hasBriefing = briefing.trim().length > 0;
@@ -975,8 +1193,106 @@ function BookInfoPanel({ title, briefing, strategySummary, close }: {
           <AssistanceContent content={strategySummary} />
         </section>
       ) : null}
+      {/* §11.7 highlight list: quote snapshot + note, click to jump back to the original range. */}
+      <section className="reader-highlight-list">
+        <span>我的划线 · {highlights.length}</span>
+        {highlights.length === 0 ? (
+          <p className="reader-highlight-empty">在原文中选中文字即可划线，可附一条笔记。</p>
+        ) : (
+          <ul>
+            {highlights.map((highlight) => (
+              <li key={highlight.id}>
+                <button type="button" onClick={() => jumpToHighlight(highlight.id)}>
+                  <span className="reader-highlight-quote">{highlight.quoteSnapshot || '（无文字）'}</span>
+                  {highlight.note ? <span className="reader-highlight-note">{highlight.note}</span> : null}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
       {!hasBriefing && !hasStrategy ? <p className="reader-book-info-empty">当前没有可展示的读前简报或处理方式。</p> : null}
     </aside>
+  );
+}
+
+// §11.7 the floating action toolbar over a fresh text selection. 问 AI is a disabled placeholder for
+// phase 6; 划线 saves a plain highlight, 划线+笔记 opens the note composer. Reuses the note-dialog
+// overlay/placement so it sits over the selection and dismisses on an outside click.
+function SelectionToolbar({ placement, onHighlight, onHighlightWithNote, onDismiss }: {
+  placement: PopoverPlacement;
+  onHighlight: () => void;
+  onHighlightWithNote: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="note-dialog-wrap" role="presentation" onClick={onDismiss}>
+      <div
+        className="reader-selection-toolbar"
+        role="toolbar"
+        aria-label="划线工具"
+        data-placement={placement.placement}
+        style={{
+          left: placement.left,
+          ...(placement.placement === 'above' ? { bottom: placement.edge } : { top: placement.edge }),
+          '--note-caret-left': `${placement.caretLeft}px`,
+        } as React.CSSProperties & { '--note-caret-left': string }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button type="button" disabled title="即将上线">问 AI</button>
+        <button type="button" onClick={onHighlight}>划线</button>
+        <button type="button" onClick={onHighlightWithNote}>划线 + 笔记</button>
+      </div>
+    </div>
+  );
+}
+
+// §11.7 the highlight note editor. Create mode composes a note for a pending selection (saved in one
+// call); edit mode views/edits an existing highlight's note with delete-note and delete-highlight.
+function HighlightPopover({ editor, onSubmit, onDeleteNote, onDeleteHighlight, onClose }: {
+  editor: HighlightEditorState;
+  onSubmit: (note: string) => void;
+  onDeleteNote: () => void;
+  onDeleteHighlight: () => void;
+  onClose: () => void;
+}) {
+  const [note, setNote] = useState(editor.mode === 'edit' ? editor.highlight.note ?? '' : '');
+  const quote = editor.mode === 'edit' ? editor.highlight.quoteSnapshot : null;
+  const hasExistingNote = editor.mode === 'edit' && Boolean(editor.highlight.note);
+  return (
+    <div className="note-dialog-wrap" role="presentation" onClick={onClose}>
+      <aside
+        className="note-dialog highlight-editor"
+        role="dialog"
+        aria-label={editor.mode === 'create' ? '新建划线笔记' : '划线笔记'}
+        data-placement={editor.placement.placement}
+        style={{
+          left: editor.placement.left,
+          ...(editor.placement.placement === 'above' ? { bottom: editor.placement.edge } : { top: editor.placement.edge }),
+          '--note-caret-left': `${editor.placement.caretLeft}px`,
+        } as React.CSSProperties & { '--note-caret-left': string }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header><span><i aria-hidden="true" />划线 <em>Highlight</em></span></header>
+        {quote ? <p className="highlight-editor-quote">{quote}</p> : null}
+        <textarea
+          className="highlight-editor-input"
+          value={note}
+          placeholder="写一条划线笔记（可留空）"
+          rows={3}
+          // eslint-disable-next-line jsx-a11y/no-autofocus
+          autoFocus
+          onChange={(event) => setNote(event.target.value)}
+        />
+        <div className="highlight-editor-actions">
+          <button type="button" className="highlight-editor-primary" onClick={() => onSubmit(note)}>保存</button>
+          {hasExistingNote ? <button type="button" onClick={onDeleteNote}>删除笔记</button> : null}
+          {editor.mode === 'edit' ? (
+            <button type="button" className="highlight-editor-danger" onClick={onDeleteHighlight}>删除划线</button>
+          ) : null}
+        </div>
+      </aside>
+    </div>
   );
 }
 

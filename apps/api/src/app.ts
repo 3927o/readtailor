@@ -15,10 +15,14 @@ import {
   AdoptTrialResponseSchema,
   ApproveStrategyRequestSchema,
   ApproveStrategyResponseSchema,
+  CreateHighlightRequestSchema,
+  DeleteHighlightResponseSchema,
   DevelopmentLoginRequestSchema,
   EnqueueSystemPingResponseSchema,
   ErrorResponseSchema,
   HealthResponseSchema,
+  HighlightListResponseSchema,
+  HighlightResponseSchema,
   ImportBookResponseSchema,
   type InterviewStreamEvent,
   InterviewStateResponseSchema,
@@ -38,6 +42,7 @@ import {
   SubmitInterviewAnswerRequestSchema,
   SubmitStrategyFeedbackRequestSchema,
   SubmitTrialFeedbackRequestSchema,
+  UpdateHighlightNoteRequestSchema,
   SystemChatRequestSchema,
   SystemJobSchema,
   TrialReviewResponseSchema,
@@ -90,6 +95,10 @@ const bookIdParams = Type.Object({
 });
 const userBookIdParams = Type.Object({
   id: Type.String({ pattern: UUID_PATTERN }),
+});
+const userBookHighlightParams = Type.Object({
+  id: Type.String({ pattern: UUID_PATTERN }),
+  hid: Type.String({ pattern: UUID_PATTERN }),
 });
 
 function assetContentType(path: string): string {
@@ -889,6 +898,83 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
         return await deps.userBooks.forUser(request.authUser!.id).updateReadingSettings(request.body);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  // §11.7: reader highlights (+ optional notes). CRUD is per user-book; the reader also gets the full
+  // list via bootstrap, so this GET backs the standalone highlight list view. PATCH/DELETE are the
+  // cross-origin non-simple methods the CORS preflight already advertises (see the cors register).
+  app.get(
+    '/v1/user-books/:id/highlights',
+    {
+      schema: {
+        params: userBookIdParams,
+        response: { 200: HighlightListResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).listHighlights(request.params.id);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.post(
+    '/v1/user-books/:id/highlights',
+    {
+      schema: {
+        params: userBookIdParams,
+        body: CreateHighlightRequestSchema,
+        response: { 200: HighlightResponseSchema, 400: ErrorResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).createHighlight(request.params.id, request.body);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.patch(
+    '/v1/user-books/:id/highlights/:hid',
+    {
+      schema: {
+        params: userBookHighlightParams,
+        body: UpdateHighlightNoteRequestSchema,
+        response: { 200: HighlightResponseSchema, 400: ErrorResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).updateHighlightNote(request.params.id, request.params.hid, request.body);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.delete(
+    '/v1/user-books/:id/highlights/:hid',
+    {
+      schema: {
+        params: userBookHighlightParams,
+        response: { 200: DeleteHighlightResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).deleteHighlight(request.params.id, request.params.hid);
       } catch (error) {
         return userBookFailure(error, reply);
       }

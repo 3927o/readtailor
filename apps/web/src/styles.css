@@ -3063,6 +3063,201 @@ h1 {
   outline-offset: 2px;
 }
 
+/* §11.7 highlight mark: soft amber background, inline with zero box change so adding/removing never
+   reflows the text. When it overlaps a 裁读注 the two nest as <mark>s, so amber background + green
+   dotted underline compose on the shared characters. */
+.reader-highlight {
+  color: inherit;
+  background: color-mix(in srgb, var(--rt-mark-margin) 24%, transparent);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.reader-highlight:hover {
+  background: color-mix(in srgb, var(--rt-mark-margin) 38%, transparent);
+}
+
+/* A highlight carrying a note gets a solid underline cue so it reads as "annotated". */
+.reader-highlight[data-highlight-has-note='true'] {
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--rt-mark-margin) 72%, transparent);
+}
+
+.reader-highlight:focus-visible {
+  outline: 2px solid var(--rt-mark-margin);
+  outline-offset: 1px;
+}
+
+/* §11.7 selection action toolbar — floats over a fresh selection, anchored like the note popover. */
+.reader-selection-toolbar {
+  position: fixed;
+  z-index: 101;
+  display: inline-flex;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--rt-rule);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--rt-bg-card) 96%, var(--rt-bg));
+  box-shadow: 0 18px 44px -26px rgba(10, 10, 9, 0.5);
+}
+
+.reader-selection-toolbar button {
+  padding: 7px 13px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rt-ink);
+  font-family: var(--rt-serif);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.reader-selection-toolbar button:hover:not(:disabled) {
+  background: var(--rt-green-soft);
+  color: var(--rt-green-deep);
+}
+
+.reader-selection-toolbar button:disabled {
+  color: var(--rt-ink-3);
+  cursor: not-allowed;
+}
+
+/* §11.7 highlight note editor — reuses the .note-dialog shell, adds a quote preview, textarea, actions. */
+.highlight-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.highlight-editor-quote {
+  margin: 0;
+  max-height: 96px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border-left: 2px solid var(--rt-mark-margin);
+  background: color-mix(in srgb, var(--rt-mark-margin) 10%, transparent);
+  color: var(--rt-ink-2);
+  font-family: var(--rt-serif);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.highlight-editor-input {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--rt-rule);
+  border-radius: 6px;
+  background: var(--rt-bg);
+  color: var(--rt-ink);
+  font-family: var(--rt-serif);
+  font-size: 14px;
+  line-height: 1.7;
+  resize: vertical;
+}
+
+.highlight-editor-input:focus-visible {
+  outline: none;
+  border-color: var(--rt-green);
+  box-shadow: 0 0 0 2px var(--rt-green-soft);
+}
+
+.highlight-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.highlight-editor-actions button {
+  padding: 7px 13px;
+  border: 1px solid var(--rt-rule);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--rt-ink-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.highlight-editor-actions .highlight-editor-primary {
+  border-color: var(--rt-green);
+  background: var(--rt-green);
+  color: var(--rt-bg-card);
+}
+
+.highlight-editor-actions .highlight-editor-danger {
+  border-color: color-mix(in srgb, var(--rt-error) 42%, transparent);
+  color: var(--rt-error);
+}
+
+/* §11.7 highlight list inside the book-info panel. */
+.reader-highlight-list {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--rt-rule-2);
+}
+
+.reader-highlight-list > span {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--rt-ink-3);
+  font-family: var(--rt-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.reader-highlight-empty {
+  margin: 0;
+  color: var(--rt-ink-3);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.reader-highlight-list ul {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reader-highlight-list li button {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--rt-rule-2);
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.reader-highlight-list li button:hover {
+  border-color: var(--rt-mark-margin);
+  background: color-mix(in srgb, var(--rt-mark-margin) 8%, transparent);
+}
+
+.reader-highlight-quote {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--rt-ink);
+  font-family: var(--rt-serif);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.reader-highlight-note {
+  padding-left: 8px;
+  border-left: 2px solid var(--rt-mark-margin);
+  color: var(--rt-ink-2);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
 .trial-navigation {
   display: flex;
   justify-content: space-between;

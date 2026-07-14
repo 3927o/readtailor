@@ -1,5 +1,5 @@
-import type { ReaderNode, ReaderOutlineItem } from './api';
-import type { TailoredAnnotation } from '../user-books/api';
+import type { Highlight, ReaderNode, ReaderOutlineItem } from './api';
+import type { TailoredAnnotation, TextRange } from '../user-books/api';
 
 const headingNames = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
 const mediaNames = new Set(['AUDIO', 'CANVAS', 'FIGURE', 'IMG', 'MATH', 'SVG', 'TABLE', 'VIDEO']);
@@ -406,6 +406,33 @@ export function domBoundaryForOffset(block: HTMLElement, offset: number): { cont
   return boundaryAt(block, offset, 'start');
 }
 
+// Fold a DOM selection Range within one reading-node content root into a block-relative [start,end)
+// range (reading_contract §2.5, §11.7) — the inverse of applyReaderMarks' forward map and the same
+// coordinate system as saved positions and annotation anchors. Both endpoints must resolve to a block
+// inside `contentRoot`; a selection that leaves the node, doesn't land on a block, or is collapsed
+// returns null (highlights never cross a reading node). Uses readingBlockForDomPoint so an endpoint in
+// a nested <li>/<figcaption>/inline element binds to its innermost block, matching the backend
+// enumeration (reader_position_restore_fix §1.2) — otherwise a saved highlight would drift on reopen.
+export function rangeFromSelection(contentRoot: HTMLElement, range: Range): TextRange | null {
+  if (!contentRoot.contains(range.startContainer) || !contentRoot.contains(range.endContainer)) return null;
+  const blocks = readingBlocks(contentRoot);
+  const resolve = (container: Node, domOffset: number): { blockIndex: number; offset: number } | null => {
+    const block = readingBlockForDomPoint(blocks, container);
+    if (!block) return null;
+    return { blockIndex: blocks.indexOf(block) + 1, offset: offsetWithinBlock(block, container, domOffset) };
+  };
+  const a = resolve(range.startContainer, range.startOffset);
+  const b = resolve(range.endContainer, range.endOffset);
+  if (!a || !b) return null;
+  // A DOM Range's endpoints are already in document order, but normalize defensively; a collapsed
+  // range (same block + offset) is a caret, not a highlight.
+  const forward = a.blockIndex < b.blockIndex || (a.blockIndex === b.blockIndex && a.offset <= b.offset);
+  const start = forward ? a : b;
+  const end = forward ? b : a;
+  if (start.blockIndex === end.blockIndex && start.offset === end.offset) return null;
+  return { start, end };
+}
+
 // A resolved reading anchor discovered from the live DOM: which content root / block / offset the
 // reading-anchor line currently sits on. `blockIndex` is 1-based (matching readingBlocks). The
 // caller reads the node metadata (order / sectionId / segment) off `root`'s [data-node-order]
@@ -518,8 +545,39 @@ export function nearestReaderAnchor(
   return { root: nearest.root, block: nearest.block, blockIndex: nearest.blockIndex, offset };
 }
 
-export function applyAnnotationMarks(rawHtml: string, annotations: TailoredAnnotation[]): string {
-  if (annotations.length === 0) return rawHtml;
+// One overlay to lay over the block text: a裁读注 anchor (green dotted underline) or a highlight
+// (background). Annotations and highlights share this shape so they fold into ONE mark pass — an
+// overlap of the two is split by Range.extractContents into nested <mark>s, so both styles render on
+// the shared characters (§11.7 高亮与注释同段重叠).
+interface MarkSpec {
+  range: TextRange;
+  className: string;
+  dataset: Record<string, string>;
+  ariaLabel: string;
+}
+
+function annotationSpec(annotation: TailoredAnnotation): MarkSpec {
+  return {
+    range: annotation.range,
+    className: 'tailored-text-anchor',
+    dataset: { annotationId: annotation.id },
+    ariaLabel: '打开对应裁读注',
+  };
+}
+
+function highlightSpec(highlight: Highlight): MarkSpec {
+  return {
+    range: highlight.range,
+    className: 'reader-highlight',
+    dataset: highlight.note
+      ? { highlightId: highlight.id, highlightHasNote: 'true' }
+      : { highlightId: highlight.id },
+    ariaLabel: highlight.note ? '查看划线笔记' : '查看划线',
+  };
+}
+
+function applyMarks(rawHtml: string, specs: MarkSpec[]): string {
+  if (specs.length === 0) return rawHtml;
   const container = document.createElement('div');
   container.innerHTML = rawHtml;
   const blocks = annotationBlocks(container);
@@ -527,27 +585,30 @@ export function applyAnnotationMarks(rawHtml: string, annotations: TailoredAnnot
     blocks.find((candidate) => Number(candidate.dataset.blockIndex) === blockIndex)
       ?? blocks[blockIndex - 1]
   );
-  const ordered = [...annotations].sort((left, right) => (
+  // Wrap last-first (descending start) so a wrap never shifts an earlier boundary. Where two marks
+  // overlap, the one with the smaller start is wrapped later and its Range cuts through the mark
+  // already placed; extractContents splits that mark, nesting the two — so background + underline
+  // compose on the overlap regardless of which is outer.
+  const ordered = [...specs].sort((left, right) => (
     right.range.start.blockIndex - left.range.start.blockIndex
     || right.range.start.offset - left.range.start.offset
   ));
-  for (const annotation of ordered) {
-    const startBlockIndex = annotation.range.start.blockIndex;
-    const endBlockIndex = annotation.range.end.blockIndex;
+  for (const spec of ordered) {
+    const startBlockIndex = spec.range.start.blockIndex;
+    const endBlockIndex = spec.range.end.blockIndex;
     if (endBlockIndex < startBlockIndex) continue;
-    // A single inline <mark> cannot wrap across a block boundary (a <mark> is phrasing
-    // content and would have to enclose the <p>…</p> break). So an annotation spanning
-    // blocks emits one <mark> per block, all sharing annotation.id: the first block from
-    // its start offset to the block end, whole middle blocks, and the last block up to
-    // its end offset. Walk blocks last-first so a wrap never shifts an earlier boundary.
+    // A single inline <mark> cannot wrap across a block boundary (a <mark> is phrasing content and
+    // would have to enclose the <p>…</p> break). So a range spanning blocks emits one <mark> per
+    // block, all sharing the same dataset id: the first block from its start offset to the block end,
+    // whole middle blocks, and the last block up to its end offset.
     for (let blockIndex = endBlockIndex; blockIndex >= startBlockIndex; blockIndex -= 1) {
       const block = findBlock(blockIndex);
       if (!block) continue;
       const parsedSourceOffset = Number(block.dataset.sourceOffset ?? 0);
       const sourceOffset = Number.isFinite(parsedSourceOffset) ? parsedSourceOffset : 0;
-      const from = blockIndex === startBlockIndex ? annotation.range.start.offset - sourceOffset : 0;
+      const from = blockIndex === startBlockIndex ? spec.range.start.offset - sourceOffset : 0;
       const to = blockIndex === endBlockIndex
-        ? annotation.range.end.offset - sourceOffset
+        ? spec.range.end.offset - sourceOffset
         : projectionLength(block);
       const start = boundaryAt(block, from, 'start');
       const end = boundaryAt(block, to, 'end');
@@ -558,11 +619,11 @@ export function applyAnnotationMarks(rawHtml: string, annotations: TailoredAnnot
         range.setEnd(end.container, end.offset);
         if (range.collapsed) continue;
         const mark = document.createElement('mark');
-        mark.className = 'tailored-text-anchor';
-        mark.dataset.annotationId = annotation.id;
+        mark.className = spec.className;
+        for (const [key, value] of Object.entries(spec.dataset)) mark.dataset[key] = value;
         mark.tabIndex = 0;
         mark.setAttribute('role', 'button');
-        mark.setAttribute('aria-label', '打开对应裁读注');
+        mark.setAttribute('aria-label', spec.ariaLabel);
         mark.append(range.extractContents());
         range.insertNode(mark);
       } catch {
@@ -571,6 +632,20 @@ export function applyAnnotationMarks(rawHtml: string, annotations: TailoredAnnot
     }
   }
   return container.innerHTML;
+}
+
+export function applyAnnotationMarks(rawHtml: string, annotations: TailoredAnnotation[]): string {
+  return applyMarks(rawHtml, annotations.map(annotationSpec));
+}
+
+// Reader mark pass: annotations + highlights in one pass so an overlap of the two nests correctly
+// (§11.7). Visual nesting is decided by document position inside applyMarks, not by spec order here.
+export function applyReaderMarks(
+  rawHtml: string,
+  annotations: TailoredAnnotation[],
+  highlights: Highlight[],
+): string {
+  return applyMarks(rawHtml, [...annotations.map(annotationSpec), ...highlights.map(highlightSpec)]);
 }
 
 export function prepareStandaloneContent(
@@ -624,6 +699,7 @@ export function prepareBookContent(
   outline: ReaderOutlineItem[],
   assetBaseUrl: string,
   annotationsByNode: ReadonlyMap<string, TailoredAnnotation[]> = new Map(),
+  highlightsByNode: ReadonlyMap<string, Highlight[]> = new Map(),
 ): PreparedBookContent {
   const documentRoot = new DOMParser().parseFromString(rawHtml, 'text/html');
   markNoteTopology(documentRoot);
@@ -638,11 +714,13 @@ export function prepareBookContent(
     if (!segment) {
       throw new Error(`阅读节点 ${node.section_id}#${node.segment} 无法重建`);
     }
+    const key = `${node.section_id}:${node.segment}`;
     return {
       ...node,
-      html: applyAnnotationMarks(
+      html: applyReaderMarks(
         prepareFragment(segment, assetBaseUrl),
-        annotationsByNode.get(`${node.section_id}:${node.segment}`) ?? [],
+        annotationsByNode.get(key) ?? [],
+        highlightsByNode.get(key) ?? [],
       ),
       headings: headings.get(node.order) ?? [],
     };

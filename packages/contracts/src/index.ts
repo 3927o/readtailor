@@ -650,6 +650,60 @@ export const ReadNodeSchema = Type.Object({
 });
 export type ReadNode = Static<typeof ReadNodeSchema>;
 
+// §11.7 — a reader highlight over a [start,end) range within one reading node. `range` is the shared
+// TextRange (§2.5), the same coordinate system as annotation anchors and the saved position. A null
+// `note` is a plain highlight; non-null is a highlight with a note (there is no bookmark type and no
+// standalone-note type — 验收 :1469). `quoteSnapshot` is the standard-text slice captured at highlight
+// time, for list display and drift fallback. The server assigns the stable `id` (PRD :1383).
+export const HighlightSchema = Type.Object({
+  id: Type.String(),
+  sectionId: Type.String({ minLength: 1 }),
+  segment: Type.Integer({ minimum: 1 }),
+  range: TextRangeSchema,
+  note: Type.Union([Type.String(), Type.Null()]),
+  quoteSnapshot: Type.String(),
+  createdAt: Type.String(),
+  updatedAt: Type.String(),
+});
+export type Highlight = Static<typeof HighlightSchema>;
+
+// Create a highlight (§11.7). The range must lie within the single section_id+segment node; the
+// server validates it against that node's blocks and rejects an out-of-range range outright — no
+// fuzzy matching (reading_contract §6, mirroring annotation-anchor resolution). `note` optional:
+// omitted → plain highlight, present → highlight with a note in one call.
+export const CreateHighlightRequestSchema = Type.Object({
+  sectionId: Type.String({ minLength: 1 }),
+  segment: Type.Integer({ minimum: 1 }),
+  range: TextRangeSchema,
+  note: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })),
+});
+export type CreateHighlightRequest = Static<typeof CreateHighlightRequestSchema>;
+
+// Edit or clear a highlight's note (§11.7). An empty/blank string or null clears the note but keeps
+// the highlight (delete-note ≠ delete-highlight); a non-blank string sets/edits it.
+export const UpdateHighlightNoteRequestSchema = Type.Object({
+  note: Type.Union([Type.String({ maxLength: 4000 }), Type.Null()]),
+});
+export type UpdateHighlightNoteRequest = Static<typeof UpdateHighlightNoteRequestSchema>;
+
+export const HighlightResponseSchema = Type.Object({
+  highlight: HighlightSchema,
+});
+export type HighlightResponse = Static<typeof HighlightResponseSchema>;
+
+export const HighlightListResponseSchema = Type.Object({
+  highlights: Type.Array(HighlightSchema),
+});
+export type HighlightListResponse = Static<typeof HighlightListResponseSchema>;
+
+// DELETE removes the whole row (highlight + its note), so a bare id ack is enough for the client to
+// drop it from cache; it never cascades to any 问 AI conversation (§11.7 — conversations snapshot the
+// origin range, they don't reference highlights.id).
+export const DeleteHighlightResponseSchema = Type.Object({
+  id: Type.String(),
+});
+export type DeleteHighlightResponse = Static<typeof DeleteHighlightResponseSchema>;
+
 // The reader bootstrap the active-reading page loads (§5): the formal shape for what was
 // previously served as Type.Unknown(). `briefing` / `strategySummary` are plain strings —
 // the frontend renders them directly instead of fabricating a structured briefing.
@@ -676,6 +730,9 @@ export const ReaderBootstrapSchema = Type.Object({
   settings: ReadingSettingsSchema,
   // §11.4 nodes already marked read (monotonic set).
   readNodes: Type.Array(ReadNodeSchema),
+  // §11.7 the book's highlights, delivered with bootstrap so the continuous-scroll reader renders
+  // them into the first-paint mark pass without a second round trip.
+  highlights: Type.Array(HighlightSchema),
 });
 export type ReaderBootstrap = Static<typeof ReaderBootstrapSchema>;
 

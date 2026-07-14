@@ -1000,3 +1000,50 @@ export const readerReadNodes = pgTable(
     check('reader_read_nodes_section_nonempty', sql`length(btrim(${table.sectionId})) > 0`),
   ],
 );
+
+// §11.7 — a reader's highlight over a [start,end) range within a single reading node (reading_contract
+// §2.5). A row with `note` null is a plain highlight; a non-null `note` is a highlight-with-note —
+// there is no bookmark table and no standalone note table (verdict :1469). The range is stored as
+// four flat columns (mirroring trial_segments) so DB checks can enforce start < end. `manifestVersion`
+// binds the anchor to the Block/manifest algorithm it was computed against (冻结约束 :29-30);
+// `quoteSnapshot` is the standard-text slice at highlight time, for list display and drift fallback.
+export const highlights = pgTable(
+  'highlights',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userBookId: uuid('user_book_id')
+      .notNull()
+      .references(() => userBooks.id),
+    sectionId: text('section_id').notNull(),
+    segment: integer('segment').notNull(),
+    startBlockIndex: integer('start_block_index').notNull(),
+    startOffset: integer('start_offset').notNull(),
+    endBlockIndex: integer('end_block_index').notNull(),
+    endOffset: integer('end_offset').notNull(),
+    manifestVersion: text('manifest_version'),
+    // Null → plain highlight. Non-null → highlight with a note. Clearing a note sets this back to
+    // null (delete-note keeps the highlight); the check forbids an empty-string note (§11.7).
+    note: text('note'),
+    quoteSnapshot: text('quote_snapshot').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('highlights_user_book_idx').on(table.userBookId),
+    check('highlights_segment_positive', sql`${table.segment} > 0`),
+    check(
+      'highlights_block_indexes_positive',
+      sql`${table.startBlockIndex} > 0 and ${table.endBlockIndex} > 0`,
+    ),
+    check(
+      'highlights_offsets_nonneg',
+      sql`${table.startOffset} >= 0 and ${table.endOffset} >= 0`,
+    ),
+    check(
+      'highlights_range_order_valid',
+      sql`${table.startBlockIndex} < ${table.endBlockIndex} or (${table.startBlockIndex} = ${table.endBlockIndex} and ${table.startOffset} < ${table.endOffset})`,
+    ),
+    check('highlights_section_nonempty', sql`length(btrim(${table.sectionId})) > 0`),
+    check('highlights_note_nonempty', sql`${table.note} is null or length(btrim(${table.note})) > 0`),
+  ],
+);
