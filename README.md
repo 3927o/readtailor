@@ -27,6 +27,35 @@ pnpm dev:worker
 Worker health `http://localhost:3002/health`。Worker 未配置 `REDIS_URL` 时会正常启动，但 health
 状态为 `degraded`。
 
+### 用户登录与会话
+
+正式用户体系支持邮箱密码注册登录和 Google OAuth，统一使用服务端数据库 session 与 httpOnly
+cookie。邮箱密码渠道不需要额外配置；首次启动前先执行最新 migration，并至少配置：
+
+```text
+AUTH_COOKIE_SECRET       # openssl rand -hex 32
+GOOGLE_CLIENT_ID         # 可选；启用 Google 登录时填写
+GOOGLE_CLIENT_SECRET     # 可选；启用 Google 登录时填写
+GOOGLE_REDIRECT_URI      # Google 回调，本地默认 http://localhost:3001/v1/auth/google/callback
+WEB_BASE_URL             # 本地默认 http://localhost:5173
+SYSTEM_API_TOKEN         # 保护 /v1/system/*
+```
+
+当前邮箱密码注册不发送验证码，邮箱会作为未验证身份保存；密码使用带随机盐的 `scrypt` 摘要存储，
+不会保存明文。暂不提供密码重置，也不会仅凭相同邮箱自动合并 Google 与密码账户。
+
+启用 Google 登录时，Google Cloud Console 中的 authorized redirect URI 必须与
+`GOOGLE_REDIRECT_URI` 完全一致。线上必须设置 `AUTH_COOKIE_SECURE=true`，Web 与 API 应部署在同一站点下。
+
+没有 Google 凭据时，可在纯本地环境显式启用开发登录：
+
+```text
+AUTH_DEVELOPMENT_ENABLED=true
+VITE_AUTH_DEVELOPMENT_ENABLED=true
+```
+
+开发登录仍会创建正式 identity 和数据库 session；不要在线上启用。
+
 提交前执行：
 
 ```bash
@@ -182,7 +211,7 @@ Agent 必须在完整校验达到 0 blocking error 后调用 `finish_normalizati
 - 前端不能硬编码书籍正文、用户、试读结果或工作流状态。
 - 持久业务状态不能只保存在浏览器 localStorage 或进程内存。
 
-先实现这条闭环，再补 EPUB 上传、完整阅读器、划线笔记、阅读统计、问 AI、OAuth、删除恢复和上线
+先实现这条闭环，再补 EPUB 上传、完整阅读器、划线笔记、阅读统计、问 AI、删除恢复和上线
 准备。后续依赖应通过上述稳定契约接入，不需要现在一次性创建全部数据库表。
 
 ## 数据和依赖提醒

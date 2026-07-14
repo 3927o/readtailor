@@ -1,3 +1,5 @@
+import type { TailoredContent, WorkflowStatus } from '../user-books/api';
+
 export interface ReaderBook {
   id: string;
   title: string;
@@ -42,17 +44,41 @@ export interface ReadingManifest {
 }
 
 export interface ReaderDocument {
+  userBookId: string;
+  bootstrap: ReaderBootstrap;
   book: ReaderBook;
   manifest: ReadingManifest;
   html: string;
   assetBaseUrl: string;
 }
 
+export type NodeEnhancementStatus = 'not_applicable' | 'queued' | 'generating' | 'ready' | 'failed';
+
+export interface ReaderNodeEnhancement {
+  sectionId: string;
+  segment: number;
+  status: NodeEnhancementStatus;
+  tailoredContent: TailoredContent | null;
+  errorSummary: string | null;
+}
+
+export interface ReaderBootstrap {
+  userBookId: string;
+  sharedBookId: string;
+  workflowStatus: WorkflowStatus;
+  enhancements: ReaderNodeEnhancement[];
+  // Raw backend strings — rendered directly, no fabricated briefing structure (§5).
+  briefing: string;
+  strategySummary: string;
+}
+
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
 
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new Error(`读取书籍失败（${response.status}）`);
+    if (response.status === 401) window.dispatchEvent(new Event('readtailor:unauthorized'));
+    const body = await response.json().catch(() => null) as { error?: unknown } | null;
+    throw new Error(typeof body?.error === 'string' ? body.error : `读取书籍失败（${response.status}）`);
   }
   return response.json() as Promise<T>;
 }
@@ -76,12 +102,17 @@ function normalizeBook(raw: Record<string, unknown>, bookId: string): ReaderBook
   };
 }
 
-export async function getReaderDocument(bookId: string): Promise<ReaderDocument> {
+export async function getReaderDocument(userBookId: string): Promise<ReaderDocument> {
+  const bootstrap = await getReaderBootstrap(userBookId);
+  if (bootstrap.workflowStatus !== 'active_reading') {
+    throw new Error('这本书还没有完成试读确认。');
+  }
+  const bookId = bootstrap.sharedBookId;
   const root = `${apiBaseUrl}/v1/books/${encodeURIComponent(bookId)}`;
   const [bookResponse, manifestResponse, contentResponse] = await Promise.all([
-    fetch(root),
-    fetch(`${root}/manifest`),
-    fetch(`${root}/content`),
+    fetch(root, { credentials: 'include' }),
+    fetch(`${root}/manifest`, { credentials: 'include' }),
+    fetch(`${root}/content`, { credentials: 'include' }),
   ]);
 
   const [bookRaw, manifest] = await Promise.all([
@@ -89,6 +120,7 @@ export async function getReaderDocument(bookId: string): Promise<ReaderDocument>
     readJson<ReadingManifest>(manifestResponse),
   ]);
   if (!contentResponse.ok) {
+    if (contentResponse.status === 401) window.dispatchEvent(new Event('readtailor:unauthorized'));
     throw new Error(`读取书籍正文失败（${contentResponse.status}）`);
   }
   const contentType = contentResponse.headers.get('content-type') ?? '';
@@ -100,9 +132,48 @@ export async function getReaderDocument(bookId: string): Promise<ReaderDocument>
   }
 
   return {
+    userBookId,
+    bootstrap,
     book: normalizeBook(bookRaw, bookId),
     manifest,
     html,
     assetBaseUrl: `${root}/assets/`,
+  };
+}
+
+export async function getReaderBootstrap(userBookId: string): Promise<ReaderBootstrap> {
+  const raw = await readJson<{
+    userBookId: string;
+    sharedBookId: string;
+    workflowStatus: 'active_reading';
+    briefing: string;
+    strategySummary: string;
+    enhancements: Array<{
+      sectionId: string;
+      segment: number;
+      status: 'queued' | 'generating' | 'ready' | 'failed' | 'retrying' | 'superseded';
+      result: TailoredContent | null;
+    }>;
+  }>(await fetch(
+    `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reader`,
+    { credentials: 'include' },
+  ));
+  return {
+    userBookId: raw.userBookId,
+    sharedBookId: raw.sharedBookId,
+    workflowStatus: raw.workflowStatus,
+    briefing: raw.briefing,
+    strategySummary: raw.strategySummary,
+    enhancements: raw.enhancements.map((enhancement) => ({
+      sectionId: enhancement.sectionId,
+      segment: enhancement.segment,
+      status: enhancement.status === 'retrying'
+        ? 'generating'
+        : enhancement.status === 'superseded'
+          ? 'not_applicable'
+          : enhancement.status,
+      tailoredContent: enhancement.result,
+      errorSummary: enhancement.status === 'failed' ? '裁读内容生成失败' : null,
+    })),
   };
 }

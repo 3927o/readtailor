@@ -52,6 +52,7 @@ function repository(record: ReadyBookRecord): BookRepository {
   return {
     async getReadyBook() { return record; },
     async listBooks() { return []; },
+    async isOwnedBy() { return true; },
     async getNormalizationStatus() { return null; },
   };
 }

@@ -1,8 +1,12 @@
 import type { ReaderNode, ReaderOutlineItem } from './api';
+import type { TailoredAnnotation } from '../user-books/api';
 
 const headingNames = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
-const mediaNames = new Set(['AUDIO', 'CANVAS', 'FIGURE', 'IMG', 'SVG', 'TABLE', 'VIDEO']);
+const mediaNames = new Set(['AUDIO', 'CANVAS', 'FIGURE', 'IMG', 'MATH', 'SVG', 'TABLE', 'VIDEO']);
 const bannedNames = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'LINK']);
+const textBlockNames = new Set(['P', 'PRE', 'DT', 'DD', 'TH', 'TD']);
+const mediaBlockNames = new Set(['FIGURE', 'AUDIO', 'VIDEO']);
+const roleBlockNames = new Set(['separator', 'math', 'verse', 'unit', 'unknown']);
 
 export interface RenderedNode extends ReaderNode {
   html: string;
@@ -11,6 +15,7 @@ export interface RenderedNode extends ReaderNode {
 
 export interface RenderedHeading extends ReaderOutlineItem {
   html: string;
+  visualLevel: 'part' | 'chapter' | 'section' | 'subsection' | 'deep';
 }
 
 export interface OriginalNote {
@@ -64,6 +69,94 @@ function encodeAssetPath(path: string): string {
   return path.split('/').filter(Boolean).map(encodeURIComponent).join('/');
 }
 
+export function getFragmentTargetId(href: string | null): string | null {
+  if (!href?.startsWith('#') || href.length === 1) return null;
+  try {
+    return decodeURIComponent(href.slice(1));
+  } catch {
+    return href.slice(1);
+  }
+}
+
+function markNoteTopology(documentRoot: Document): void {
+  const notes = new Map(
+    [...documentRoot.querySelectorAll<HTMLElement>('[data-role="note"][id]')]
+      .map((note) => [note.id, note]),
+  );
+  const referencedNoteIds = new Set<string>();
+
+  for (const anchor of documentRoot.querySelectorAll<HTMLAnchorElement>('a[data-role="noteref"]')) {
+    const targetId = getFragmentTargetId(anchor.getAttribute('href'));
+    const target = targetId ? notes.get(targetId) : undefined;
+    if (!target) {
+      anchor.dataset.broken = 'true';
+      anchor.setAttribute('aria-disabled', 'true');
+      continue;
+    }
+    referencedNoteIds.add(target.id);
+  }
+
+  for (const note of notes.values()) {
+    if (!referencedNoteIds.has(note.id)) {
+      note.dataset.orphan = 'true';
+    }
+  }
+}
+
+function enhanceScrollableContent(container: HTMLElement): void {
+  for (const table of [...container.querySelectorAll<HTMLTableElement>('table')]) {
+    let wrapper = table.parentElement;
+    if (!wrapper?.matches('[data-role="table-scroll"]')) {
+      wrapper = document.createElement('div');
+      wrapper.dataset.role = 'table-scroll';
+      table.before(wrapper);
+      wrapper.append(table);
+    }
+    wrapper.tabIndex = 0;
+    if (!wrapper.hasAttribute('aria-label')) {
+      const caption = table.querySelector('caption')?.textContent?.trim();
+      wrapper.setAttribute('aria-label', caption ? `可横向滚动的表格：${caption}` : '可横向滚动的表格');
+    }
+  }
+
+  for (const pre of container.querySelectorAll<HTMLElement>('pre')) {
+    pre.tabIndex = 0;
+    if (!pre.hasAttribute('aria-label')) {
+      pre.setAttribute('aria-label', '可横向滚动的代码块');
+    }
+  }
+
+  for (const math of container.querySelectorAll<HTMLElement>('div[data-role="math"]')) {
+    math.tabIndex = 0;
+    if (!math.hasAttribute('aria-label')) {
+      math.setAttribute('aria-label', '可横向滚动的数学公式');
+    }
+  }
+}
+
+function parentChain(
+  item: ReaderOutlineItem,
+  byId: Map<string, ReaderOutlineItem>,
+): ReaderOutlineItem[] {
+  const parents: ReaderOutlineItem[] = [];
+  let parent = item.parent_section_id ? byId.get(item.parent_section_id) : undefined;
+  while (parent && parents.length < 8) {
+    parents.push(parent);
+    parent = parent.parent_section_id ? byId.get(parent.parent_section_id) : undefined;
+  }
+  return parents;
+}
+
+function headingVisualLevel(
+  item: ReaderOutlineItem,
+  byId: Map<string, ReaderOutlineItem>,
+): RenderedHeading['visualLevel'] {
+  if (item.data_type === 'part') return 'part';
+  const levels: RenderedHeading['visualLevel'][] = ['chapter', 'section', 'subsection', 'deep'];
+  const depth = parentChain(item, byId).filter((parent) => parent.data_type !== 'part').length;
+  return levels[Math.min(depth, levels.length - 1)] ?? 'deep';
+}
+
 function prepareFragment(nodes: ChildNode[], assetBaseUrl: string): string {
   const container = document.createElement('div');
   for (const node of nodes) {
@@ -100,7 +193,150 @@ function prepareFragment(nodes: ChildNode[], assetBaseUrl: string): string {
       anchor.rel = 'noopener noreferrer';
     }
   }
+  enhanceScrollableContent(container);
   return container.innerHTML;
+}
+
+function directVisibleInlineContent(element: HTMLElement): boolean {
+  return [...element.childNodes].some((child) => {
+    if (child.nodeType === Node.TEXT_NODE) return Boolean(child.textContent?.trim());
+    if (!(child instanceof HTMLElement)) return false;
+    if (['UL', 'OL'].includes(child.tagName) || textBlockNames.has(child.tagName)) return false;
+    return Boolean(child.textContent?.trim()) || ['IMG', 'AUDIO', 'VIDEO', 'BR'].includes(child.tagName);
+  });
+}
+
+function annotationBlocks(container: HTMLElement): HTMLElement[] {
+  return [...container.querySelectorAll<HTMLElement>('*')].filter((element) => {
+    if (textBlockNames.has(element.tagName)) {
+      return ![...element.querySelectorAll<HTMLElement>('*')].some((nested) => (
+        nested !== element && textBlockNames.has(nested.tagName)
+      )) && Boolean(element.textContent?.trim());
+    }
+    if (element.tagName === 'LI') {
+      return ![...element.children].some((child) => child.tagName === 'P') && directVisibleInlineContent(element);
+    }
+    if (element.tagName === 'FIGCAPTION') {
+      return ![...element.children].some((child) => child.tagName === 'P') && Boolean(element.textContent?.trim());
+    }
+    if (mediaBlockNames.has(element.tagName)) return true;
+    if (element.tagName !== 'DIV'
+      || !roleBlockNames.has(element.dataset.role ?? '')
+      || element.querySelector('p,pre,dt,dd,th,td,li,figcaption')) {
+      return false;
+    }
+    // Mirror the backend block authority (packages/tailoring source.ts:93-101): a
+    // role div only counts as a block when it projects visible text or carries media.
+    // Without this guard an empty <div data-role="separator"> (normalized spec §4.5)
+    // would be counted here but not by the backend, drifting every later block index
+    // by one and silently misplacing or dropping the annotation anchor.
+    return Boolean(element.textContent?.trim())
+      || [...element.querySelectorAll('*')].some((nested) => mediaNames.has(nested.tagName));
+  });
+}
+
+interface DomBoundary {
+  container: Node;
+  offset: number;
+}
+
+function boundaryAt(root: HTMLElement, targetOffset: number, bias: 'start' | 'end'): DomBoundary | null {
+  // A nested list inside an <li> is its own block, so the backend text projection
+  // skips it (source.ts textProjection skipNestedLists / sliceBlockHtml rootIsListItem).
+  // Mirror that here, otherwise text trailing a nested list maps to a shifted offset.
+  const skipNestedLists = root.tagName === 'LI';
+  let cursor = 0;
+  const visit = (node: Node, isRoot: boolean): DomBoundary | null => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node as Text;
+      const length = text.data.length;
+      // Half-open matching keyed on bias resolves seams between two runs of counted
+      // text (e.g. a skipped nested list sitting between them): a start boundary binds
+      // to the following run, an end boundary to the preceding one, so the resulting
+      // range never swallows the skipped subtree.
+      const hit = bias === 'start'
+        ? targetOffset >= cursor && targetOffset < cursor + length
+        : targetOffset > cursor && targetOffset <= cursor + length;
+      if (hit) {
+        return { container: text, offset: targetOffset - cursor };
+      }
+      cursor += length;
+      return null;
+    }
+    if (skipNestedLists && !isRoot && node instanceof HTMLElement
+      && (node.tagName === 'UL' || node.tagName === 'OL')) {
+      return null;
+    }
+    if (node instanceof HTMLBRElement) {
+      const parent = node.parentNode;
+      if (!parent) return null;
+      const index = [...parent.childNodes].indexOf(node);
+      if (targetOffset === cursor) return { container: parent, offset: index };
+      cursor += 1;
+      if (targetOffset === cursor) return { container: parent, offset: index + 1 };
+      return null;
+    }
+    for (const child of [...node.childNodes]) {
+      const found = visit(child, false);
+      if (found) return found;
+    }
+    return null;
+  };
+  const found = visit(root, true);
+  if (found) return found;
+  return targetOffset === cursor
+    ? { container: root, offset: root.childNodes.length }
+    : null;
+}
+
+export function applyAnnotationMarks(rawHtml: string, annotations: TailoredAnnotation[]): string {
+  if (annotations.length === 0) return rawHtml;
+  const container = document.createElement('div');
+  container.innerHTML = rawHtml;
+  const blocks = annotationBlocks(container);
+  const ordered = [...annotations].sort((left, right) => (
+    right.range.start.blockIndex - left.range.start.blockIndex
+    || right.range.start.offset - left.range.start.offset
+  ));
+  for (const annotation of ordered) {
+    if (annotation.range.start.blockIndex !== annotation.range.end.blockIndex) continue;
+    const block = blocks.find((candidate) => (
+      Number(candidate.dataset.blockIndex) === annotation.range.start.blockIndex
+    )) ?? blocks[annotation.range.start.blockIndex - 1];
+    if (!block) continue;
+    const parsedSourceOffset = Number(block.dataset.sourceOffset ?? 0);
+    const sourceOffset = Number.isFinite(parsedSourceOffset) ? parsedSourceOffset : 0;
+    const start = boundaryAt(block, annotation.range.start.offset - sourceOffset, 'start');
+    const end = boundaryAt(block, annotation.range.end.offset - sourceOffset, 'end');
+    if (!start || !end) continue;
+    const range = document.createRange();
+    try {
+      range.setStart(start.container, start.offset);
+      range.setEnd(end.container, end.offset);
+      if (range.collapsed) continue;
+      const mark = document.createElement('mark');
+      mark.className = 'tailored-text-anchor';
+      mark.dataset.annotationId = annotation.id;
+      mark.tabIndex = 0;
+      mark.setAttribute('role', 'button');
+      mark.setAttribute('aria-label', '打开对应裁读注');
+      mark.append(range.extractContents());
+      range.insertNode(mark);
+    } catch {
+      // Invalid DOM boundary should not make the original text unreadable.
+    }
+  }
+  return container.innerHTML;
+}
+
+export function prepareStandaloneContent(
+  rawHtml: string,
+  assetBaseUrl: string,
+  annotations: TailoredAnnotation[] = [],
+): string {
+  const documentRoot = new DOMParser().parseFromString(`<main id="rt-standalone">${rawHtml}</main>`, 'text/html');
+  const root = documentRoot.getElementById('rt-standalone');
+  return root ? applyAnnotationMarks(prepareFragment([...root.childNodes], assetBaseUrl), annotations) : '';
 }
 
 function outlineHeadings(
@@ -127,6 +363,7 @@ function outlineHeadings(
       : undefined;
     current.push({
       ...item,
+      visualLevel: headingVisualLevel(item, byId),
       html: sourceHeading
         ? prepareFragment([...sourceHeading.childNodes], assetBaseUrl)
         : prepareFragment([documentRoot.createTextNode(item.title)], assetBaseUrl),
@@ -142,8 +379,10 @@ export function prepareBookContent(
   manifestNodes: ReaderNode[],
   outline: ReaderOutlineItem[],
   assetBaseUrl: string,
+  annotationsByNode: ReadonlyMap<string, TailoredAnnotation[]> = new Map(),
 ): PreparedBookContent {
   const documentRoot = new DOMParser().parseFromString(rawHtml, 'text/html');
+  markNoteTopology(documentRoot);
   const headings = outlineHeadings(documentRoot, outline, assetBaseUrl);
   const nodes = manifestNodes.map((node) => {
     const owner = documentRoot.getElementById(node.section_id);
@@ -157,7 +396,10 @@ export function prepareBookContent(
     }
     return {
       ...node,
-      html: prepareFragment(segment, assetBaseUrl),
+      html: applyAnnotationMarks(
+        prepareFragment(segment, assetBaseUrl),
+        annotationsByNode.get(`${node.section_id}:${node.segment}`) ?? [],
+      ),
       headings: headings.get(node.order) ?? [],
     };
   });

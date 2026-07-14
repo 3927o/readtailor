@@ -14,7 +14,7 @@ export function ImportPage() {
   const upload = useMutation({
     mutationFn: importBook,
     onSuccess: async (result) => {
-      await queryClient.invalidateQueries({ queryKey: ['book-catalog'] });
+      await queryClient.invalidateQueries({ queryKey: ['user-books'] });
       navigate(`/books/${result.bookId}/processing`, { replace: true });
     },
   });

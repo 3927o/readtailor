@@ -10,9 +10,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.1",
     "@fastify/cors": "^11.0.0",
     "@fastify/multipart": "^9.4.0",
+    "@fastify/rate-limit": "^10.3.0",
     "@fastify/type-provider-typebox": "^5.1.0",
+    "@readtailor/agent-kit": "workspace:*",
     "@readtailor/config": "workspace:*",
     "@readtailor/contracts": "workspace:*",
     "@readtailor/database": "workspace:*",
@@ -20,11 +23,13 @@
     "@readtailor/observability": "workspace:*",
     "@readtailor/queue": "workspace:*",
     "@readtailor/storage": "workspace:*",
+    "@readtailor/tailoring": "workspace:*",
     "@sinclair/typebox": "^0.34.0",
     "bullmq": "^5.56.0",
     "drizzle-orm": "^0.44.0",
     "fastify": "^5.4.0",
     "ioredis": "5.10.1",
+    "jose": "^6.2.3",
     "pino": "^9.7.0",
     "postgres": "^3.4.0"
   },

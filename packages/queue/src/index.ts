@@ -2,10 +2,15 @@ import { Queue, Worker } from 'bullmq';
 import type { Job, RedisOptions } from 'bullmq';
 import type IORedis from 'ioredis';
 import type { Logger } from 'pino';
-import type { NormalizationJobPayload, SystemJobPayload } from '@readtailor/contracts';
+import type {
+  ContentGenerationJobPayload,
+  NormalizationJobPayload,
+  SystemJobPayload,
+} from '@readtailor/contracts';
 
 export const SYSTEM_QUEUE_NAME = 'system';
 export const NORMALIZATION_QUEUE_NAME = 'normalization';
+export const CONTENT_GENERATION_QUEUE_NAME = 'content-generation';
 
 // 传连接参数而非 ioredis 实例：实例会被 BullMQ 视作调用方所有（shared），
 // close() 时不 quit，socket 只能靠进程退出回收。
@@ -73,6 +78,60 @@ export function createNormalizationWorker(options: {
     );
   });
 
+  return worker;
+}
+
+export function createContentGenerationQueue(redisUrl: string) {
+  return new Queue<ContentGenerationJobPayload>(CONTENT_GENERATION_QUEUE_NAME, {
+    connection: redisOptionsFromUrl(redisUrl),
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 2000 },
+      removeOnComplete: 200,
+      removeOnFail: 200,
+    },
+  });
+}
+
+export type ContentGenerationQueue = ReturnType<typeof createContentGenerationQueue>;
+export type ContentGenerationQueueJob = Job<ContentGenerationJobPayload>;
+
+export function createContentGenerationWorker(options: {
+  redisUrl: string;
+  concurrency: number;
+  logger: Logger;
+  handler: (job: ContentGenerationQueueJob) => Promise<void>;
+  onTerminalFailure?: (job: ContentGenerationQueueJob, error: Error) => Promise<void>;
+}) {
+  const worker = new Worker<ContentGenerationJobPayload>(
+    CONTENT_GENERATION_QUEUE_NAME,
+    async (job) => {
+      options.logger.info(
+        { jobId: job.id, generationId: job.data.generationId, scope: job.data.scope },
+        'processing content generation job',
+      );
+      await options.handler(job);
+    },
+    {
+      connection: redisOptionsFromUrl(options.redisUrl),
+      concurrency: options.concurrency,
+    },
+  );
+  worker.on('failed', (job, error) => {
+    options.logger.error(
+      { err: error, jobId: job?.id, generationId: job?.data.generationId },
+      'content generation job failed',
+    );
+    if (!job) return;
+    const attempts = job.opts.attempts ?? 1;
+    if (job.attemptsMade < attempts) return;
+    void options.onTerminalFailure?.(job, error).catch((failure: unknown) => {
+      options.logger.error(
+        { err: failure, generationId: job.data.generationId },
+        'failed to persist terminal content generation failure',
+      );
+    });
+  });
   return worker;
 }
 

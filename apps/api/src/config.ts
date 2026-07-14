@@ -3,6 +3,7 @@ import { readInteger, readLogLevel, readOptionalString, readString } from '@read
 export type ApiConfig = ReturnType<typeof loadApiConfig>;
 
 export function loadApiConfig(env: NodeJS.ProcessEnv = process.env) {
+  const production = env.NODE_ENV === 'production';
   return {
     host: readString(env, 'API_HOST', '0.0.0.0'),
     databaseUrl: readOptionalString(env, 'DATABASE_URL'),
@@ -16,6 +17,19 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env) {
     modelBaseUrl: readOptionalString(env, 'MODEL_API_BASE_URL'),
     modelApiKey: readOptionalString(env, 'MODEL_API_KEY'),
     modelName: readOptionalString(env, 'MODEL_NAME'),
+    authCookieSecret: readOptionalString(env, 'AUTH_COOKIE_SECRET'),
+    authCookieSecure: (readOptionalString(env, 'AUTH_COOKIE_SECURE') ?? String(production)) === 'true',
+    authSessionDays: readInteger(env, 'AUTH_SESSION_DAYS', 30, { min: 1, max: 365 }),
+    authDevelopmentEnabled: readOptionalString(env, 'AUTH_DEVELOPMENT_ENABLED') === 'true',
+    googleClientId: readOptionalString(env, 'GOOGLE_CLIENT_ID'),
+    googleClientSecret: readOptionalString(env, 'GOOGLE_CLIENT_SECRET'),
+    googleRedirectUri: readString(
+      env,
+      'GOOGLE_REDIRECT_URI',
+      'http://localhost:3001/v1/auth/google/callback',
+    ),
+    webBaseUrl: readString(env, 'WEB_BASE_URL', 'http://localhost:5173'),
+    systemApiToken: readOptionalString(env, 'SYSTEM_API_TOKEN'),
     port: readInteger(env, 'API_PORT', 3001, { min: 1, max: 65_535 }),
     webOrigins: readString(
       env,

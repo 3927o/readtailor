@@ -1,0 +1,4 @@
+ALTER TABLE "normalization_runs" ADD COLUMN "failure_type" text;--> statement-breakpoint
+ALTER TABLE "shared_books" ADD COLUMN "failure_type" text;--> statement-breakpoint
+ALTER TABLE "normalization_runs" ADD CONSTRAINT "normalization_runs_failure_type_valid" CHECK ("normalization_runs"."failure_type" is null or "normalization_runs"."failure_type" in ('timeout', 'validation_failed', 'external_error', 'internal_error', 'stale_worker'));--> statement-breakpoint
+ALTER TABLE "shared_books" ADD CONSTRAINT "shared_books_failure_type_valid" CHECK ("shared_books"."failure_type" is null or "shared_books"."failure_type" in ('timeout', 'validation_failed', 'external_error', 'internal_error', 'stale_worker'));

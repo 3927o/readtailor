@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
 import { ProgressBar } from '../components/chrome/ProgressBar';
 import { Segmented } from '../components/core/Segmented';
 import { Slider } from '../components/core/Slider';
-import { getReaderDocument } from './api';
-import type { ReaderOutlineItem } from './api';
-import { getOutlineDepth, prepareBookContent } from './content';
+import { AnnotationList, AssistanceContent, BriefCard } from '../user-books/components';
+import { getReaderBootstrap, getReaderDocument } from './api';
+import type { ReaderNodeEnhancement, ReaderOutlineItem } from './api';
+import { getFragmentTargetId, getOutlineDepth, prepareBookContent } from './content';
 import type { OriginalNote, RenderedHeading, RenderedNode } from './content';
 
 type ThemeSetting = 'system' | 'paper' | 'night';
@@ -68,11 +69,11 @@ const contentWidths: Record<ContentWidthSetting, number> = {
 };
 
 export function ReaderPage() {
-  const { bookId = '' } = useParams();
+  const { id = '' } = useParams();
   const query = useQuery({
-    queryKey: ['reader-document', bookId],
-    queryFn: () => getReaderDocument(bookId),
-    enabled: Boolean(bookId),
+    queryKey: ['reader-document', id],
+    queryFn: () => getReaderDocument(id),
+    enabled: Boolean(id),
   });
 
   if (query.isPending) {
@@ -82,30 +83,69 @@ export function ReaderPage() {
     return <ReaderStatus title="这本书暂时打不开" detail={query.error.message} retry={() => void query.refetch()} />;
   }
 
-  return <Reader document={query.data} />;
+  return <LiveReader document={query.data} />;
+}
+
+function LiveReader({ document }: { document: Awaited<ReturnType<typeof getReaderDocument>> }) {
+  const bootstrap = useQuery({
+    queryKey: ['reader-bootstrap', document.userBookId],
+    queryFn: () => getReaderBootstrap(document.userBookId),
+    initialData: document.bootstrap,
+    refetchInterval: (current) => current.state.data?.enhancements.some((item) => (
+      item.status === 'queued' || item.status === 'generating'
+    )) ? 3000 : false,
+  });
+  return <Reader document={{ ...document, bootstrap: bootstrap.data }} />;
 }
 
 function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDocument>> }) {
   const [settings, setSettings] = useState(defaultSettings);
   const [tocOpen, setTocOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [bookInfoOpen, setBookInfoOpen] = useState(false);
   const [currentOrder, setCurrentOrder] = useState(document.manifest.nodes[0]?.order ?? 1);
   const [note, setNote] = useState<ActiveNote | null>(null);
   const [scrollProgress, setScrollProgress] = useState(0);
   const [chromeHidden, setChromeHidden] = useState(false);
   const scrollRoot = useRef<HTMLDivElement>(null);
   const lastScrollTop = useRef(0);
+  const enhancementAnchor = useRef<{ order: number; top: number } | undefined>(undefined);
   const prefersDark = usePrefersDark();
   const theme = resolvedTheme(settings.theme, prefersDark);
+  const enhancements = useMemo(() => new Map(
+    document.bootstrap.enhancements.map((item) => [`${item.sectionId}:${item.segment}`, item]),
+  ), [document.bootstrap.enhancements]);
+  const annotationsByNode = useMemo(() => new Map(
+    [...enhancements.entries()].map(([key, enhancement]) => [
+      key,
+      enhancement.status === 'ready' ? enhancement.tailoredContent?.annotations ?? [] : [],
+    ]),
+  ), [enhancements]);
   const prepared = useMemo(
     () => prepareBookContent(
       document.html,
       document.manifest.nodes,
       document.manifest.outline,
       document.assetBaseUrl,
+      annotationsByNode,
     ),
-    [document],
+    [annotationsByNode, document.assetBaseUrl, document.html, document.manifest],
   );
+  const enhancementVersion = document.bootstrap.enhancements
+    .map((item) => `${item.sectionId}:${item.segment}:${item.status}:${item.tailoredContent ? 'content' : 'empty'}`)
+    .join('|');
+
+  useLayoutEffect(() => {
+    const root = scrollRoot.current;
+    const node = root?.querySelector<HTMLElement>(`[data-node-order="${currentOrder}"]`);
+    if (!root || !node) return;
+    const top = node.getBoundingClientRect().top;
+    const previous = enhancementAnchor.current;
+    if (previous?.order === currentOrder) {
+      root.scrollTop += top - previous.top;
+    }
+    enhancementAnchor.current = { order: currentOrder, top: node.getBoundingClientRect().top };
+  }, [currentOrder, enhancementVersion]);
   useEffect(() => {
     const root = scrollRoot.current;
     if (!root) return;
@@ -125,6 +165,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       if (event.key !== 'Escape') return;
       setTocOpen(false);
       setSettingsOpen(false);
+      setBookInfoOpen(false);
       setNote(null);
     };
     window.addEventListener('keydown', closeOverlays);
@@ -143,7 +184,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     const max = root.scrollHeight - root.clientHeight;
     setScrollProgress(max > 0 ? (root.scrollTop / max) * 100 : 0);
     const delta = root.scrollTop - lastScrollTop.current;
-    if (delta > 4 && root.scrollTop > 180 && !tocOpen && !settingsOpen && !note) {
+    if (delta > 4 && root.scrollTop > 180 && !tocOpen && !settingsOpen && !bookInfoOpen && !note) {
       setChromeHidden(true);
     } else if ((delta < -4 || root.scrollTop < 120) && chromeHidden) {
       setChromeHidden(false);
@@ -160,13 +201,20 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
 
   const handleContentClick = (event: React.MouseEvent<HTMLElement>) => {
     setChromeHidden(false);
+    const tailoredAnchor = (event.target as HTMLElement).closest<HTMLElement>('[data-annotation-id]');
+    if (tailoredAnchor?.dataset.annotationId) {
+      globalThis.document.getElementById(`tailored-annotation-${tailoredAnchor.dataset.annotationId}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
     const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[href]');
     if (!anchor) return;
-    const targetId = anchor.getAttribute('href')?.replace(/^#/, '');
-    if (!targetId) return;
-    const originalNote = prepared.notes.get(targetId);
-    if (originalNote) {
+    const targetId = getFragmentTargetId(anchor.getAttribute('href'));
+    const isNoteref = anchor.dataset.role === 'noteref';
+    const originalNote = targetId ? prepared.notes.get(targetId) : undefined;
+    if (isNoteref) {
       event.preventDefault();
+      if (anchor.dataset.broken === 'true' || !originalNote) return;
       const rect = anchor.getBoundingClientRect();
       const popoverWidth = Math.min(392, window.innerWidth - 32);
       const anchorCenter = rect.left + rect.width / 2;
@@ -181,6 +229,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       });
       return;
     }
+    if (!targetId) return;
     const targetOutline = document.manifest.outline.find((item) => item.section_id === targetId);
     if (targetOutline) {
       event.preventDefault();
@@ -200,18 +249,27 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     .at(-1)?.section_id;
   const openToc = () => {
     setSettingsOpen(false);
+    setBookInfoOpen(false);
     setChromeHidden(false);
     setTocOpen(true);
   };
   const openSettings = () => {
     setTocOpen(false);
+    setBookInfoOpen(false);
     setChromeHidden(false);
     setSettingsOpen(true);
+  };
+  const openBookInfo = () => {
+    setTocOpen(false);
+    setSettingsOpen(false);
+    setChromeHidden(false);
+    setBookInfoOpen(true);
   };
 
   return (
     <div
       className="reader-shell"
+      lang={document.book.language}
       data-reader-language={document.book.language}
       data-rt-theme={theme === 'night' ? 'night' : undefined}
     >
@@ -222,6 +280,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
           <div className="reader-title" title={document.book.title}>{document.book.title}</div>
           <div className="reader-desktop-actions">
             <ReaderAction glyph="≡" label="目录" onClick={openToc} />
+            <ReaderAction glyph="···" label="本书" onClick={openBookInfo} />
             <ReaderAction glyph="Aa" label="设置" onClick={openSettings} />
           </div>
         </header>
@@ -229,15 +288,25 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
 
       <nav className="reader-mobile-bar" data-hidden={chromeHidden} aria-label="阅读工具">
         <ReaderAction glyph="≡" label="目录" onClick={openToc} />
+        <ReaderAction glyph="···" label="本书" onClick={openBookInfo} />
         <ReaderAction glyph="Aa" label="设置" onClick={openSettings} />
       </nav>
 
       {settingsOpen && <button className="reader-modal-scrim" type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭阅读设置" />}
+      {bookInfoOpen && <button className="reader-modal-scrim" type="button" onClick={() => setBookInfoOpen(false)} aria-label="关闭本书说明" />}
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
           update={(patch) => setSettings((current) => ({ ...current, ...patch }))}
           close={() => setSettingsOpen(false)}
+        />
+      )}
+      {bookInfoOpen && (
+        <BookInfoPanel
+          title={document.book.title}
+          briefing={document.bootstrap.briefing}
+          strategySummary={document.bootstrap.strategySummary}
+          close={() => setBookInfoOpen(false)}
         />
       )}
 
@@ -265,6 +334,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
               key={`${node.section_id}:${node.segment}`}
               node={node}
               bookTitle={document.book.title}
+              enhancement={enhancements.get(`${node.section_id}:${node.segment}`)}
             />
           ))}
           <footer className="reader-end"><span>⌜</span> 本书原文到此结束 <span>⌟</span></footer>
@@ -294,8 +364,13 @@ function ReaderAction({ glyph, label, onClick }: { glyph: string; label: string;
   );
 }
 
-function ReadingNode({ node, bookTitle }: { node: RenderedNode; bookTitle: string }) {
+function ReadingNode({ node, bookTitle, enhancement }: {
+  node: RenderedNode;
+  bookTitle: string;
+  enhancement: ReaderNodeEnhancement | undefined;
+}) {
   const headings = node.headings.filter((heading) => heading.title.trim() !== bookTitle.trim());
+  const content = enhancement?.status === 'ready' ? enhancement.tailoredContent : null;
   return (
     <section
       className="reader-node"
@@ -306,24 +381,47 @@ function ReadingNode({ node, bookTitle }: { node: RenderedNode; bookTitle: strin
       {headings.map((heading) => (
         <OutlineHeading key={heading.section_id} heading={heading} />
       ))}
-      <div className="reader-original" dangerouslySetInnerHTML={{ __html: node.html }} />
+      {content?.guide ? (
+        <section className="tailored-guide reader-tailored-block">
+          <span>GUIDE · 导读</span>
+          <AssistanceContent content={content.guide} />
+        </section>
+      ) : null}
+      {enhancement && ['queued', 'generating'].includes(enhancement.status) ? (
+        <div className="reader-enhancement-state">✦ 裁读内容正在准备，原文可以先读。</div>
+      ) : null}
+      {enhancement?.status === 'failed' ? (
+        <div className="reader-enhancement-state" data-failed="true">裁读内容暂时没有生成，原文不受影响。</div>
+      ) : null}
+      <div className="reader-original rt-reader-content" dangerouslySetInnerHTML={{ __html: node.html }} />
+      <AnnotationList annotations={content?.annotations ?? []} />
+      {content?.afterReading ? (
+        <section className="tailored-after-reading reader-tailored-block">
+          <span>AFTER READING · 节后助读</span>
+          <AssistanceContent content={content.afterReading} />
+        </section>
+      ) : null}
     </section>
   );
 }
 
 function OutlineHeading({ heading }: { heading: RenderedHeading }) {
   const props = {
-    className: 'reader-outline-heading',
+    className: 'reader-outline-heading rt-reader-heading-content',
     'data-outline-type': heading.data_type,
+    'data-outline-level': heading.visualLevel,
   };
-  if (heading.data_type === 'part') {
+  if (heading.visualLevel === 'part') {
     return <div {...props}><span dangerouslySetInnerHTML={{ __html: heading.html }} /></div>;
   }
-  if (heading.data_type === 'section') {
+  if (heading.visualLevel === 'section') {
     return <h3 {...props} dangerouslySetInnerHTML={{ __html: heading.html }} />;
   }
-  if (heading.data_type === 'subsection') {
+  if (heading.visualLevel === 'subsection') {
     return <h4 {...props} dangerouslySetInnerHTML={{ __html: heading.html }} />;
+  }
+  if (heading.visualLevel === 'deep') {
+    return <h5 {...props} dangerouslySetInnerHTML={{ __html: heading.html }} />;
   }
   return <h2 {...props} dangerouslySetInnerHTML={{ __html: heading.html }} />;
 }
@@ -380,7 +478,7 @@ function SettingsPanel({ settings, update, close }: {
       <header><strong>阅读设置 · Aa</strong><button type="button" onClick={close} aria-label="关闭阅读设置">×</button></header>
       <div className="reader-setting-row">
         <span>字号</span>
-        <Slider label="字号" min={15} max={24} value={settings.fontSize} onChange={(fontSize) => update({ fontSize })} showValue format={(value) => `${value}px`} />
+        <Slider label="字号" min={16} max={24} value={settings.fontSize} onChange={(fontSize) => update({ fontSize })} showValue format={(value) => `${value}px`} />
       </div>
       <div className="reader-setting-row reader-setting-wide">
         <span>行距</span>
@@ -408,6 +506,30 @@ function SettingsPanel({ settings, update, close }: {
   );
 }
 
+function BookInfoPanel({ title, briefing, strategySummary, close }: {
+  title: string;
+  briefing: string;
+  strategySummary: string;
+  close: () => void;
+}) {
+  const hasBriefing = briefing.trim().length > 0;
+  const hasStrategy = strategySummary.trim().length > 0;
+  return (
+    <aside className="reader-book-info" aria-label="本书说明">
+      <div className="reader-sheet-handle" aria-hidden="true" />
+      <header><strong>本书说明 · {title}</strong><button type="button" onClick={close} aria-label="关闭本书说明">×</button></header>
+      {hasBriefing ? <BriefCard briefing={briefing} /> : null}
+      {hasStrategy ? (
+        <section className="reader-current-strategy">
+          <span>当前处理方式</span>
+          <AssistanceContent content={strategySummary} />
+        </section>
+      ) : null}
+      {!hasBriefing && !hasStrategy ? <p className="reader-book-info-empty">当前没有可展示的读前简报或处理方式。</p> : null}
+    </aside>
+  );
+}
+
 function NoteDialog({ note, close }: { note: ActiveNote | null; close: () => void }) {
   if (!note) return null;
   return (
@@ -425,7 +547,7 @@ function NoteDialog({ note, close }: { note: ActiveNote | null; close: () => voi
         onClick={(event) => event.stopPropagation()}
       >
         <header><span><i aria-hidden="true" />原书注 <em>Book note</em></span></header>
-        <div className="note-dialog-content" dangerouslySetInnerHTML={{ __html: note.note.html }} />
+        <div className="note-dialog-content rt-reader-note-content" dangerouslySetInnerHTML={{ __html: note.note.html }} />
       </aside>
     </div>
   );

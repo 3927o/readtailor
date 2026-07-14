@@ -1,13 +1,42 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SystemJob } from '@readtailor/contracts';
-import { buildApp } from './app';
+import { buildApp as buildApiApp, type AppDeps } from './app';
+import { AuthError, type AuthService } from './auth';
 import { loadApiConfig } from './config';
 import type { SystemChatService } from './system-chat';
 import type { SystemJobService } from './system-jobs';
-import type { BookImportService } from './book-imports';
+import { BookImportError, type BookImportService } from './book-imports';
 import type { BookService } from './books';
 
 const JOB_ID = 'a3bb189e-8bf9-3888-9912-ace4e6543002';
+const TEST_ORIGIN = 'http://localhost:5173';
+const SYSTEM_TOKEN = 'test-system-token';
+const systemHeaders = { authorization: `Bearer ${SYSTEM_TOKEN}` };
+
+const fakeAuth: AuthService = {
+  async authenticateSession() {
+    return {
+      user: {
+        id: JOB_ID,
+        displayName: 'Reader',
+        avatarUrl: null,
+        email: 'reader@example.com',
+        readerProfileCompletedAt: new Date(),
+      },
+      expiresAt: new Date('2026-08-14T00:00:00.000Z'),
+    };
+  },
+  beginGoogleLogin() { throw new Error('not used'); },
+  async completeGoogleLogin() { throw new Error('not used'); },
+  async registerWithPassword() { throw new Error('not used'); },
+  async loginWithPassword() { throw new Error('not used'); },
+  async developmentLogin() { throw new Error('not used'); },
+  async logout() {},
+};
+
+function buildApp(config: ReturnType<typeof loadApiConfig>, deps: AppDeps = {}) {
+  return buildApiApp(config, { auth: fakeAuth, ...deps });
+}
 
 function createFakeService(job: SystemJob | null): SystemJobService {
   return {
@@ -20,7 +49,7 @@ function createFakeService(job: SystemJob | null): SystemJobService {
   };
 }
 
-const config = loadApiConfig({ LOG_LEVEL: 'silent' });
+const config = loadApiConfig({ LOG_LEVEL: 'silent', SYSTEM_API_TOKEN: SYSTEM_TOKEN });
 
 const catalogBook = {
   id: JOB_ID,
@@ -31,11 +60,15 @@ const catalogBook = {
   coverPath: 'assets/cover.jpg',
   sourceFilename: 'book.epub',
   errorSummary: null,
+  failureType: null,
   createdAt: '2026-07-13T00:00:00.000Z',
   updatedAt: '2026-07-13T00:00:01.000Z',
 };
 
 const fakeBooks: BookService = {
+  async canAccess() {
+    return true;
+  },
   async listBooks() {
     return [catalogBook];
   },
@@ -77,6 +110,125 @@ const fakeBooks: BookService = {
     return new Uint8Array([1, 2, 3]);
   },
 };
+
+describe('authentication boundary', () => {
+  it('returns the current session user', async () => {
+    const app = await buildApp(config);
+    const response = await app.inject({ method: 'GET', url: '/v1/auth/session' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      user: {
+        id: JOB_ID,
+        displayName: 'Reader',
+        avatarUrl: null,
+        email: 'reader@example.com',
+        readerProfileCompleted: true,
+      },
+    });
+  });
+
+  it('rejects protected routes without an active session', async () => {
+    const app = await buildApiApp(config, {
+      auth: { ...fakeAuth, async authenticateSession() { return null; } },
+    });
+    const response = await app.inject({ method: 'GET', url: '/v1/user-books' });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: '请先登录' });
+  });
+
+  it('rejects authenticated writes from an untrusted origin', async () => {
+    const app = await buildApp(config);
+    const response = await app.inject({ method: 'POST', url: '/v1/books/import' });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ error: '请求来源无效' });
+  });
+
+  it('registers with a password and sets the server session cookie', async () => {
+    const registerWithPassword = vi.fn<AuthService['registerWithPassword']>(async () => ({
+      user: {
+        id: JOB_ID,
+        displayName: 'New Reader',
+        avatarUrl: null,
+        email: 'reader@example.com',
+        readerProfileCompletedAt: null,
+      },
+      sessionToken: 'new-session-token',
+      expiresAt: new Date('2026-08-14T00:00:00.000Z'),
+    }));
+    const app = await buildApp(config, { auth: { ...fakeAuth, registerWithPassword } });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      headers: { origin: TEST_ORIGIN, 'content-type': 'application/json' },
+      payload: {
+        displayName: 'New Reader',
+        email: 'reader@example.com',
+        password: 'correct horse battery staple',
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().user).toMatchObject({
+      email: 'reader@example.com',
+      readerProfileCompleted: false,
+    });
+    expect(response.headers['set-cookie']).toContain('readtailor_session=new-session-token');
+    expect(response.headers['set-cookie']).toContain('HttpOnly');
+    expect(response.headers['set-cookie']).toContain('SameSite=Lax');
+    expect(registerWithPassword).toHaveBeenCalledWith({
+      displayName: 'New Reader',
+      email: 'reader@example.com',
+      password: 'correct horse battery staple',
+    });
+  });
+
+  it('rejects password login from an untrusted origin before checking credentials', async () => {
+    const loginWithPassword = vi.fn<AuthService['loginWithPassword']>();
+    const app = await buildApp(config, { auth: { ...fakeAuth, loginWithPassword } });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/login',
+      headers: { origin: 'https://example.com', 'content-type': 'application/json' },
+      payload: { email: 'reader@example.com', password: 'password' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ error: '请求来源无效' });
+    expect(loginWithPassword).not.toHaveBeenCalled();
+  });
+
+  it('returns the generic credential error from password login', async () => {
+    const app = await buildApp(config, {
+      auth: {
+        ...fakeAuth,
+        async loginWithPassword() {
+          throw new AuthError('邮箱或密码错误', 401, 'invalid_credentials');
+        },
+      },
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/login',
+      headers: { origin: TEST_ORIGIN, 'content-type': 'application/json' },
+      payload: { email: 'reader@example.com', password: 'wrong' },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: '邮箱或密码错误' });
+  });
+
+  it('does not reveal a shared book the current user does not own', async () => {
+    const app = await buildApp(config, {
+      books: { ...fakeBooks, async canAccess() { return false; } },
+    });
+    const response = await app.inject({ method: 'GET', url: `/v1/books/${JOB_ID}` });
+
+    expect(response.statusCode).toBe(404);
+  });
+});
 
 describe('GET /v1/health', () => {
   it('reports ok without configured probes', async () => {
@@ -167,10 +319,13 @@ describe('ready book routes', () => {
 describe('POST /v1/books/import', () => {
   it('accepts a multipart EPUB and returns the queued book', async () => {
     const bookImports: BookImportService = {
-      async importBook(input) {
+      async importBook(_userId, input) {
         expect(input.filename).toBe('book.epub');
         expect(input.mediaType).toBe('application/epub+zip');
         expect([...input.bytes.slice(0, 2)]).toEqual([0x50, 0x4b]);
+        return { bookId: JOB_ID, runId: JOB_ID, reused: false, status: 'queued' };
+      },
+      async retryBook() {
         return { bookId: JOB_ID, runId: JOB_ID, reused: false, status: 'queued' };
       },
     };
@@ -186,7 +341,10 @@ describe('POST /v1/books/import', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/books/import',
-      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      headers: {
+        'content-type': `multipart/form-data; boundary=${boundary}`,
+        origin: TEST_ORIGIN,
+      },
       payload,
     });
 
@@ -201,7 +359,51 @@ describe('POST /v1/books/import', () => {
 
   it('returns 503 when the import pipeline is not configured', async () => {
     const app = await buildApp(config);
-    const response = await app.inject({ method: 'POST', url: '/v1/books/import' });
+    const response = await app.inject({ method: 'POST', url: '/v1/books/import', headers: { origin: TEST_ORIGIN } });
+    expect(response.statusCode).toBe(503);
+  });
+});
+
+describe('POST /v1/books/:id/retry', () => {
+  it('requeues a failed book without re-uploading the file', async () => {
+    const bookImports: BookImportService = {
+      async importBook() {
+        throw new Error('not used');
+      },
+      async retryBook(_userId, bookId) {
+        expect(bookId).toBe(JOB_ID);
+        return { bookId: JOB_ID, runId: JOB_ID, reused: false, status: 'queued' };
+      },
+    };
+    const app = await buildApp(config, { bookImports });
+    const response = await app.inject({ method: 'POST', url: `/v1/books/${JOB_ID}/retry`, headers: { origin: TEST_ORIGIN } });
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({
+      bookId: JOB_ID,
+      runId: JOB_ID,
+      reused: false,
+      status: 'queued',
+    });
+  });
+
+  it('surfaces the missing-source conflict from the pipeline', async () => {
+    const bookImports: BookImportService = {
+      async importBook() {
+        throw new Error('not used');
+      },
+      async retryBook() {
+        throw new BookImportError('找不到源文件，请重新上传', 409);
+      },
+    };
+    const app = await buildApp(config, { bookImports });
+    const response = await app.inject({ method: 'POST', url: `/v1/books/${JOB_ID}/retry`, headers: { origin: TEST_ORIGIN } });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: '找不到源文件，请重新上传' });
+  });
+
+  it('returns 503 when the import pipeline is not configured', async () => {
+    const app = await buildApp(config);
+    const response = await app.inject({ method: 'POST', url: `/v1/books/${JOB_ID}/retry`, headers: { origin: TEST_ORIGIN } });
     expect(response.statusCode).toBe(503);
   });
 });
@@ -209,7 +411,7 @@ describe('POST /v1/books/import', () => {
 describe('POST /v1/system/ping', () => {
   it('enqueues a job and returns its id', async () => {
     const app = await buildApp(config, { systemJobs: createFakeService(null) });
-    const response = await app.inject({ method: 'POST', url: '/v1/system/ping' });
+    const response = await app.inject({ method: 'POST', url: '/v1/system/ping', headers: systemHeaders });
 
     expect(response.statusCode).toBe(202);
     expect(response.json()).toEqual({ jobId: JOB_ID });
@@ -217,7 +419,7 @@ describe('POST /v1/system/ping', () => {
 
   it('returns 503 when the pipeline is not configured', async () => {
     const app = await buildApp(config);
-    const response = await app.inject({ method: 'POST', url: '/v1/system/ping' });
+    const response = await app.inject({ method: 'POST', url: '/v1/system/ping', headers: systemHeaders });
 
     expect(response.statusCode).toBe(503);
   });
@@ -235,7 +437,7 @@ describe('GET /v1/system/jobs/:id', () => {
 
   it('returns the job by id', async () => {
     const app = await buildApp(config, { systemJobs: createFakeService(job) });
-    const response = await app.inject({ method: 'GET', url: `/v1/system/jobs/${JOB_ID}` });
+    const response = await app.inject({ method: 'GET', url: `/v1/system/jobs/${JOB_ID}`, headers: systemHeaders });
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(job);
@@ -246,6 +448,7 @@ describe('GET /v1/system/jobs/:id', () => {
     const response = await app.inject({
       method: 'GET',
       url: '/v1/system/jobs/00000000-0000-0000-0000-000000000000',
+      headers: systemHeaders,
     });
 
     expect(response.statusCode).toBe(404);
@@ -253,7 +456,7 @@ describe('GET /v1/system/jobs/:id', () => {
 
   it('rejects a malformed job id', async () => {
     const app = await buildApp(config, { systemJobs: createFakeService(job) });
-    const response = await app.inject({ method: 'GET', url: '/v1/system/jobs/not-a-uuid' });
+    const response = await app.inject({ method: 'GET', url: '/v1/system/jobs/not-a-uuid', headers: systemHeaders });
 
     expect(response.statusCode).toBe(400);
   });
@@ -273,6 +476,7 @@ describe('POST /v1/system/chat', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/system/chat',
+      headers: systemHeaders,
       payload: { prompt: '你好' },
     });
 
@@ -299,6 +503,7 @@ describe('POST /v1/system/chat', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/system/chat',
+      headers: systemHeaders,
       payload: { prompt: '你好' },
     });
 
@@ -316,6 +521,7 @@ describe('POST /v1/system/chat', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/system/chat',
+      headers: systemHeaders,
       payload: { prompt: '你好' },
     });
 
@@ -328,6 +534,7 @@ describe('POST /v1/system/chat', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/system/chat',
+      headers: systemHeaders,
       payload: { prompt: '' },
     });
 
@@ -339,6 +546,7 @@ describe('POST /v1/system/chat', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/v1/system/chat',
+      headers: systemHeaders,
       payload: { prompt: '你好' },
     });
 

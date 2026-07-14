@@ -6,6 +6,7 @@ import '../../../design/design-system/styles.css';
 import './components/components.css';
 import './styles.css';
 import { App } from './App';
+import { AuthProvider } from './auth/AuthProvider';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -19,9 +20,11 @@ const queryClient = new QueryClient({
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
+      <AuthProvider>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </AuthProvider>
     </QueryClientProvider>
   </React.StrictMode>,
 );

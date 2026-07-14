@@ -1,12 +1,31 @@
-import { useQuery } from '@tanstack/react-query';
-import type { BookNormalizationStatus, SharedBookStatus } from '@readtailor/contracts';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type {
+  BookNormalizationStatus,
+  NormalizationFailureType,
+  SharedBookStatus,
+} from '@readtailor/contracts';
 import { Link, useParams } from 'react-router';
 import { EmptyState } from '../components/core/EmptyState';
 import { Kicker } from '../components/core/Kicker';
-import { getBookNormalizationStatus } from './api';
+import { getBookNormalizationStatus, retryBookNormalization } from './api';
 import { LibraryChrome } from './LibraryChrome';
 
 type Stage = 'uploaded' | 'fingerprinted' | 'queued' | 'normalizing' | 'validating' | 'publishing';
+
+// 只展示用户可理解的失败类型，不暴露内部报错；技术细节留在服务端日志。
+const failureCopy: Record<NormalizationFailureType, string> = {
+  timeout: '处理超时了，可以重试。',
+  validation_failed: '这本书的结构没能通过校验，可能是排版特殊或包含无法可靠解析的内容。',
+  external_error: '沙箱或模型服务出错了，可以重试。',
+  internal_error: '处理时出现内部错误，可以重试。',
+  stale_worker: '处理进程中断了，可以重试。',
+};
+
+function failureMessage(failureType: NormalizationFailureType | null): string {
+  return failureType
+    ? failureCopy[failureType]
+    : '可能是加密、DRM，或文件结构无法可靠解包。';
+}
 
 const steps: ReadonlyArray<{ key: Stage; label: string; cn: string; detail: string }> = [
   { key: 'uploaded', label: 'UPLOADED', cn: '已上传', detail: '文件已经安全写入对象存储。' },
@@ -50,15 +69,23 @@ export function ProcessingPage() {
             action={<button className="button button-ghost" type="button" onClick={() => void query.refetch()}>重新连接</button>}
           >{query.error.message}</EmptyState>
         ) : (
-          <ProcessingContent status={query.data} />
+          <ProcessingContent status={query.data} bookId={bookId} />
         )}
       </main>
     </LibraryChrome>
   );
 }
 
-function ProcessingContent({ status }: { status: BookNormalizationStatus }) {
+function ProcessingContent({ status, bookId }: { status: BookNormalizationStatus; bookId: string }) {
   const { book, run } = status;
+  const queryClient = useQueryClient();
+  const retry = useMutation({
+    mutationFn: () => retryBookNormalization(bookId),
+    onSuccess: () => {
+      // 重新排队后恢复轮询。
+      void queryClient.invalidateQueries({ queryKey: ['book-normalization', bookId] });
+    },
+  });
   const done = book.status === 'ready';
   const failed = book.status === 'failed';
   const currentRank = done ? steps.length : rankFor(book.status, run?.step);
@@ -110,15 +137,27 @@ function ProcessingContent({ status }: { status: BookNormalizationStatus }) {
       {done ? (
         <section className="processing-result" data-result="ready">
           <h2>规范化完成，硬校验已通过。</h2>
-          <p>这份不可变书籍包已经发布，可以被后续阅读流程稳定复用。</p>
-          <div><Link className="button button-primary" to={`/books/${book.id}/read`}>打开这本书</Link><Link className="text-button" to="/">返回书架</Link></div>
+          <p>这份不可变书籍包已经发布。回到书架后，会从这本书自己的访谈阶段开始。</p>
+          <div><Link className="button button-primary" to="/">回到书架，开始访谈</Link></div>
         </section>
       ) : null}
       {failed ? (
         <section className="processing-result" data-result="failed">
           <h2>这个版本暂时无法处理。</h2>
-          <p>{book.errorSummary || run?.errorSummary || attempt?.errorSummary || '可能是加密、DRM，或文件结构无法可靠解包。'}</p>
-          <div><Link className="button button-secondary" to="/books/import">重新上传</Link><Link className="text-button" to="/">返回书架</Link></div>
+          <p>{failureMessage(book.failureType)}</p>
+          {retry.isError ? <p className="processing-error">{retry.error.message}</p> : null}
+          <div>
+            <button
+              className="button button-primary"
+              type="button"
+              onClick={() => retry.mutate()}
+              disabled={retry.isPending}
+            >
+              {retry.isPending ? '正在重试…' : '重试'}
+            </button>
+            <Link className="button button-secondary" to="/books/import">重新上传</Link>
+            <Link className="text-button" to="/">返回书架</Link>
+          </div>
         </section>
       ) : null}
     </>

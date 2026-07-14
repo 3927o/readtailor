@@ -3,24 +3,57 @@ import { fileURLToPath } from 'node:url';
 import { createDatabase } from '@readtailor/database';
 import { createFakeModelEngine, createOpenAiCompatibleEngine } from '@readtailor/model';
 import {
+  createContentGenerationQueue,
   createNormalizationQueue,
   createSystemQueue,
   pingSystemQueue,
 } from '@readtailor/queue';
 import { createObjectStorage } from '@readtailor/storage';
 import { buildApp } from './app';
+import { createAuthService } from './auth';
 import { createBookImportService } from './book-imports';
 import { createBookService, createDatabaseBookRepository } from './books';
 import { loadApiConfig } from './config';
+import { createProfileService } from './profiles';
 import { createSystemChatService } from './system-chat';
 import { createSystemJobService } from './system-jobs';
+import {
+  createAgentReadingSetupEngine,
+  createFakeReadingSetupEngine,
+} from './reading-setup-engine';
+import { createUserBookService } from './user-books';
 
 const config = loadApiConfig();
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 const database = config.databaseUrl ? createDatabase(config.databaseUrl) : undefined;
+const googleVars = [config.googleClientId, config.googleClientSecret];
+if (googleVars.some(Boolean) && !googleVars.every(Boolean)) {
+  throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must both be configured');
+}
+const auth = database && config.authCookieSecret
+  ? createAuthService({
+      db: database.db,
+      oauthStateSecret: config.authCookieSecret,
+      developmentLoginEnabled: config.authDevelopmentEnabled,
+      sessionTtlMs: config.authSessionDays * 24 * 60 * 60 * 1000,
+      ...(config.googleClientId && config.googleClientSecret
+        ? {
+            google: {
+              clientId: config.googleClientId,
+              clientSecret: config.googleClientSecret,
+              redirectUri: config.googleRedirectUri,
+            },
+          }
+        : {}),
+    })
+  : undefined;
+const profiles = database ? createProfileService({ db: database.db }) : undefined;
 const systemQueue = config.redisUrl ? createSystemQueue(config.redisUrl) : undefined;
 const normalizationQueue = config.redisUrl ? createNormalizationQueue(config.redisUrl) : undefined;
+const contentGenerationQueue = config.redisUrl
+  ? createContentGenerationQueue(config.redisUrl)
+  : undefined;
 const objectStorage = createObjectStorage({
   localRoot: config.objectStorageLocalRoot
     ? resolve(repoRoot, config.objectStorageLocalRoot)
@@ -72,6 +105,38 @@ const bookImports =
         queue: normalizationQueue,
       })
     : undefined;
+const readingSetupEngine =
+  config.modelBaseUrl && config.modelApiKey && config.modelName
+    ? createAgentReadingSetupEngine({
+        apiBaseUrl: config.modelBaseUrl,
+        apiKey: config.modelApiKey,
+        modelName: config.modelName,
+      })
+    : createFakeReadingSetupEngine();
+const userBooks =
+  database && books && contentGenerationQueue
+    ? createUserBookService({
+        db: database.db,
+        books,
+        setupEngine: readingSetupEngine,
+        generations: {
+          async enqueue(input) {
+            await contentGenerationQueue.add(
+              'content.generate',
+              {
+                kind: 'content.generate',
+                generationId: input.generationId,
+                userBookId: input.userBookId,
+                scope: input.scope,
+                requestedAt: new Date().toISOString(),
+              },
+              { jobId: input.generationId },
+            );
+          },
+        },
+        modelConfigId: `${modelEngine.name}:tailoring-content-1.0`,
+      })
+    : undefined;
 
 const healthProbes: Record<string, () => Promise<void>> = {};
 if (database) {
@@ -96,6 +161,9 @@ const app = await buildApp(config, {
   healthProbes,
   books,
   bookImports,
+  userBooks,
+  auth,
+  profiles,
 });
 
 app.log.info({ model: modelEngine.name }, 'model engine ready');
@@ -114,6 +182,14 @@ if (!books) {
 if (!bookImports) {
   app.log.warn('book import disabled: DATABASE_URL, REDIS_URL and object storage are required');
 }
+if (!userBooks) {
+  app.log.warn(
+    'user book workflow disabled: DATABASE_URL, REDIS_URL and object storage are required',
+  );
+}
+if (!auth) {
+  app.log.warn('authentication disabled: DATABASE_URL and AUTH_COOKIE_SECRET are required');
+}
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, 'shutting down api');
@@ -122,6 +198,7 @@ const shutdown = async (signal: string) => {
   await app.close();
   await systemQueue?.close();
   await normalizationQueue?.close();
+  await contentGenerationQueue?.close();
   await database?.client.end({ timeout: 5 });
   process.exit(0);
 };

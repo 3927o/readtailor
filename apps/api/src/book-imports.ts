@@ -6,6 +6,7 @@ import {
   normalizationRuns,
   sharedBooks,
   sourceUploads,
+  userBooks,
   type Database,
 } from '@readtailor/database';
 import type { NormalizationQueue } from '@readtailor/queue';
@@ -49,11 +50,17 @@ function validateUpload(filename: string, mediaType: string, bytes: Uint8Array):
 }
 
 export interface BookImportService {
-  importBook(input: {
+  importBook(userId: string, input: {
     filename: string;
     mediaType: string;
     bytes: Uint8Array;
   }): Promise<ImportBookResponse>;
+  retryBook(userId: string, bookId: string): Promise<ImportBookResponse>;
+}
+
+interface PreparedNormalization {
+  response: ImportBookResponse;
+  enqueue: NormalizationJobPayload | null;
 }
 
 export function createBookImportService(options: {
@@ -61,8 +68,43 @@ export function createBookImportService(options: {
   storage: ObjectStorage;
   queue: NormalizationQueue;
 }): BookImportService {
+  // 入队；失败时回滚 run 与书籍为 failed，避免书籍卡在 queued 却没有任何任务在跑。
+  const enqueueNormalization = async (
+    prepared: PreparedNormalization,
+  ): Promise<ImportBookResponse> => {
+    if (!prepared.enqueue) return prepared.response;
+    const payload = prepared.enqueue;
+    try {
+      await options.queue.add('book.normalize', payload, { jobId: payload.runId });
+    } catch (error) {
+      const summary = error instanceof Error ? error.message : String(error);
+      await options.db.transaction(async (tx) => {
+        await tx
+          .update(normalizationRuns)
+          .set({
+            status: 'failed',
+            errorSummary: `failed to enqueue normalization: ${summary}`.slice(0, 2000),
+            failureType: 'internal_error',
+            completedAt: sql`now()`,
+          })
+          .where(eq(normalizationRuns.id, payload.runId));
+        await tx
+          .update(sharedBooks)
+          .set({
+            status: 'failed',
+            errorSummary: '规范化任务暂时无法启动',
+            failureType: 'internal_error',
+            updatedAt: sql`now()`,
+          })
+          .where(eq(sharedBooks.id, prepared.response.bookId));
+      });
+      throw error;
+    }
+    return prepared.response;
+  };
+
   return {
-    async importBook(input) {
+    async importBook(userId, input) {
       const filename = validateUpload(input.filename, input.mediaType, input.bytes);
       const epubSha256 = sha256(input.bytes);
       const sourceObjectKey = `uploads/by-sha256/${epubSha256}/source.epub`;
@@ -96,6 +138,14 @@ export function createBookImportService(options: {
           .where(eq(sharedBooks.epubSha256, epubSha256))
           .limit(1);
         if (!book) throw new Error('failed to create or load the shared book');
+
+        await tx
+          .insert(userBooks)
+          .values({ userId, sharedBookId: book.id })
+          .onConflictDoUpdate({
+            target: [userBooks.userId, userBooks.sharedBookId],
+            set: { deletedAt: null, purgeAfter: null, updatedAt: sql`now()` },
+          });
 
         if (book.status === 'ready' && book.currentPackageId) {
           return {
@@ -136,6 +186,7 @@ export function createBookImportService(options: {
           .values({
             id: randomUUID(),
             sharedBookId: book.id,
+            createdByUserId: userId,
             sourceObjectKey,
             sourceFilename: filename,
             mediaType: 'application/epub+zip',
@@ -173,6 +224,7 @@ export function createBookImportService(options: {
           .set({
             status: 'queued',
             errorSummary: null,
+            failureType: null,
             sourceFilename: filename,
             updatedAt: sql`now()`,
           })
@@ -194,30 +246,94 @@ export function createBookImportService(options: {
         };
       });
 
-      if (!prepared.enqueue) return prepared.response;
-      try {
-        await options.queue.add('book.normalize', prepared.enqueue, {
-          jobId: prepared.enqueue.runId,
+      return enqueueNormalization(prepared);
+    },
+
+    async retryBook(userId, bookId) {
+      const prepared = await options.db.transaction(async (tx): Promise<PreparedNormalization> => {
+        const [owned] = await tx
+          .select({ book: sharedBooks })
+          .from(userBooks)
+          .innerJoin(sharedBooks, eq(sharedBooks.id, userBooks.sharedBookId))
+          .where(and(
+            eq(userBooks.userId, userId),
+            eq(userBooks.sharedBookId, bookId),
+            sql`${userBooks.deletedAt} is null`,
+          ))
+          .limit(1);
+        if (!owned) throw new BookImportError('书籍不存在', 404);
+        const book = owned.book;
+
+        if (book.status === 'ready' && book.currentPackageId) {
+          return {
+            response: { bookId: book.id, runId: null, reused: true, status: book.status },
+            enqueue: null,
+          };
+        }
+
+        // 已经有任务在跑就直接复用，避免重复点击重试造成多个 run。
+        const [activeRun] = await tx
+          .select({ id: normalizationRuns.id })
+          .from(normalizationRuns)
+          .where(
+            and(
+              eq(normalizationRuns.sharedBookId, book.id),
+              eq(normalizationRuns.status, 'running'),
+            ),
+          )
+          .limit(1);
+        if (activeRun) {
+          return {
+            response: { bookId: book.id, runId: activeRun.id, reused: false, status: book.status },
+            enqueue: null,
+          };
+        }
+
+        // 源 EPUB 仍以不可变对象存在，重试无需重新上传文件，复用最近一次上传记录即可。
+        const [upload] = await tx
+          .select({ id: sourceUploads.id, sourceFilename: sourceUploads.sourceFilename })
+          .from(sourceUploads)
+          .where(eq(sourceUploads.sharedBookId, book.id))
+          .orderBy(desc(sourceUploads.createdAt))
+          .limit(1);
+        if (!upload) throw new BookImportError('找不到源文件，请重新上传', 409);
+
+        const [previousRun] = await tx
+          .select({ attempt: normalizationRuns.attempt })
+          .from(normalizationRuns)
+          .where(eq(normalizationRuns.sharedBookId, book.id))
+          .orderBy(desc(normalizationRuns.attempt))
+          .limit(1);
+        const runId = randomUUID();
+        await tx.insert(normalizationRuns).values({
+          id: runId,
+          sharedBookId: book.id,
+          sourceUploadId: upload.id,
+          status: 'running',
+          step: 'queued',
+          attempt: (previousRun?.attempt ?? 0) + 1,
         });
-      } catch (error) {
-        const summary = error instanceof Error ? error.message : String(error);
-        await options.db.transaction(async (tx) => {
-          await tx
-            .update(normalizationRuns)
-            .set({
-              status: 'failed',
-              errorSummary: `failed to enqueue normalization: ${summary}`.slice(0, 2000),
-              completedAt: sql`now()`,
-            })
-            .where(eq(normalizationRuns.id, prepared.enqueue!.runId));
-          await tx
-            .update(sharedBooks)
-            .set({ status: 'failed', errorSummary: '规范化任务暂时无法启动', updatedAt: sql`now()` })
-            .where(eq(sharedBooks.id, prepared.response.bookId));
-        });
-        throw error;
-      }
-      return prepared.response;
+        await tx
+          .update(sharedBooks)
+          .set({
+            status: 'queued',
+            errorSummary: null,
+            failureType: null,
+            updatedAt: sql`now()`,
+          })
+          .where(eq(sharedBooks.id, book.id));
+
+        return {
+          response: { bookId: book.id, runId, reused: false, status: 'queued' },
+          enqueue: {
+            kind: 'book.normalize',
+            runId,
+            requestedAt: new Date().toISOString(),
+          },
+        };
+      });
+
+      return enqueueNormalization(prepared);
     },
   };
 }

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import type {
   BookCatalogItem,
   BookNormalizationStatus,
@@ -11,6 +11,7 @@ import {
   normalizationAttempts,
   normalizationRuns,
   sharedBooks,
+  userBooks,
   type Database,
 } from '@readtailor/database';
 import {
@@ -27,12 +28,14 @@ export type ReadyBookRecord = SharedBook & {
 
 export interface BookRepository {
   getReadyBook(id: string): Promise<ReadyBookRecord | null>;
-  listBooks(): Promise<BookCatalogItem[]>;
+  listBooks(userId: string): Promise<BookCatalogItem[]>;
+  isOwnedBy(userId: string, id: string): Promise<boolean>;
   getNormalizationStatus(id: string): Promise<BookNormalizationStatus | null>;
 }
 
 export interface BookService {
-  listBooks(): Promise<BookCatalogItem[]>;
+  listBooks(userId: string): Promise<BookCatalogItem[]>;
+  canAccess(userId: string, id: string): Promise<boolean>;
   getNormalizationStatus(id: string): Promise<BookNormalizationStatus | null>;
   getBook(id: string): Promise<SharedBook | null>;
   getManifest(id: string): Promise<unknown | null>;
@@ -51,6 +54,7 @@ export function createDatabaseBookRepository(db: Database): BookRepository {
     coverPath: row.coverPath,
     sourceFilename: row.sourceFilename,
     errorSummary: row.errorSummary,
+    failureType: row.failureType,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   });
@@ -99,9 +103,26 @@ export function createDatabaseBookRepository(db: Database): BookRepository {
         profileSha256: row.profile.sha256,
       };
     },
-    async listBooks() {
-      const rows = await db.select().from(sharedBooks).orderBy(desc(sharedBooks.updatedAt));
-      return rows.map(catalogItem);
+    async listBooks(userId) {
+      const rows = await db
+        .select({ book: sharedBooks })
+        .from(userBooks)
+        .innerJoin(sharedBooks, eq(sharedBooks.id, userBooks.sharedBookId))
+        .where(and(eq(userBooks.userId, userId), isNull(userBooks.deletedAt)))
+        .orderBy(desc(sharedBooks.updatedAt));
+      return rows.map((row) => catalogItem(row.book));
+    },
+    async isOwnedBy(userId, id) {
+      const [row] = await db
+        .select({ id: userBooks.id })
+        .from(userBooks)
+        .where(and(
+          eq(userBooks.userId, userId),
+          eq(userBooks.sharedBookId, id),
+          isNull(userBooks.deletedAt),
+        ))
+        .limit(1);
+      return Boolean(row);
     },
     async getNormalizationStatus(id) {
       const [book] = await db.select().from(sharedBooks).where(eq(sharedBooks.id, id)).limit(1);
@@ -205,8 +226,11 @@ export function createBookService(options: {
   };
 
   return {
-    listBooks() {
-      return options.repository.listBooks();
+    listBooks(userId) {
+      return options.repository.listBooks(userId);
+    },
+    canAccess(userId, id) {
+      return options.repository.isOwnedBy(userId, id);
     },
     getNormalizationStatus(id) {
       return options.repository.getNormalizationStatus(id);
