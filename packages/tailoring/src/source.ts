@@ -170,6 +170,33 @@ export function extractNodeSourceFromHtml(
   return { structuredHtml, blocks: extractBlocks(structuredHtml), originalNotes };
 }
 
+// Single-parse plain-text projection of every reading node, keyed by (sectionId, segment) — the
+// same segmentation extractNodeSourceFromHtml resolves one node at a time, but computed for the
+// whole book in one pass so the 问 AI host can build a keyword search index without re-parsing
+// the document per node. Whitespace is collapsed; empty segments are dropped.
+export function extractNodeTexts(
+  rawHtml: string,
+): Array<{ sectionId: string; segment: number; text: string }> {
+  const $ = load(rawHtml, { xmlMode: false });
+  const results: Array<{ sectionId: string; segment: number; text: string }> = [];
+  const seen = new Set<string>();
+  $('section[id]').each((_index, element) => {
+    const sectionId = $(element).attr('id');
+    // extractNodeSourceFromHtml resolves a sectionId to the first matching <section>; mirror
+    // that here by keeping only the first occurrence of each id.
+    if (!sectionId || seen.has(sectionId)) return;
+    seen.add(sectionId);
+    ownedSegments($, $(element)).forEach((segmentHtml, index) => {
+      const text = load(`<div id="rt-node-text">${segmentHtml}</div>`)('#rt-node-text')
+        .text()
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (text) results.push({ sectionId, segment: index + 1, text });
+    });
+  });
+  return results;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll('&', '&amp;')

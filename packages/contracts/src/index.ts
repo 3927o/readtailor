@@ -405,7 +405,10 @@ export const TrialCandidateSchema = Type.Object({
 });
 export type TrialCandidate = Static<typeof TrialCandidateSchema>;
 
-export const StrategySchema = Type.Object({
+// The tailoring core shared by the full setup Strategy (which adds trialCandidates) and the
+// Q&A ProposedStrategy (§8.2 — a mid-reading adjustment has no trial phase). Camel-cased
+// persistence shape; the host projects the agent's snake_case output onto it (see mapStrategy).
+const STRATEGY_CORE = {
   goals: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
   expressionPrinciples: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
   guide: Type.Object({
@@ -421,6 +424,10 @@ export const StrategySchema = Type.Object({
     enabled: Type.Boolean(),
     objectives: Type.Array(Type.String({ minLength: 1 })),
   }),
+};
+
+export const StrategySchema = Type.Object({
+  ...STRATEGY_CORE,
   trialCandidates: Type.Array(TrialCandidateSchema, { minItems: 3, maxItems: 3 }),
 });
 export type Strategy = Static<typeof StrategySchema>;
@@ -437,6 +444,102 @@ export const BriefingSchema = Type.Object({
   readingAdvice: Type.String(),
 });
 export type Briefing = Static<typeof BriefingSchema>;
+
+// A reading-strategy change proposed by the 问 AI Agent mid-reading (§8.2): the setup
+// Strategy without trialCandidates. Persisted in strategy_change_proposals.proposed_strategy
+// until the user confirms it, at which point the host promotes it to a strategy_versions row.
+export const ProposedStrategySchema = Type.Object(STRATEGY_CORE);
+export type ProposedStrategy = Static<typeof ProposedStrategySchema>;
+
+// 问 AI 会话状态 (§8): a session is one question thread (initial + follow-ups); it stays
+// `active` while the user can keep asking, and is `closed` once the thread is abandoned/ended.
+export const QaSessionStatusSchema = Type.Union([
+  Type.Literal('active'),
+  Type.Literal('closed'),
+]);
+export type QaSessionStatus = Static<typeof QaSessionStatusSchema>;
+
+// A propose_strategy_change proposal's lifecycle (§8.2, decision B+b): created `pending`; the
+// user's confirm promotes it to `confirmed`; an explicit reject makes it `rejected`; a newer
+// proposal in the same book supersedes an older still-pending one (`superseded`).
+export const StrategyChangeProposalStatusSchema = Type.Union([
+  Type.Literal('pending'),
+  Type.Literal('confirmed'),
+  Type.Literal('rejected'),
+  Type.Literal('superseded'),
+]);
+export type StrategyChangeProposalStatus = Static<typeof StrategyChangeProposalStatusSchema>;
+
+// ── 问 AI (§8) wire types ────────────────────────────────────────────────────
+
+// The anchor a 问 AI question is asked against: either a highlighted selection or the whole
+// on-screen node. Captured once when the thread starts, persisted on qa_sessions and replayed
+// to the agent each turn (get_question_context). `sectionId`/`segment` locate the reader's node.
+export const QaQuestionContextSchema = Type.Object({
+  anchor: Type.Union([Type.Literal('highlight'), Type.Literal('screen')]),
+  sectionId: Type.String({ minLength: 1 }),
+  segment: Type.Integer({ minimum: 1 }),
+  // Present when anchor === 'highlight': the exact text the reader selected.
+  highlightedText: Type.Optional(Type.String({ minLength: 1, maxLength: 8000 })),
+});
+export type QaQuestionContext = Static<typeof QaQuestionContextSchema>;
+
+// POST /v1/user-books/:id/qa — start a new question thread (omit `sessionId`; `context`
+// required) or ask a follow-up in an existing thread (`sessionId` set; `context` ignored — the
+// thread keeps its original anchor). `idempotencyKey` dedupes a retried question in its thread.
+export const AskQuestionRequestSchema = Type.Object({
+  sessionId: Type.Optional(Type.String({ minLength: 1 })),
+  question: Type.String({ minLength: 1, maxLength: 4000 }),
+  context: Type.Optional(QaQuestionContextSchema),
+  idempotencyKey: Type.String({ minLength: 1, maxLength: 200 }),
+});
+export type AskQuestionRequest = Static<typeof AskQuestionRequestSchema>;
+
+// SSE wire events for the streaming 问 AI endpoint (§8). Each frame is `data: <json>\n\n` with
+// the discriminator in `type`, mirroring InterviewStreamEvent (a hand-maintained union, since
+// the stream bypasses Fastify serialization). `session` is emitted first so the client learns
+// the thread id for follow-ups; `answer_delta` streams the answer text; `proposal` fires when
+// the agent submits a (pending, read-only) strategy-change proposal; `profile_updated` when it
+// patches the long-term profile; `done` ends the turn; `error` reports an in-band failure.
+export type QaStreamEvent =
+  | { type: 'session'; sessionId: string; conversationVersion: number }
+  | { type: 'answer_delta'; chars: string }
+  | { type: 'proposal'; publicSummary: string }
+  | { type: 'profile_updated' }
+  | { type: 'done'; sessionId: string; messageId: string }
+  | { type: 'error'; message: string };
+
+export const QaMessageSchema = Type.Object({
+  id: Type.String(),
+  sequence: Type.Integer({ minimum: 1 }),
+  role: Type.Union([Type.Literal('user'), Type.Literal('assistant')]),
+  kind: Type.Union([Type.Literal('question'), Type.Literal('answer')]),
+  content: Type.String(),
+  createdAt: Type.String(),
+});
+export type QaMessage = Static<typeof QaMessageSchema>;
+
+// The thread's active proposal, if any — display-only in the read-only loop (no confirm
+// endpoint yet). `id` is the persisted strategy_change_proposals row for a future confirm flow.
+export const QaProposalSummarySchema = Type.Object({
+  id: Type.String(),
+  status: StrategyChangeProposalStatusSchema,
+  publicSummary: Type.String(),
+  createdAt: Type.String(),
+});
+export type QaProposalSummary = Static<typeof QaProposalSummarySchema>;
+
+// GET /v1/user-books/:id/qa/:sessionId — the persisted transcript of one question thread, for
+// reload/history. `proposal` is the thread's latest proposal (null when none was made).
+export const QaSessionResponseSchema = Type.Object({
+  sessionId: Type.String(),
+  status: QaSessionStatusSchema,
+  conversationVersion: Type.Integer({ minimum: 0 }),
+  questionContext: QaQuestionContextSchema,
+  messages: Type.Array(QaMessageSchema),
+  proposal: Type.Union([QaProposalSummarySchema, Type.Null()]),
+});
+export type QaSessionResponse = Static<typeof QaSessionResponseSchema>;
 
 export const StrategyDraftStatusSchema = Type.Union([
   Type.Literal('draft'),

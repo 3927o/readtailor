@@ -28,6 +28,7 @@ export { comparePoints, rangeContains, rangesEqual, validateGenerationInput } fr
 export {
   extractBlocks,
   extractNodeSourceFromHtml,
+  extractNodeTexts,
   sliceNodeSource,
   type ExtractedNodeSource,
 } from './source';

@@ -15,6 +15,7 @@ import {
   AdoptTrialResponseSchema,
   ApproveStrategyRequestSchema,
   ApproveStrategyResponseSchema,
+  AskQuestionRequestSchema,
   CreateHighlightRequestSchema,
   DeleteHighlightResponseSchema,
   DevelopmentLoginRequestSchema,
@@ -33,6 +34,8 @@ import {
   MarkTrialSegmentViewedRequestSchema,
   PasswordLoginRequestSchema,
   PasswordRegisterRequestSchema,
+  type QaStreamEvent,
+  QaSessionResponseSchema,
   ReaderBootstrapSchema,
   ReaderFocusRequestSchema,
   ReaderProfileOnboardingRequestSchema,
@@ -686,6 +689,73 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
         .header('cache-control', 'no-cache')
         .header('x-accel-buffering', 'no')
         .send(Readable.from(withHeartbeat(toSse(), 15_000)));
+    },
+  );
+
+  // 问 AI（阶段6）：发起提问或追问，SSE 流式回答。响应绕过序列化，故不声明 response schema。
+  // 首个事件是 session（携带 sessionId 供追问）；随后是 answer_delta / proposal / profile_updated；
+  // 以 done 或 error 收尾。开流前（校验、落库）的失败仍以 HTTP 错误码返回。
+  app.post(
+    '/v1/user-books/:id/qa',
+    {
+      schema: {
+        params: userBookIdParams,
+        body: AskQuestionRequestSchema,
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      const events = deps.userBooks
+        .forUser(request.authUser!.id)
+        .streamQaAnswer(request.params.id, request.body);
+
+      let first: IteratorResult<QaStreamEvent>;
+      try {
+        first = await events.next();
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+
+      const encode = (event: QaStreamEvent) => `data: ${JSON.stringify(event)}\n\n`;
+      const toSse = async function* (): AsyncGenerator<string> {
+        try {
+          if (!first.done) yield encode(first.value);
+          for await (const event of events) yield encode(event);
+        } catch (error) {
+          request.log.error({ err: error }, 'qa answer stream failed');
+          yield encode({ type: 'error', message: '问答处理失败' });
+        }
+      };
+
+      return reply
+        .type('text/event-stream')
+        .header('cache-control', 'no-cache')
+        .header('x-accel-buffering', 'no')
+        .send(Readable.from(withHeartbeat(toSse(), 15_000)));
+    },
+  );
+
+  // 问 AI 会话转录（重载/历史）。
+  app.get(
+    '/v1/user-books/:id/qa/:sessionId',
+    {
+      schema: {
+        params: Type.Object({
+          id: Type.String({ pattern: UUID_PATTERN }),
+          sessionId: Type.String({ pattern: UUID_PATTERN }),
+        }),
+        response: { 200: QaSessionResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks
+          .forUser(request.authUser!.id)
+          .qaSession(request.params.id, request.params.sessionId);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
     },
   );
 

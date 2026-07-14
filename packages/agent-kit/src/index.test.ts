@@ -4,13 +4,17 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   completeJson,
   createInterviewStreamParser,
+  reconstructAskAiHistory,
   reconstructReadingSetupHistory,
+  runAskAiAgent,
   runNormalizationAgent,
   runReadingSetupAgent,
   type AgentTraceEvent,
+  type AskAiToolbox,
   type InterviewStreamDelta,
   type NormalizationAgentToolbox,
   type NormalizationFinishBinding,
+  type StrategyChangeProposal,
 } from './index';
 
 // Splits a JSON string into arbitrary chunks so the parser is exercised the way the model
@@ -463,5 +467,232 @@ describe('createInterviewStreamParser', () => {
     parser.onToolStart(''); // provider withheld the name on toolcall_start
     for (const part of chunk(question, 3)) parser.onDelta(part);
     expect(reassemble(events).ack).toBe('好，我记下了。');
+  });
+});
+
+// A scripted turn from the fake OpenAI-compatible model: either a single tool call or a
+// streamed text answer split into content chunks. One script is consumed per HTTP request,
+// so `[tool, text]` drives the real two-turn non-terminating loop (tool → answer).
+type TurnScript =
+  | { kind: 'tool'; name: string; arguments: string }
+  | { kind: 'text'; chunks: string[] };
+
+async function startAskAiServer(scripts: TurnScript[]): Promise<string> {
+  const queue = [...scripts];
+  const base = { id: 'chatcmpl-askai', object: 'chat.completion.chunk', created: 0, model: 'fake-tool-model' };
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+    const script = queue.shift();
+    if (!script) {
+      // No more scripted turns: end the stream with no delta so the agent stops.
+      response.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`);
+      response.end('data: [DONE]\n\n');
+      return;
+    }
+    if (script.kind === 'tool') {
+      response.write(`data: ${JSON.stringify({
+        ...base,
+        choices: [{
+          index: 0,
+          delta: { role: 'assistant', tool_calls: [{ index: 0, id: `call-${script.name}`, type: 'function', function: { name: script.name, arguments: script.arguments } }] },
+          finish_reason: null,
+        }],
+      })}\n\n`);
+      response.write(`data: ${JSON.stringify({
+        ...base,
+        choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+      })}\n\n`);
+      response.end('data: [DONE]\n\n');
+      return;
+    }
+    let first = true;
+    for (const piece of script.chunks) {
+      const delta = first ? { role: 'assistant', content: piece } : { content: piece };
+      first = false;
+      response.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
+    }
+    response.write(`data: ${JSON.stringify({
+      ...base,
+      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    })}\n\n`);
+    response.end('data: [DONE]\n\n');
+  });
+  servers.push(server);
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('test server did not bind');
+  return `http://127.0.0.1:${address.port}/v1`;
+}
+
+function stubAskAiToolbox(overrides: Partial<AskAiToolbox> = {}): AskAiToolbox {
+  const unavailable = async () => {
+    throw new Error('unexpected tool call');
+  };
+  return {
+    getQuestionContext: async () => ({ text: '划线：某段原文' }),
+    getBookOutline: unavailable,
+    readBookNode: unavailable,
+    searchBook: unavailable,
+    getOriginalNotes: unavailable,
+    getReaderContext: unavailable,
+    updateReaderProfile: unavailable,
+    proposeStrategyChange: unavailable,
+    ...overrides,
+  };
+}
+
+const sampleProposal: StrategyChangeProposal = {
+  public_summary: '建议在概念密集处增加更细致的解释，并放宽注释克制度。',
+  strategy: {
+    goals: ['在关键概念处加强解释，降低理解门槛'],
+    expression_principles: ['保持原文完整，仅在确有理解价值处补充'],
+    guide: { enabled: true, objectives: ['开始前交代当前位置与重点'] },
+    annotations: { enabled: true, focuses: ['解释关键概念与背景'], exclusions: ['不复述已清楚的原文'] },
+    after_reading: { enabled: false, objectives: [] },
+  },
+};
+
+describe('runAskAiAgent', () => {
+  it('runs the non-terminating loop: a read tool, then a final streamed answer', async () => {
+    const apiBaseUrl = await startAskAiServer([
+      { kind: 'tool', name: 'search_book', arguments: JSON.stringify({ query: '主题' }) },
+      { kind: 'text', chunks: ['这本书的', '核心主题是', '一致性。'] },
+    ]);
+    const deltas: string[] = [];
+    let searched: unknown;
+    const outcome = await runAskAiAgent({
+      apiBaseUrl,
+      apiKey: 'test-key',
+      modelName: 'fake-tool-model',
+      sessionId: 'qa-search',
+      question: '这本书讲什么？',
+      context: {},
+      toolbox: stubAskAiToolbox({
+        searchBook: async (input) => {
+          searched = input;
+          return { text: '命中：主题相关段落' };
+        },
+      }),
+      timeoutMs: 5000,
+      onAnswerDelta: (chars) => deltas.push(chars),
+    });
+
+    expect(outcome.answer).toBe('这本书的核心主题是一致性。');
+    expect(deltas.join('')).toBe('这本书的核心主题是一致性。');
+    expect(searched).toEqual({ query: '主题' });
+    expect(outcome.turns).toBe(2);
+    expect(outcome.toolCalls).toBe(1);
+    expect(outcome.patchedProfile).toBe(false);
+    expect(outcome.proposedStrategyChange).toBeUndefined();
+  });
+
+  it('fires onProposal and captures the proposal without terminating the answer', async () => {
+    const apiBaseUrl = await startAskAiServer([
+      { kind: 'tool', name: 'propose_strategy_change', arguments: JSON.stringify(sampleProposal) },
+      { kind: 'text', chunks: ['我已经把调整建议提交给你确认。'] },
+    ]);
+    const proposals: StrategyChangeProposal[] = [];
+    let persisted: unknown;
+    const outcome = await runAskAiAgent({
+      apiBaseUrl,
+      apiKey: 'test-key',
+      modelName: 'fake-tool-model',
+      sessionId: 'qa-proposal',
+      question: '能不能多解释一点？',
+      context: {},
+      toolbox: stubAskAiToolbox({
+        proposeStrategyChange: async (proposal) => {
+          persisted = proposal;
+          return { text: '已提交，等待用户确认。' };
+        },
+      }),
+      timeoutMs: 5000,
+      onProposal: (payload) => {
+        proposals.push(payload);
+      },
+    });
+
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toEqual(sampleProposal);
+    expect(persisted).toEqual(sampleProposal);
+    expect(outcome.proposedStrategyChange).toEqual(sampleProposal);
+    expect(outcome.answer).toBe('我已经把调整建议提交给你确认。');
+    expect(outcome.toolCalls).toBe(1);
+  });
+
+  it('answers directly in one turn when no tool is needed', async () => {
+    const apiBaseUrl = await startAskAiServer([
+      { kind: 'text', chunks: ['这是一个直接回答。'] },
+    ]);
+    const outcome = await runAskAiAgent({
+      apiBaseUrl,
+      apiKey: 'test-key',
+      modelName: 'fake-tool-model',
+      sessionId: 'qa-direct',
+      question: '你好',
+      context: {},
+      toolbox: stubAskAiToolbox(),
+      timeoutMs: 5000,
+    });
+
+    expect(outcome.answer).toBe('这是一个直接回答。');
+    expect(outcome.turns).toBe(1);
+    expect(outcome.toolCalls).toBe(0);
+  });
+});
+
+describe('reconstructAskAiHistory', () => {
+  const roleOf = (message: unknown): unknown => (message as { role?: unknown }).role;
+  const textOf = (message: unknown): string => {
+    const content = (message as { content?: unknown }).content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) return content.map((part) => (part as { text?: unknown }).text ?? '').join('');
+    return '';
+  };
+
+  it('leads with the question context, replays prior turns, and appends a pending proposal', () => {
+    const history = reconstructAskAiHistory(
+      {
+        questionContext: { mode: 'highlight', text: '某段原文', sectionId: 'ch1', segment: 2 },
+        messages: [
+          { role: 'user', content: '这段什么意思？' },
+          { role: 'assistant', content: '这段是说……' },
+          { role: 'assistant', content: '   ' },
+        ],
+        proposal: { status: 'pending', public_summary: '建议增加更细的解释' },
+      },
+      'fake-model',
+    );
+
+    // The blank assistant turn is dropped so it can't desync the reconstruction.
+    expect(history.map(roleOf)).toEqual(['user', 'user', 'assistant', 'assistant']);
+    expect(textOf(history[0])).toContain('【提问上下文】');
+    expect(textOf(history[0])).toContain('"sectionId": "ch1"');
+    expect((history[2] as { model?: string }).model).toBe('fake-model');
+    const proposalTurn = history.at(-1);
+    expect(roleOf(proposalTurn)).toBe('assistant');
+    expect(textOf(proposalTurn)).toContain('建议增加更细的解释');
+    expect(textOf(proposalTurn)).toContain('等待用户确认');
+  });
+
+  it('renders a confirmed proposal and a feedback proposal distinctly', () => {
+    const confirmed = reconstructAskAiHistory(
+      { proposal: { status: 'confirmed', public_summary: '放宽注释克制度' } },
+      'fake-model',
+    );
+    expect(textOf(confirmed.at(-1))).toContain('用户已确认此调整');
+
+    const withFeedback = reconstructAskAiHistory(
+      { proposal: { status: 'pending', public_summary: '放宽注释克制度', feedback: '再克制一点' } },
+      'fake-model',
+    );
+    expect(textOf(withFeedback.at(-1))).toContain('反馈：再克制一点');
+  });
+
+  it('returns an empty history when there is no context', () => {
+    expect(reconstructAskAiHistory({}, 'fake-model')).toEqual([]);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseTailoringModelResponse } from './parser';
-import { extractNodeSourceFromHtml, sliceNodeSource } from './source';
+import { extractNodeSourceFromHtml, extractNodeTexts, sliceNodeSource } from './source';
 
 const html = `<!doctype html><html><body><main id="book" data-type="book">
   <section id="bodymatter" data-role="bodymatter">
@@ -30,6 +30,19 @@ describe('normalized book source extraction', () => {
     expect(first.structuredHtml).not.toContain('子节正文');
     expect(second.blocks.map((block) => block.text)).toEqual(['父节点第二段']);
     expect(first.originalNotes).toEqual([{ id: 'note-1', html: '<p>原书注</p>' }]);
+  });
+
+  it('projects every node to whitespace-collapsed text keyed by (sectionId, segment)', () => {
+    const texts = extractNodeTexts(html);
+    const byKey = new Map(texts.map((node) => [`${node.sectionId}#${node.segment}`, node.text]));
+
+    // Segmentation matches extractNodeSourceFromHtml: chapter-1 has two segments split by the
+    // nested section boundary; headings are dropped.
+    expect(byKey.get('chapter-1#1')).toContain('甲关键乙');
+    expect(byKey.get('chapter-1#1')).toContain('段落条目');
+    expect(byKey.get('chapter-1#1')).not.toContain('第一章');
+    expect(byKey.get('chapter-1#2')).toBe('父节点第二段');
+    expect(byKey.get('section-1#1')).toBe('子节正文');
   });
 
   it('slices a continuous trial range while retaining stable block indexes', () => {

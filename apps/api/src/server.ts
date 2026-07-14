@@ -23,6 +23,7 @@ import {
   createAgentReadingSetupEngine,
   createFakeReadingSetupEngine,
 } from './reading-setup-engine';
+import { createAgentAskAiEngine, createFakeAskAiEngine } from './ask-ai-engine';
 import { createUserBookService } from './user-books';
 
 const config = loadApiConfig();
@@ -117,12 +118,21 @@ const readingSetupEngine = readingSetupEndpoint
       ...(perfSink ? { perfSink } : {}),
     })
   : createFakeReadingSetupEngine();
+const askAiEndpoint = requireCompleteModelEndpoint(config.askAiModel, 'ask-ai');
+const askAiEngine = askAiEndpoint
+  ? createAgentAskAiEngine({
+      apiBaseUrl: askAiEndpoint.baseUrl,
+      apiKey: askAiEndpoint.apiKey,
+      modelName: askAiEndpoint.modelName,
+    })
+  : createFakeAskAiEngine();
 const userBooks =
   database && books && contentGenerationQueue
     ? createUserBookService({
         db: database.db,
         books,
         setupEngine: readingSetupEngine,
+        askAiEngine,
         generations: {
           async enqueue(input) {
             // Job id === generationId, so a repeat add for an already-known job is a no-op

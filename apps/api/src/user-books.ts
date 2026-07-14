@@ -5,6 +5,7 @@ import type {
   AdoptTrialResponse,
   ApproveStrategyRequest,
   ApproveStrategyResponse,
+  AskQuestionRequest,
   BookReaderProfile,
   Briefing,
   CreateHighlightRequest,
@@ -20,6 +21,10 @@ import type {
   MarkReadNodeRequest,
   MarkReadNodeResponse,
   MarkTrialSegmentViewedRequest,
+  ProposedStrategy,
+  QaQuestionContext,
+  QaSessionResponse,
+  QaStreamEvent,
   ReaderBootstrap,
   ReaderFocusRequest,
   ReaderPosition,
@@ -56,6 +61,8 @@ import {
   interviewMessages,
   interviewSessions,
   nodeGenerations,
+  qaMessages,
+  qaSessions,
   readerProfiles,
   readerProfileVersions,
   readerReadNodes,
@@ -64,6 +71,7 @@ import {
   readingDailyBookStats,
   readingSessions,
   sharedBooks,
+  strategyChangeProposals,
   strategyDraftVersions,
   strategyVersions,
   trialRevisions,
@@ -72,7 +80,13 @@ import {
   userReadingSettings,
   type Database,
 } from '@readtailor/database';
-import { extractNodeSourceFromHtml, sliceNodeSource } from '@readtailor/tailoring';
+import type {
+  AskAiOutcome,
+  AskAiToolbox,
+  ReaderProfilePatch,
+} from '@readtailor/agent-kit';
+import { extractNodeSourceFromHtml, extractNodeTexts, sliceNodeSource } from '@readtailor/tailoring';
+import type { AskAiEngine } from './ask-ai-engine';
 import type { BookService } from './books';
 import type { ReadingSetupEngine } from './reading-setup-engine';
 
@@ -648,6 +662,32 @@ function mapStrategy(value: {
   };
 }
 
+// The 问 AI strategy-change proposal (§8.2) is the tailoring core without trial_candidates — a
+// mid-reading adjustment has no trial phase. Same snake_case → camelCase projection as
+// mapStrategy, minus that field. Persisted as strategy_change_proposals.proposed_strategy.
+function mapProposedStrategy(value: {
+  goals: string[];
+  expression_principles: string[];
+  guide: { enabled: boolean; objectives: string[] };
+  annotations: { enabled: boolean; focuses: string[]; exclusions: string[] };
+  after_reading: { enabled: boolean; objectives: string[] };
+}): ProposedStrategy {
+  return {
+    goals: value.goals,
+    expressionPrinciples: value.expression_principles,
+    guide: { enabled: value.guide.enabled, objectives: value.guide.objectives },
+    annotations: {
+      enabled: value.annotations.enabled,
+      focuses: value.annotations.focuses,
+      exclusions: value.annotations.exclusions,
+    },
+    afterReading: {
+      enabled: value.after_reading.enabled,
+      objectives: value.after_reading.objectives,
+    },
+  };
+}
+
 function chapterPath(node: ManifestNode, outline: ManifestOutline[]): string[] {
   const byId = new Map(outline.map((item) => [item.section_id, item]));
   const path: string[] = [];
@@ -764,6 +804,7 @@ type UserBookServiceOptions = {
   db: Database;
   books: BookService;
   setupEngine: ReadingSetupEngine;
+  askAiEngine: AskAiEngine;
   generations: ContentGenerationEnqueuer;
   modelConfigId: string;
 };
@@ -1815,6 +1856,458 @@ function createUserBookServiceForUser(
     };
   };
 
+  // ── 问 AI (§8) — read-only Q&A loop ──────────────────────────────────────────
+  // Each HTTP request runs one conversational turn; the thread history is rebuilt from
+  // qa_messages every turn (stateless-resume, §2.4). The agent may patch the long-term reader
+  // profile and record a *pending* strategy-change proposal — but the read-only loop never lands
+  // it (no new strategy_version, no regeneration; see 步骤 4 暂缓 in docs/project/phase6_ask_ai.md).
+
+  // §8.1 update_reader_profile: union-merge the patch into a new reader_profile_versions row
+  // (changeSource 'question_answer'). Same shape as the interview patch (saveSetupOutcome) but
+  // standalone. Returns whether anything changed.
+  const applyReaderProfilePatch = async (patch: ReaderProfilePatch): Promise<boolean> => {
+    if (!patch.knowledge?.length && !patch.explanation_preferences?.length) return false;
+    return db.transaction(async (tx) => {
+      const [reader] = await tx
+        .select({ profile: readerProfiles, version: readerProfileVersions })
+        .from(readerProfiles)
+        .innerJoin(readerProfileVersions, eq(readerProfileVersions.id, readerProfiles.currentVersionId))
+        .where(eq(readerProfiles.userId, userId))
+        .limit(1);
+      if (!reader) return false;
+      const nextProfile: ReaderProfile = {
+        ...reader.version.profile,
+        knowledge: [...new Set([...reader.version.profile.knowledge, ...(patch.knowledge ?? [])])],
+        explanationPreferences: [
+          ...new Set([
+            ...reader.version.profile.explanationPreferences,
+            ...(patch.explanation_preferences ?? []),
+          ]),
+        ],
+      };
+      const [nextVersion] = await tx
+        .insert(readerProfileVersions)
+        .values({
+          readerProfileId: reader.profile.id,
+          version: reader.version.version + 1,
+          profile: nextProfile,
+          changeSource: 'question_answer',
+        })
+        .returning();
+      if (!nextVersion) return false;
+      await tx
+        .update(readerProfiles)
+        .set({ currentVersionId: nextVersion.id, updatedAt: new Date() })
+        .where(eq(readerProfiles.id, reader.profile.id));
+      return true;
+    });
+  };
+
+  // Per-request toolbox bound to this book's manifest/HTML and the thread's anchor. Read tools
+  // reuse extractNodeSourceFromHtml / extractNodeTexts; there is no spoiler guard by design
+  // (§8.2 — Q&A may read ahead). propose_strategy_change only validates + acknowledges here; the
+  // pending row is written atomically with the answer in saveQaAnswer (so a failed turn leaves
+  // no orphan proposal), and the module surfaces the proposal via the outcome + onProposal.
+  const buildAskAiToolbox = (
+    owned: { userBook: typeof userBooks.$inferSelect },
+    questionContext: QaQuestionContext,
+    manifest: ReadingManifest,
+    html: string,
+  ): AskAiToolbox => {
+    const nodeByKey = new Map(
+      manifest.nodes.map((node) => [`${node.section_id}\0${node.segment}`, node] as const),
+    );
+    const nodeTitle = (sectionId: string, segment: number) =>
+      nodeByKey.get(`${sectionId}\0${segment}`)?.title ?? '';
+    const outlineNode = (node: ManifestNode) => ({
+      section_id: node.section_id,
+      segment: node.segment,
+      order: node.order,
+      title: node.title ?? '',
+      tailoring_eligible: node.tailoring_eligible,
+    });
+    // Built once per request, lazily — only if search_book is actually called (one full parse).
+    let searchIndex: Array<{ sectionId: string; segment: number; text: string }> | null = null;
+    const ensureSearchIndex = () => {
+      if (!searchIndex) {
+        const keys = new Set(nodeByKey.keys());
+        searchIndex = extractNodeTexts(html).filter((node) =>
+          keys.has(`${node.sectionId}\0${node.segment}`),
+        );
+      }
+      return searchIndex;
+    };
+    const readNodeText = (sectionId: string, segment: number, maxCharacters: number): string => {
+      const source = extractNodeSourceFromHtml(html, sectionId, segment);
+      const text = source.blocks.map((block) => block.text).join('\n\n').trim();
+      return text.length > maxCharacters ? `${text.slice(0, maxCharacters)}…（已截断）` : text;
+    };
+    return {
+      async getQuestionContext() {
+        const { sectionId, segment, anchor, highlightedText } = questionContext;
+        const title = nodeTitle(sectionId, segment);
+        let nodeText: string;
+        try {
+          nodeText = readNodeText(sectionId, segment, 6000);
+        } catch {
+          nodeText = '（无法读取当前节点原文）';
+        }
+        const lines = [
+          `锚点类型：${anchor === 'highlight' ? '用户划线' : '当前屏幕'}`,
+          `所在节点：section_id=${sectionId} segment=${segment}${title ? ` 标题=${title}` : ''}`,
+        ];
+        if (anchor === 'highlight' && highlightedText) lines.push(`划线文本：\n${highlightedText}`);
+        lines.push(`当前节点原文：\n${nodeText}`);
+        return { text: lines.join('\n\n') };
+      },
+      async getBookOutline(input) {
+        const offset = input.offset ?? 0;
+        const limit = input.limit ?? 100;
+        return {
+          text: JSON.stringify(
+            {
+              ...(offset === 0 ? { outline: manifest.outline } : {}),
+              nodes: manifest.nodes.slice(offset, offset + limit).map(outlineNode),
+              offset,
+              next_offset: offset + limit < manifest.nodes.length ? offset + limit : null,
+              total: manifest.nodes.length,
+            },
+            null,
+            2,
+          ),
+        };
+      },
+      async readBookNode(input) {
+        try {
+          const text = readNodeText(input.sectionId, input.segment, input.maxCharacters ?? 6000);
+          const title = nodeTitle(input.sectionId, input.segment);
+          return { text: `${title ? `【${title}】\n` : ''}${text}` };
+        } catch {
+          return { text: `未找到节点 section_id=${input.sectionId} segment=${input.segment}` };
+        }
+      },
+      async searchBook(input) {
+        const query = input.query.trim();
+        if (!query) return { text: '（查询为空）' };
+        const limit = Math.min(input.limit ?? 20, 50);
+        const needle = query.toLowerCase();
+        const hits: Array<{ section_id: string; segment: number; title: string; snippet: string }> = [];
+        for (const node of ensureSearchIndex()) {
+          const at = node.text.toLowerCase().indexOf(needle);
+          if (at === -1) continue;
+          const start = Math.max(0, at - 60);
+          const end = Math.min(node.text.length, at + needle.length + 60);
+          hits.push({
+            section_id: node.sectionId,
+            segment: node.segment,
+            title: nodeTitle(node.sectionId, node.segment),
+            snippet: `${start > 0 ? '…' : ''}${node.text.slice(start, end)}${end < node.text.length ? '…' : ''}`,
+          });
+          if (hits.length >= limit) break;
+        }
+        return { text: JSON.stringify({ query, total: hits.length, hits }, null, 2) };
+      },
+      async getOriginalNotes(input) {
+        const sectionId = input.sectionId ?? questionContext.sectionId;
+        const segment = input.segment ?? questionContext.segment;
+        try {
+          const { originalNotes } = extractNodeSourceFromHtml(html, sectionId, segment);
+          if (originalNotes.length === 0) {
+            return { text: `节点 ${sectionId}#${segment} 没有原书脚注/尾注。` };
+          }
+          return { text: originalNotes.map((note) => `[${note.id}] ${note.html}`).join('\n\n') };
+        } catch {
+          return { text: `未找到节点 section_id=${sectionId} segment=${segment}` };
+        }
+      },
+      async getReaderContext() {
+        const [readerProfile, bookReaderProfile, strategy] = await Promise.all([
+          getReaderProfile(userId).catch(() => null),
+          owned.userBook.currentBookReaderProfileVersionId
+            ? db
+                .select()
+                .from(bookReaderProfileVersions)
+                .where(eq(bookReaderProfileVersions.id, owned.userBook.currentBookReaderProfileVersionId))
+                .limit(1)
+                .then((rows) => rows[0])
+            : Promise.resolve(undefined),
+          owned.userBook.currentStrategyVersionId
+            ? db
+                .select()
+                .from(strategyVersions)
+                .where(eq(strategyVersions.id, owned.userBook.currentStrategyVersionId))
+                .limit(1)
+                .then((rows) => rows[0])
+            : Promise.resolve(undefined),
+        ]);
+        return {
+          text: JSON.stringify(
+            {
+              long_term_reader_profile: readerProfile?.profile ?? null,
+              this_book_reader_profile: bookReaderProfile?.profile ?? null,
+              current_strategy: strategy
+                ? { user_facing_summary: strategy.userFacingSummary, strategy: strategy.strategy }
+                : null,
+            },
+            null,
+            2,
+          ),
+        };
+      },
+      async updateReaderProfile(patch) {
+        await applyReaderProfilePatch(patch);
+        return { text: '已更新长期画像（本次回答不受影响，请继续作答）。' };
+      },
+      async proposeStrategyChange(proposal) {
+        // Validate the structured strategy up-front (fails fast on a malformed proposal); the row
+        // is persisted after the turn in saveQaAnswer. Read-only: this never lands a strategy.
+        mapProposedStrategy(proposal.strategy);
+        return {
+          text: '已记录该处理方式调整建议，回答结束后会作为「待确认」建议展示给用户；用户确认后才会生效。',
+        };
+      },
+    };
+  };
+
+  // Resolve-or-create the thread and append the user's question (idempotent on idempotencyKey
+  // within the thread). A new thread requires `context` (the anchor); a follow-up reuses the
+  // thread's stored anchor. The question lands before any agent turn so a stream that dies later
+  // is recoverable — a retry re-runs the turn (§8, mirrors commitInterviewAnswer).
+  const commitQaQuestion = async (userBookId: string, input: AskQuestionRequest) => {
+    const owned = await getOwnedBook(userBookId);
+    if (owned.userBook.workflowStatus !== 'active_reading') {
+      throw new UserBookError('尚未开始阅读，暂不能提问', 409);
+    }
+    // Trim before persisting so a whitespace-only body (which passes the schema's minLength:1)
+    // can't hit the content non-empty CHECK as a raw 500 (mirrors the interview answer path).
+    const question = input.question.trim();
+    if (!question) throw new UserBookError('问题不能为空', 400);
+    let session: typeof qaSessions.$inferSelect;
+    if (input.sessionId) {
+      const [row] = await db
+        .select()
+        .from(qaSessions)
+        .where(and(eq(qaSessions.id, input.sessionId), eq(qaSessions.userBookId, userBookId)))
+        .limit(1);
+      if (!row) throw new UserBookError('问答会话不存在', 404);
+      if (row.status !== 'active') throw new UserBookError('该问答会话已结束', 409);
+      session = row;
+    } else {
+      if (!input.context) throw new UserBookError('发起提问需要提供上下文', 400);
+      const [created] = await db
+        .insert(qaSessions)
+        .values({ userBookId, questionContext: input.context })
+        .returning();
+      if (!created) throw new UserBookError('问答会话创建失败', 503);
+      session = created;
+    }
+    // CAS-first (like saveQaAnswer): claim the next sequence by advancing conversation_version,
+    // then insert — so a concurrent duplicate/second question loses the CAS and retries rather
+    // than racing two INSERTs into a raw unique-violation. The idempotency pre-check inside the
+    // loop makes a same-key retry return the prior row instead of committing twice.
+    let committed: { questionMessageId: string; questionSequence: number } | undefined;
+    for (let attempt = 0; attempt < 6 && !committed; attempt += 1) {
+      committed = await db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select()
+          .from(qaMessages)
+          .where(
+            and(
+              eq(qaMessages.qaSessionId, session.id),
+              eq(qaMessages.kind, 'question'),
+              eq(qaMessages.idempotencyKey, input.idempotencyKey),
+            ),
+          )
+          .limit(1);
+        if (existing) return { questionMessageId: existing.id, questionSequence: existing.sequence };
+        const [fresh] = await tx
+          .select({ conversationVersion: qaSessions.conversationVersion, status: qaSessions.status })
+          .from(qaSessions)
+          .where(eq(qaSessions.id, session.id))
+          .limit(1);
+        if (!fresh || fresh.status !== 'active') throw new UserBookError('该问答会话已结束', 409);
+        const sequence = fresh.conversationVersion + 1;
+        const advanced = await tx
+          .update(qaSessions)
+          .set({ conversationVersion: sequence, updatedAt: new Date() })
+          .where(
+            and(
+              eq(qaSessions.id, session.id),
+              eq(qaSessions.status, 'active'),
+              eq(qaSessions.conversationVersion, fresh.conversationVersion),
+            ),
+          )
+          .returning({ id: qaSessions.id });
+        if (advanced.length !== 1) return undefined; // lost the CAS — retry
+        const [message] = await tx
+          .insert(qaMessages)
+          .values({
+            qaSessionId: session.id,
+            sequence,
+            role: 'user',
+            kind: 'question',
+            content: question,
+            idempotencyKey: input.idempotencyKey,
+          })
+          .returning();
+        if (!message) throw new UserBookError('问题写入失败', 503);
+        return { questionMessageId: message.id, questionSequence: sequence };
+      });
+    }
+    if (!committed) throw new UserBookError('提问写入冲突，请重试', 409);
+    return {
+      owned,
+      sessionId: session.id,
+      questionContext: session.questionContext as QaQuestionContext,
+      question,
+      ...committed,
+    };
+  };
+
+  // The already-committed answer for a question, if its turn finished. Located by the explicit
+  // `payload.q = questionSequence` link (NOT by sequence arithmetic) so an intervening second
+  // question in the same thread can't cause a different question's answer to be misidentified.
+  // Drives idempotent replay and post-failure recovery in streamQaAnswer.
+  const findQaAnswer = async (sessionId: string, questionSequence: number) => {
+    const [answer] = await db
+      .select()
+      .from(qaMessages)
+      .where(
+        and(
+          eq(qaMessages.qaSessionId, sessionId),
+          eq(qaMessages.kind, 'answer'),
+          sql`${qaMessages.payload}->>'q' = ${String(questionSequence)}`,
+        ),
+      )
+      .limit(1);
+    return answer;
+  };
+
+  // Rebuild the agent's view of the thread (§2.4): prior turns as flat text + the active
+  // proposal's current state. The *current* question is passed separately (agent.prompt), so we
+  // include only messages before it.
+  const buildQaContext = async (
+    sessionId: string,
+    questionContext: QaQuestionContext,
+    questionSequence: number,
+  ): Promise<Record<string, unknown>> => {
+    const [priorMessages, proposal] = await Promise.all([
+      db
+        .select()
+        .from(qaMessages)
+        .where(and(eq(qaMessages.qaSessionId, sessionId), sql`${qaMessages.sequence} < ${questionSequence}`))
+        .orderBy(asc(qaMessages.sequence)),
+      db
+        .select()
+        .from(strategyChangeProposals)
+        .where(eq(strategyChangeProposals.qaSessionId, sessionId))
+        .orderBy(desc(strategyChangeProposals.createdAt))
+        .limit(1)
+        .then((rows) => rows[0]),
+    ]);
+    return {
+      questionContext,
+      messages: priorMessages.map((message) => ({ role: message.role, content: message.content })),
+      ...(proposal
+        ? {
+            proposal: {
+              status: proposal.status,
+              public_summary: proposal.publicSummary,
+              ...(proposal.feedback ? { feedback: proposal.feedback } : {}),
+            },
+          }
+        : {}),
+    };
+  };
+
+  // Persist the answer + (optional) pending proposal atomically once the turn succeeds. The
+  // answer takes the next sequence (current conversation_version + 1, claimed by CAS) and is
+  // linked to its question via `payload.q` — decoupled from the question's own sequence so an
+  // intervening question can't wedge this save. Idempotent: if the question is already answered
+  // (e.g. a concurrent duplicate turn), return that answer instead of writing a second. §8.2: at
+  // most one pending proposal per book — a new one supersedes the old still-pending one;
+  // read-only never promotes it to a strategy_version.
+  const saveQaAnswer = async (
+    userBookId: string,
+    sessionId: string,
+    questionSequence: number,
+    outcome: AskAiOutcome,
+  ): Promise<string> => {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const result = await db.transaction(async (tx): Promise<{ id: string } | undefined> => {
+        const [existing] = await tx
+          .select({ id: qaMessages.id })
+          .from(qaMessages)
+          .where(
+            and(
+              eq(qaMessages.qaSessionId, sessionId),
+              eq(qaMessages.kind, 'answer'),
+              sql`${qaMessages.payload}->>'q' = ${String(questionSequence)}`,
+            ),
+          )
+          .limit(1);
+        if (existing) return { id: existing.id }; // already answered — idempotent
+        const [fresh] = await tx
+          .select({ conversationVersion: qaSessions.conversationVersion, status: qaSessions.status })
+          .from(qaSessions)
+          .where(eq(qaSessions.id, sessionId))
+          .limit(1);
+        if (!fresh || fresh.status !== 'active') throw new UserBookError('问答会话状态已变化', 409);
+        const sequence = fresh.conversationVersion + 1;
+        const advanced = await tx
+          .update(qaSessions)
+          .set({ conversationVersion: sequence, updatedAt: new Date() })
+          .where(
+            and(
+              eq(qaSessions.id, sessionId),
+              eq(qaSessions.status, 'active'),
+              eq(qaSessions.conversationVersion, fresh.conversationVersion),
+            ),
+          )
+          .returning({ id: qaSessions.id });
+        if (advanced.length !== 1) return undefined; // lost the CAS — retry
+        const [message] = await tx
+          .insert(qaMessages)
+          .values({
+            qaSessionId: sessionId,
+            sequence,
+            role: 'assistant',
+            kind: 'answer',
+            content: outcome.answer,
+            payload: {
+              q: questionSequence,
+              ...(outcome.proposedStrategyChange
+                ? { proposed_strategy_change: outcome.proposedStrategyChange }
+                : {}),
+            },
+          })
+          .returning();
+        if (!message) throw new UserBookError('回答写入失败', 503);
+        if (outcome.proposedStrategyChange) {
+          await tx
+            .update(strategyChangeProposals)
+            .set({ status: 'superseded', supersededAt: new Date(), updatedAt: new Date() })
+            .where(
+              and(
+                eq(strategyChangeProposals.userBookId, userBookId),
+                eq(strategyChangeProposals.status, 'pending'),
+              ),
+            );
+          await tx.insert(strategyChangeProposals).values({
+            userBookId,
+            qaSessionId: sessionId,
+            triggeringMessageId: message.id,
+            publicSummary: outcome.proposedStrategyChange.public_summary,
+            proposedStrategy: mapProposedStrategy(outcome.proposedStrategyChange.strategy),
+          });
+        }
+        return { id: message.id };
+      });
+      if (result) return result.id;
+    }
+    throw new UserBookError('回答写入冲突，请重试', 409);
+  };
+
   return {
     async list(): Promise<UserBookShelfResponse> {
       const rows = await db
@@ -2631,6 +3124,136 @@ function createUserBookServiceForUser(
         lastReadAt: agg?.lastReadAt ? new Date(agg.lastReadAt).toISOString() : null,
         progressPercent: progress.progressPercent,
         remaining,
+      };
+    },
+
+    // §8 问 AI streaming endpoint. Commits the question, then runs one turn, bridging the agent's
+    // answer deltas and (pending) proposal event onto the SSE stream; persists the answer after
+    // the turn. `session` is emitted first so the client learns the thread id for follow-ups.
+    async *streamQaAnswer(
+      userBookId: string,
+      input: AskQuestionRequest,
+    ): AsyncGenerator<QaStreamEvent> {
+      const committed = await commitQaQuestion(userBookId, input);
+      yield {
+        type: 'session',
+        sessionId: committed.sessionId,
+        conversationVersion: committed.questionSequence,
+      };
+      // Idempotent replay / recovery: if this question already has its answer, re-emit it and
+      // stop (a retry of an answered question must not run a second turn).
+      const existing = await findQaAnswer(committed.sessionId, committed.questionSequence);
+      if (existing) {
+        yield { type: 'answer_delta', chars: existing.content };
+        yield { type: 'done', sessionId: committed.sessionId, messageId: existing.id };
+        return;
+      }
+      const { manifest, html } = await getManifestAndHtml(committed.owned.sharedBook.id);
+      const toolbox = buildAskAiToolbox(committed.owned, committed.questionContext, manifest, html);
+      const context = await buildQaContext(
+        committed.sessionId,
+        committed.questionContext,
+        committed.questionSequence,
+      );
+      const bridge = createStreamBridge<QaStreamEvent>();
+      let turnError: unknown;
+      let outcome: AskAiOutcome | undefined;
+      const running = options.askAiEngine
+        .runTurn({
+          sessionId: committed.sessionId,
+          question: committed.question,
+          context,
+          toolbox,
+          onAnswerDelta: (chars) => bridge.push({ type: 'answer_delta', chars }),
+          onProposal: (proposal) =>
+            bridge.push({ type: 'proposal', publicSummary: proposal.public_summary }),
+        })
+        .then((result) => {
+          outcome = result;
+        })
+        .catch((error: unknown) => {
+          turnError = error;
+        })
+        .finally(() => bridge.end());
+      for await (const event of bridge.drain()) yield event;
+      await running;
+      if (turnError || !outcome) {
+        yield {
+          type: 'error',
+          message: turnError instanceof UserBookError ? turnError.message : '回答生成失败，请稍后重试。',
+        };
+        return;
+      }
+      // Persist AFTER the turn (§8 atomicity): a mid-stream failure leaves the question row and no
+      // answer, so a retry re-runs the turn. A concurrent duplicate turn loses the CAS (409); in
+      // that case replay the winner's persisted answer instead of surfacing an error.
+      try {
+        const messageId = await saveQaAnswer(
+          userBookId,
+          committed.sessionId,
+          committed.questionSequence,
+          outcome,
+        );
+        if (outcome.patchedProfile) yield { type: 'profile_updated' };
+        yield { type: 'done', sessionId: committed.sessionId, messageId };
+      } catch (error) {
+        const winner = await findQaAnswer(committed.sessionId, committed.questionSequence);
+        if (winner) {
+          yield { type: 'done', sessionId: committed.sessionId, messageId: winner.id };
+          return;
+        }
+        yield {
+          type: 'error',
+          message: error instanceof UserBookError ? error.message : '回答保存失败，请稍后重试。',
+        };
+      }
+    },
+
+    // §8 — the persisted transcript of one question thread (reload/history). `proposal` is the
+    // thread's latest strategy-change proposal, if any (display-only in the read-only loop).
+    async qaSession(userBookId: string, sessionId: string): Promise<QaSessionResponse> {
+      await getOwnedBook(userBookId);
+      const [session] = await db
+        .select()
+        .from(qaSessions)
+        .where(and(eq(qaSessions.id, sessionId), eq(qaSessions.userBookId, userBookId)))
+        .limit(1);
+      if (!session) throw new UserBookError('问答会话不存在', 404);
+      const [messages, proposal] = await Promise.all([
+        db
+          .select()
+          .from(qaMessages)
+          .where(eq(qaMessages.qaSessionId, sessionId))
+          .orderBy(asc(qaMessages.sequence)),
+        db
+          .select()
+          .from(strategyChangeProposals)
+          .where(eq(strategyChangeProposals.qaSessionId, sessionId))
+          .orderBy(desc(strategyChangeProposals.createdAt))
+          .limit(1)
+          .then((rows) => rows[0]),
+      ]);
+      return {
+        sessionId,
+        status: session.status,
+        conversationVersion: session.conversationVersion,
+        questionContext: session.questionContext as QaQuestionContext,
+        messages: messages.map((message) => ({
+          id: message.id,
+          sequence: message.sequence,
+          role: message.role,
+          kind: message.kind,
+          content: message.content,
+          createdAt: message.createdAt.toISOString(),
+        })),
+        proposal: proposal
+          ? {
+              id: proposal.id,
+              status: proposal.status,
+              publicSummary: proposal.publicSummary,
+              createdAt: proposal.createdAt.toISOString(),
+            }
+          : null,
       };
     },
   };

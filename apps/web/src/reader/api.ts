@@ -447,3 +447,100 @@ export async function getBookReadingStats(userBookId: string): Promise<ReadingSt
     { credentials: 'include' },
   ));
 }
+
+// §8 问 AI — the anchor a question is asked against: a highlighted selection or the current
+// on-screen node. `sectionId`/`segment` locate the reader's node.
+export interface QaAnchor {
+  anchor: 'highlight' | 'screen';
+  sectionId: string;
+  segment: number;
+  highlightedText?: string;
+}
+
+type QaStreamEvent =
+  | { type: 'session'; sessionId: string; conversationVersion: number }
+  | { type: 'answer_delta'; chars: string }
+  | { type: 'proposal'; publicSummary: string }
+  | { type: 'profile_updated' }
+  | { type: 'done'; sessionId: string; messageId: string }
+  | { type: 'error'; message: string };
+
+export interface QaStreamHandlers {
+  onSession?(sessionId: string): void;
+  onAnswer?(chars: string): void;
+  onProposal?(publicSummary: string): void;
+  onProfileUpdated?(): void;
+  onDone?(messageId: string): void;
+  onError?(message: string): void;
+}
+
+function dispatchQaFrame(frame: string, handlers: QaStreamHandlers): void {
+  const dataLine = frame.split('\n').find((line) => line.startsWith('data:'));
+  if (!dataLine) return; // SSE comment / heartbeat
+  const payload = dataLine.slice(5).trim();
+  if (!payload) return;
+  let event: QaStreamEvent;
+  try {
+    event = JSON.parse(payload) as QaStreamEvent;
+  } catch {
+    return;
+  }
+  switch (event.type) {
+    case 'session': handlers.onSession?.(event.sessionId); break;
+    case 'answer_delta': handlers.onAnswer?.(event.chars); break;
+    case 'proposal': handlers.onProposal?.(event.publicSummary); break;
+    case 'profile_updated': handlers.onProfileUpdated?.(); break;
+    case 'done': handlers.onDone?.(event.messageId); break;
+    case 'error': handlers.onError?.(event.message); break;
+  }
+}
+
+// §8 问 AI — asks a question (new thread, with `anchor`) or a follow-up (`sessionId`), consuming
+// the SSE turn. Resolves when the stream ends. Pre-stream failures reject; in-band failures after
+// the stream opened arrive via handlers.onError.
+export async function streamQaAnswer(
+  userBookId: string,
+  input: { sessionId?: string; question: string; anchor?: QaAnchor },
+  handlers: QaStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(
+    `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/qa`,
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        idempotencyKey: crypto.randomUUID(),
+        question: input.question,
+        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        ...(input.anchor ? { context: input.anchor } : {}),
+      }),
+      ...(signal ? { signal } : {}),
+    },
+  );
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!response.ok || !contentType.includes('text/event-stream') || !response.body) {
+    if (response.status === 401) window.dispatchEvent(new Event('readtailor:unauthorized'));
+    const body = await response.json().catch(() => null) as { error?: unknown } | null;
+    throw new Error(typeof body?.error === 'string' ? body.error : `问 AI 请求失败（${response.status}）`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        dispatchQaFrame(buffer.slice(0, boundary), handlers);
+        buffer = buffer.slice(boundary + 2);
+        boundary = buffer.indexOf('\n\n');
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}

@@ -618,3 +618,142 @@ describe('user book workflow routes', () => {
     });
   });
 });
+
+const QA_SESSION_ID = 'b7c3f1a2-1111-4a2b-8c3d-4e5f60718293';
+
+describe('问 AI QA endpoints', () => {
+  it('streams a QA answer as SSE: session first, answer deltas, then done', async () => {
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async *streamQaAnswer() {
+          yield { type: 'session', sessionId: QA_SESSION_ID, conversationVersion: 1 };
+          yield { type: 'answer_delta', chars: '这段话的意思是' };
+          yield { type: 'answer_delta', chars: '……' };
+          yield { type: 'done', sessionId: QA_SESSION_ID, messageId: 'msg-1' };
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/qa`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: {
+        question: '这句话什么意思？',
+        context: { anchor: 'highlight', sectionId: 'chap-1', segment: 1, highlightedText: '存在先于本质' },
+        idempotencyKey: 'qa-1',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/event-stream');
+    const body = response.body;
+    expect(body).toContain(`data: {"type":"session","sessionId":"${QA_SESSION_ID}","conversationVersion":1}`);
+    expect(body).toContain('data: {"type":"answer_delta","chars":"这段话的意思是"}');
+    expect(body).toContain('"type":"done"');
+    // session precedes the answer, and the answer precedes done.
+    expect(body.indexOf('"session"')).toBeLessThan(body.indexOf('answer_delta'));
+    expect(body.indexOf('answer_delta')).toBeLessThan(body.indexOf('"done"'));
+  });
+
+  it('surfaces a proposal event on the same stream', async () => {
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async *streamQaAnswer() {
+          yield { type: 'session', sessionId: QA_SESSION_ID, conversationVersion: 1 };
+          yield { type: 'proposal', publicSummary: '建议加强对术语的解释' };
+          yield { type: 'answer_delta', chars: '好的' };
+          yield { type: 'done', sessionId: QA_SESSION_ID, messageId: 'msg-2' };
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/qa`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: {
+        sessionId: QA_SESSION_ID,
+        question: '能不能多讲讲术语？',
+        idempotencyKey: 'qa-2',
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain('data: {"type":"proposal","publicSummary":"建议加强对术语的解释"}');
+  });
+
+  it('surfaces a pre-stream failure as an HTTP status, not an SSE frame', async () => {
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async *streamQaAnswer(): AsyncGenerator<never> {
+          throw new UserBookError('尚未开始阅读，暂不能提问', 409);
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/qa`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: {
+        question: '问题',
+        context: { anchor: 'screen', sectionId: 'chap-1', segment: 1 },
+        idempotencyKey: 'qa-3',
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: '尚未开始阅读，暂不能提问' });
+  });
+
+  it('rejects a QA request missing both question and context', async () => {
+    const app = await buildApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/qa`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { idempotencyKey: 'qa-4' },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('returns a persisted QA transcript', async () => {
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async qaSession() {
+          return {
+            sessionId: QA_SESSION_ID,
+            status: 'active',
+            conversationVersion: 2,
+            questionContext: { anchor: 'highlight', sectionId: 'chap-1', segment: 1, highlightedText: '存在先于本质' },
+            messages: [
+              { id: 'm1', sequence: 1, role: 'user', kind: 'question', content: '这句话什么意思？', createdAt: '2026-07-15T00:00:00.000Z' },
+              { id: 'm2', sequence: 2, role: 'assistant', kind: 'answer', content: '意思是……', createdAt: '2026-07-15T00:00:01.000Z' },
+            ],
+            proposal: null,
+          };
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/user-books/${USER_BOOK_ID}/qa/${QA_SESSION_ID}`,
+      headers: { origin: 'http://localhost:5173' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      sessionId: QA_SESSION_ID,
+      status: 'active',
+      conversationVersion: 2,
+      messages: [{ id: 'm1', kind: 'question' }, { id: 'm2', kind: 'answer' }],
+      proposal: null,
+    });
+  });
+});

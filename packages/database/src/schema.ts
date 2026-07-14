@@ -26,6 +26,8 @@ import type {
   NormalizationRunStatus,
   NormalizationValidationOutcome,
   NormalizationValidationPhase,
+  ProposedStrategy,
+  QaSessionStatus,
   ReaderProfile,
   ReadingSettings,
   ReadingActivityArea,
@@ -33,6 +35,7 @@ import type {
   SharedBookStatus,
   SourceUploadStatus,
   Strategy,
+  StrategyChangeProposalStatus,
   StrategyDraftStatus,
   SystemJobStatus,
   TrialRevisionStatus,
@@ -1283,5 +1286,130 @@ export const dailyReadingTotals = pgTable(
   (table) => [
     primaryKey({ columns: [table.userId, table.day] }),
     check('daily_reading_totals_effective_nonneg', sql`${table.effectiveSeconds} >= 0`),
+  ],
+);
+
+// §8 问 AI — one row per question thread (initial question + its follow-ups). Unlike
+// interview_sessions (one per user_book), a user_book has many qa_sessions, so userBookId is a
+// plain lookup index, not unique. conversationVersion is the optimistic-lock guard for concurrent
+// turns; questionContext is the anchor (highlight/screen + section_id/segment/position) captured
+// when the thread began, replayed each turn (agent-kit reconstructAskAiHistory).
+export const qaSessions = pgTable(
+  'qa_sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userBookId: uuid('user_book_id')
+      .notNull()
+      .references(() => userBooks.id),
+    status: text('status').$type<QaSessionStatus>().notNull().default('active'),
+    conversationVersion: integer('conversation_version').notNull().default(0),
+    questionContext: jsonb('question_context').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('qa_sessions_user_book_idx').on(table.userBookId),
+    check('qa_sessions_status_valid', sql`${table.status} in ('active', 'closed')`),
+    check(
+      'qa_sessions_conversation_version_nonnegative',
+      sql`${table.conversationVersion} >= 0`,
+    ),
+  ],
+);
+
+// §8 问 AI — the durable, user-viewable conversation. Field shape mirrors interview_messages:
+// question=user, answer=assistant. The user's question carries the client idempotency key;
+// answers are host-generated. Proposal feedback is NOT a message — it lives on the proposal row.
+export const qaMessages = pgTable(
+  'qa_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    qaSessionId: uuid('qa_session_id')
+      .notNull()
+      .references(() => qaSessions.id),
+    sequence: integer('sequence').notNull(),
+    role: text('role').$type<'user' | 'assistant'>().notNull(),
+    kind: text('kind').$type<'question' | 'answer'>().notNull(),
+    content: text('content').notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+    idempotencyKey: text('idempotency_key'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('qa_messages_session_sequence_unique').on(table.qaSessionId, table.sequence),
+    uniqueIndex('qa_messages_question_idempotency_unique')
+      .on(table.qaSessionId, table.idempotencyKey)
+      .where(sql`${table.kind} = 'question'`),
+    check('qa_messages_sequence_positive', sql`${table.sequence} > 0`),
+    check('qa_messages_role_valid', sql`${table.role} in ('user', 'assistant')`),
+    check('qa_messages_kind_valid', sql`${table.kind} in ('question', 'answer')`),
+    check('qa_messages_content_nonempty', sql`length(btrim(${table.content})) > 0`),
+    check(
+      'qa_messages_idempotency_nonempty',
+      sql`${table.idempotencyKey} is null or length(btrim(${table.idempotencyKey})) > 0`,
+    ),
+  ],
+);
+
+// §8.2 处理方式调整建议 (decision B+b). Created `pending` when the agent calls
+// propose_strategy_change; the confirm endpoint promotes it to `confirmed` and records the
+// strategy_versions row it created (regenerating unread + current node). Feedback/reject update
+// this row in place — that mutation is what reconstructAskAiHistory renders as the agent's
+// "return" next turn. At most one `pending` proposal per user_book (partial unique index,
+// mirroring trial_revisions_one_active_per_book).
+export const strategyChangeProposals = pgTable(
+  'strategy_change_proposals',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userBookId: uuid('user_book_id')
+      .notNull()
+      .references(() => userBooks.id),
+    qaSessionId: uuid('qa_session_id')
+      .notNull()
+      .references(() => qaSessions.id),
+    triggeringMessageId: uuid('triggering_message_id').references(() => qaMessages.id),
+    status: text('status').$type<StrategyChangeProposalStatus>().notNull().default('pending'),
+    publicSummary: text('public_summary').notNull(),
+    proposedStrategy: jsonb('proposed_strategy').$type<ProposedStrategy>().notNull(),
+    feedback: text('feedback'),
+    resultingStrategyVersionId: uuid('resulting_strategy_version_id').references(
+      () => strategyVersions.id,
+    ),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    rejectedAt: timestamp('rejected_at', { withTimezone: true }),
+    supersededAt: timestamp('superseded_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('strategy_change_proposals_user_book_idx').on(table.userBookId),
+    index('strategy_change_proposals_qa_session_idx').on(table.qaSessionId),
+    uniqueIndex('strategy_change_proposals_one_pending_per_book')
+      .on(table.userBookId)
+      .where(sql`${table.status} = 'pending'`),
+    check(
+      'strategy_change_proposals_status_valid',
+      sql`${table.status} in ('pending', 'confirmed', 'rejected', 'superseded')`,
+    ),
+    check(
+      'strategy_change_proposals_summary_nonempty',
+      sql`length(btrim(${table.publicSummary})) > 0`,
+    ),
+    check(
+      'strategy_change_proposals_confirmed_valid',
+      sql`${table.status} <> 'confirmed' or (${table.confirmedAt} is not null and ${table.resultingStrategyVersionId} is not null)`,
+    ),
+    check(
+      'strategy_change_proposals_rejected_valid',
+      sql`${table.status} <> 'rejected' or ${table.rejectedAt} is not null`,
+    ),
+    check(
+      'strategy_change_proposals_superseded_valid',
+      sql`${table.status} <> 'superseded' or ${table.supersededAt} is not null`,
+    ),
+    check(
+      'strategy_change_proposals_feedback_nonempty',
+      sql`${table.feedback} is null or length(btrim(${table.feedback})) > 0`,
+    ),
   ],
 );

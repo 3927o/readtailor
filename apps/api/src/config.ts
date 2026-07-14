@@ -23,6 +23,8 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env) {
     // AI 功能各自可独立配置端点/key/模型，缺省回退到全局 MODEL_* 。
     systemChatModel: readModelEndpoint(env, 'SYSTEM_CHAT'),
     readingSetupModel: readModelEndpoint(env, 'READING_SETUP'),
+    // 问 AI（阶段6）：优先 QA_AI_MODEL_*，回退全局 MODEL_*。
+    askAiModel: readModelEndpoint(env, 'QA_AI'),
     authCookieSecret: readOptionalString(env, 'AUTH_COOKIE_SECRET'),
     authCookieSecure: (readOptionalString(env, 'AUTH_COOKIE_SECURE') ?? String(production)) === 'true',
     authSessionDays: readInteger(env, 'AUTH_SESSION_DAYS', 30, { min: 1, max: 365 }),

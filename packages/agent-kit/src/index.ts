@@ -721,7 +721,10 @@ export const ReadingBriefingSchema = Type.Object({
 });
 export type ReadingBriefing = Static<typeof ReadingBriefingSchema>;
 
-export const ReadingStrategySchema = Type.Object({
+// The tailoring core of a reading strategy. Shared by the setup strategy (which adds
+// trial_candidates for the trial phase) and the Q&A strategy-change proposal (§8.2), which
+// adjusts an already-reading book and therefore has no trial phase.
+const READING_STRATEGY_CORE = {
   goals: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { minItems: 1, maxItems: 12 }),
   expression_principles: Type.Array(
     Type.String({ minLength: 1, maxLength: 500 }),
@@ -740,6 +743,10 @@ export const ReadingStrategySchema = Type.Object({
     enabled: Type.Boolean(),
     objectives: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 12 }),
   }),
+};
+
+export const ReadingStrategySchema = Type.Object({
+  ...READING_STRATEGY_CORE,
   trial_candidates: Type.Array(
     Type.Object({
       section_id: Type.String({ minLength: 1, maxLength: 200 }),
@@ -750,6 +757,19 @@ export const ReadingStrategySchema = Type.Object({
   ),
 });
 export type ReadingStrategy = Static<typeof ReadingStrategySchema>;
+
+// A reading-strategy change proposed by the 问 AI Agent mid-reading (§8.2). It reuses the
+// setup strategy's tailoring core but omits trial_candidates. This is only ever a *proposal*:
+// nothing is applied until the user confirms it through the host confirm endpoint.
+export const ProposedStrategySchema = Type.Object(READING_STRATEGY_CORE);
+export type ProposedStrategy = Static<typeof ProposedStrategySchema>;
+
+export const StrategyChangeProposalSchema = Type.Object({
+  // The confirmation-card body shown verbatim to the user: what changes and why.
+  public_summary: Type.String({ minLength: 10, maxLength: 4000 }),
+  strategy: ProposedStrategySchema,
+});
+export type StrategyChangeProposal = Static<typeof StrategyChangeProposalSchema>;
 
 // select_trial_fragments (§3.5): after the strategy is approved the agent reads the
 // candidate node bodies and picks exactly three non-overlapping, self-contained
@@ -1274,4 +1294,342 @@ export async function runBookAnalysisAgent(options: {
     throw new Error('book analysis agent stopped without saving a valid profile');
   }
   return { profile, turns, toolCalls };
+}
+
+// ---------------------------------------------------------------------------
+// 问 AI Agent (agent_design §8). Unlike the three agents above, this one is a
+// conversational agent: its deliverable is the streamed answer *text*, not a
+// terminating tool call. Every tool is non-terminating; the loop ends naturally
+// when the model stops calling tools and emits its final answer (stopReason
+// 'stop'). See docs/project/phase6_ask_ai.md for the full design.
+// ---------------------------------------------------------------------------
+
+// The host owns persistence; the toolbox is the module's only door to book content,
+// reader profile and proposal storage. Read tools return text the model reads; the two
+// side-effect tools return a short confirmation the model reads and keeps talking.
+export interface AskAiToolbox {
+  // The anchor of this question: highlighted text or current on-screen node, plus the
+  // reader's current section_id + segment and position.
+  getQuestionContext(signal?: AbortSignal): Promise<ToolTextResult>;
+  getBookOutline(
+    input: { offset?: number; limit?: number },
+    signal?: AbortSignal,
+  ): Promise<ToolTextResult>;
+  // May resolve unread nodes — Q&A has no spoiler guard by design (§8.2).
+  readBookNode(
+    input: { sectionId: string; segment: number; maxCharacters?: number },
+    signal?: AbortSignal,
+  ): Promise<ToolTextResult>;
+  searchBook(
+    input: { query: string; limit?: number },
+    signal?: AbortSignal,
+  ): Promise<ToolTextResult>;
+  // Original-book footnotes / endnotes at the given (or current) position.
+  getOriginalNotes(
+    input: { sectionId?: string; segment?: number },
+    signal?: AbortSignal,
+  ): Promise<ToolTextResult>;
+  // Long-term reader profile + this book's profile + the current *confirmed* strategy.
+  getReaderContext(signal?: AbortSignal): Promise<ToolTextResult>;
+  // Persist a long-term profile patch (no user confirmation; must have conversational evidence).
+  updateReaderProfile(patch: ReaderProfilePatch, signal?: AbortSignal): Promise<ToolTextResult>;
+  // Record a pending strategy-change proposal. Returns text the model reads (e.g. "已提交，等待
+  //用户确认"); the module also fires onProposal so the host can push the confirmation card.
+  proposeStrategyChange(
+    proposal: StrategyChangeProposal,
+    signal?: AbortSignal,
+  ): Promise<ToolTextResult>;
+}
+
+export type AskAiOutcome = {
+  // The final assistant answer text (the deliverable). Non-empty on success.
+  answer: string;
+  // Present iff the agent called propose_strategy_change at least once this turn.
+  proposedStrategyChange?: StrategyChangeProposal;
+  // True iff update_reader_profile ran this turn.
+  patchedProfile: boolean;
+  turns: number;
+  toolCalls: number;
+};
+
+const ASK_AI_SYSTEM_PROMPT = `你是 ReadTailor 的「问 AI」阅读助手。用户在阅读某本书时，针对划线内容或当前屏幕向你提问，你结合本书内容与用户画像给出贴合的解答，并在确有必要时更新长期画像或建议调整本书处理方式。
+
+工作方式：
+- 先用 get_question_context 了解本次提问的锚点（划线文本或当前屏幕、所在节点与位置）；再按需用 get_book_outline / read_book_node / search_book / get_original_notes 检索全书（可命中用户尚未读到的后续内容，不做防剧透限制）；用 get_reader_context 了解用户长期画像、本书画像与当前生效策略。
+- 你的交付物是你直接写给用户的回答文本。想清楚后用自然语言把答案讲清楚；不再需要调用工具时，直接输出最终回答即可结束——没有专门的结束工具，也不要用工具来「宣布完成」。
+- 回答必须基于书中内容与画像的真实依据，不臆造；依据不足时如实说明。
+
+两个副作用工具都不会打断你的回答，调用后请继续把话说完：
+- update_reader_profile：仅当对话暴露出关于用户长期知识背景或讲解偏好的、明确且可复用的新信息时才调用，必须有对话依据，无需用户确认。
+- propose_strategy_change：当你判断本书当前处理方式需要调整时才调用，提交面向用户的说明 public_summary 与新的结构化策略 strategy。这只是"建议"——不会立即生效，用户会看到一张确认卡，确认后宿主才创建新的正式策略；同一会话内若用户给出反馈，可再次调用修订同一建议。用户没有相关诉求、也无明显收益时，不要主动改策略。`;
+
+function extractAssistantText(message: AgentMessage): string {
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((part) => (part as { type?: unknown }).type === 'text')
+    .map((part) => {
+      const text = (part as { text?: unknown }).text;
+      return typeof text === 'string' ? text : '';
+    })
+    .join('');
+}
+
+/**
+ * Rebuilds the one-per-question Q&A conversation from persisted business rows (§2.4), the
+ * same "warm replay as plain text" approach as reconstructReadingSetupHistory — no Pi-native
+ * session is ever stored. `context` carries: `questionContext` (the anchor for this question),
+ * `messages` (prior turns of THIS question session; question=user, answer=assistant), and
+ * `proposal` (the session's active proposal, if any). The *current* user question is not part
+ * of the history — the host passes it as `question` and it drives the new turn via agent.prompt.
+ */
+export function reconstructAskAiHistory(
+  context: Record<string, unknown>,
+  modelName: string,
+): AgentMessage[] {
+  const messages: AgentMessage[] = [];
+  if (context.questionContext && typeof context.questionContext === 'object') {
+    messages.push(
+      userTurnMessage(`【提问上下文】\n${JSON.stringify(context.questionContext, null, 2)}`),
+    );
+  }
+  const transcript = Array.isArray(context.messages)
+    ? (context.messages as Array<{ role?: unknown; content?: unknown }>)
+    : [];
+  for (const entry of transcript) {
+    const text = typeof entry.content === 'string'
+      ? entry.content
+      : JSON.stringify(entry.content ?? '');
+    if (!text.trim()) continue;
+    messages.push(entry.role === 'assistant'
+      ? assistantTurnMessage(text, modelName)
+      : userTurnMessage(text));
+  }
+  // Render the active proposal's *current* state as a trailing assistant turn so the agent
+  // knows the fate of the suggestion it made earlier (§2.4 point 3, decision B+b): the
+  // confirm/feedback endpoints only update the proposal row — this is where that update
+  // becomes the "return" the agent sees next turn, without storing/mutating Pi messages.
+  const proposal = context.proposal && typeof context.proposal === 'object'
+    ? (context.proposal as { status?: unknown; public_summary?: unknown; feedback?: unknown })
+    : undefined;
+  if (proposal) {
+    const summary = typeof proposal.public_summary === 'string' ? proposal.public_summary : '';
+    const feedback = typeof proposal.feedback === 'string' ? proposal.feedback.trim() : '';
+    let line = `我此前提出过一个处理方式调整建议（已作为待确认建议提交）：${summary}`;
+    if (proposal.status === 'confirmed') {
+      line += '\n用户已确认此调整，新的处理方式已生效。';
+    } else if (proposal.status === 'rejected') {
+      line += feedback ? `\n用户拒绝了此调整，反馈：${feedback}` : '\n用户拒绝了此调整。';
+    } else if (feedback) {
+      line += `\n用户尚未确认，反馈：${feedback}`;
+    } else {
+      line += '\n（等待用户确认。）';
+    }
+    messages.push(assistantTurnMessage(line, modelName));
+  }
+  return messages;
+}
+
+// One Pi session per HTTP request; each turn rebuilds the Q&A history from the database
+// (reconstructAskAiHistory) and runs a single conversational turn, then the Agent is
+// discarded (§3.3/§3.4 stateless-resume). All eight tools are non-terminating: the loop
+// ends when the model emits its answer with no further tool call.
+export async function runAskAiAgent(options: {
+  apiBaseUrl: string;
+  apiKey: string;
+  modelName: string;
+  sessionId: string;
+  question: string;
+  context: Record<string, unknown>;
+  toolbox: AskAiToolbox;
+  maxTurns?: number;
+  timeoutMs?: number;
+  onAnswerDelta?: (chars: string) => void;
+  onProposal?: (payload: StrategyChangeProposal) => void | Promise<void>;
+  onTrace?: AgentTraceHandler;
+}): Promise<AskAiOutcome> {
+  let turns = 0;
+  let toolCalls = 0;
+  let limitExceeded = false;
+  let patchedProfile = false;
+  let proposedStrategyChange: StrategyChangeProposal | undefined;
+  // The final answer is the text of the last assistant message; intermediate tool-calling
+  // turns rarely carry prose, but if one does we keep only the latest non-empty text.
+  let lastAssistantText = '';
+  const maxTurns = options.maxTurns ?? 16;
+
+  const tools: AgentTool[] = [
+    {
+      name: 'get_question_context',
+      label: 'Get question context',
+      description: '读取本次提问的锚点：划线文本或当前屏幕原文，及用户当前所在节点 section_id + segment 与位置。',
+      parameters: Type.Object({}),
+      execute: async (_id, _input, signal) =>
+        textResult(await options.toolbox.getQuestionContext(signal)),
+    },
+    {
+      name: 'get_book_outline',
+      label: 'Get book outline',
+      description: '分页读取完整 reading manifest 结构与节点列表。',
+      parameters: Type.Object({
+        offset: Type.Optional(Type.Integer({ minimum: 0 })),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
+      }),
+      execute: async (_id, input, signal) =>
+        textResult(
+          await options.toolbox.getBookOutline(input as { offset?: number; limit?: number }, signal),
+        ),
+    },
+    {
+      name: 'read_book_node',
+      label: 'Read book node',
+      description: '按稳定 section id 和 segment 读取节点正文摘录，可读取用户尚未读到的后续内容。',
+      parameters: Type.Object({
+        sectionId: Type.String(),
+        segment: Type.Integer({ minimum: 1 }),
+        maxCharacters: Type.Optional(Type.Integer({ minimum: 500, maximum: 12000 })),
+      }),
+      execute: async (_id, input, signal) =>
+        textResult(
+          await options.toolbox.readBookNode(
+            input as { sectionId: string; segment: number; maxCharacters?: number },
+            signal,
+          ),
+        ),
+    },
+    {
+      name: 'search_book',
+      label: 'Search book',
+      description: '在规范化全书中搜索关键词并返回短上下文。',
+      parameters: Type.Object({
+        query: Type.String({ minLength: 1, maxLength: 200 }),
+        limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+      }),
+      execute: async (_id, input, signal) =>
+        textResult(
+          await options.toolbox.searchBook(input as { query: string; limit?: number }, signal),
+        ),
+    },
+    {
+      name: 'get_original_notes',
+      label: 'Get original notes',
+      description: '读取指定位置（缺省为当前位置）的原书脚注与尾注。',
+      parameters: Type.Object({
+        sectionId: Type.Optional(Type.String()),
+        segment: Type.Optional(Type.Integer({ minimum: 1 })),
+      }),
+      execute: async (_id, input, signal) =>
+        textResult(
+          await options.toolbox.getOriginalNotes(
+            input as { sectionId?: string; segment?: number },
+            signal,
+          ),
+        ),
+    },
+    {
+      name: 'get_reader_context',
+      label: 'Get reader context',
+      description: '读取用户长期画像、本书画像与当前生效的正式处理方式。',
+      parameters: Type.Object({}),
+      execute: async (_id, _input, signal) =>
+        textResult(await options.toolbox.getReaderContext(signal)),
+    },
+    {
+      name: 'update_reader_profile',
+      label: 'Update reader profile',
+      description:
+        '当对话暴露出关于用户长期知识背景（knowledge）或讲解偏好（explanation_preferences）的、明确且可复用的新信息时，更新长期画像。必须有对话依据，无需用户确认；这不会打断你的回答。',
+      parameters: ReaderProfilePatchSchema,
+      executionMode: 'sequential',
+      execute: async (_id, input, signal) => {
+        const patch = input as ReaderProfilePatch;
+        const result = await options.toolbox.updateReaderProfile(patch, signal);
+        patchedProfile = true;
+        return textResult(result);
+      },
+    },
+    {
+      name: 'propose_strategy_change',
+      label: 'Propose strategy change',
+      description:
+        '当你判断本书当前处理方式需要调整时，提交一个待用户确认的调整建议：public_summary 面向用户说明改什么、为什么，strategy 是完整的新结构化策略。这不会立即生效，用户会看到确认卡；同一会话可多次调用以修订同一建议。这不会打断你的回答。',
+      parameters: StrategyChangeProposalSchema,
+      executionMode: 'sequential',
+      execute: async (_id, input, signal) => {
+        const proposal = input as StrategyChangeProposal;
+        const result = await options.toolbox.proposeStrategyChange(proposal, signal);
+        proposedStrategyChange = proposal;
+        await options.onProposal?.(proposal);
+        return textResult(result);
+      },
+    },
+  ];
+
+  const agent = new Agent({
+    initialState: {
+      systemPrompt: ASK_AI_SYSTEM_PROMPT,
+      model: createModel(options),
+      thinkingLevel: 'medium',
+      tools,
+      messages: reconstructAskAiHistory(options.context, options.modelName),
+    },
+    sessionId: options.sessionId,
+    getApiKey: () => options.apiKey,
+    toolExecution: 'sequential',
+  });
+  agent.subscribe((event) => {
+    if (event.type === 'turn_start') {
+      if (turns >= maxTurns) {
+        limitExceeded = true;
+        agent.abort();
+        return;
+      }
+      turns += 1;
+    } else if (event.type === 'tool_execution_start') {
+      toolCalls += 1;
+    } else if (event.type === 'message_end' && event.message.role === 'assistant') {
+      const text = extractAssistantText(event.message);
+      if (text.trim()) lastAssistantText = text;
+    }
+  });
+  // Stream the answer text token-by-token (§2.5). Answer *capture* comes from message_end
+  // above (robust), so a shape change in the streaming event only degrades liveness, never
+  // correctness. thinking_delta is intentionally dropped.
+  if (options.onAnswerDelta) {
+    agent.subscribe((event) => {
+      if (event.type !== 'message_update') return;
+      const streamed = event.assistantMessageEvent;
+      if (streamed.type === 'text_delta') options.onAnswerDelta!(streamed.delta);
+    });
+  }
+  subscribeAgentTrace(agent, {
+    agentName: 'ask_ai',
+    sessionId: options.sessionId,
+    modelName: options.modelName,
+    systemPrompt: ASK_AI_SYSTEM_PROMPT,
+    prompt: options.question,
+    getTurn: () => turns,
+    getToolCalls: () => toolCalls,
+    ...(options.onTrace ? { onTrace: options.onTrace } : {}),
+  });
+  const timeout = setTimeout(() => agent.abort(), options.timeoutMs ?? 5 * 60_000);
+  try {
+    await agent.prompt(options.question);
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const answer = lastAssistantText.trim();
+  if (!answer) {
+    if (limitExceeded) throw new Error(`ask ai agent exceeded the ${maxTurns}-turn limit`);
+    throw new Error('ask ai agent stopped without producing an answer');
+  }
+  return {
+    answer,
+    ...(proposedStrategyChange ? { proposedStrategyChange } : {}),
+    patchedProfile,
+    turns,
+    toolCalls,
+  };
 }

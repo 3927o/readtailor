@@ -3845,3 +3845,180 @@ h1 {
   .reader-book-info .reader-sheet-handle,
   .reader-stats .reader-sheet-handle { display: block; }
 }
+
+/* §8 问 AI — reader-side Q&A panel (mirrors .reader-book-info, with a chat thread + composer). */
+.reader-askai {
+  position: fixed;
+  top: 58px;
+  right: 18px;
+  bottom: 18px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  width: min(480px, calc(100vw - 36px));
+  padding: 20px;
+  border: 1px solid var(--rt-rule);
+  border-radius: 8px;
+  background: var(--rt-bg-card);
+  box-shadow: 0 24px 60px -34px rgba(10, 10, 9, 0.48);
+}
+
+.reader-askai > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.reader-askai > header strong {
+  color: var(--rt-ink-3);
+  font-family: var(--rt-mono);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.reader-askai > header button {
+  min-width: 40px;
+  min-height: 36px;
+  border: 0;
+  background: transparent;
+  color: var(--rt-ink-3);
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.reader-askai-thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.reader-askai-hint,
+.reader-askai-anchor,
+.reader-askai-note {
+  color: var(--rt-ink-3);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.reader-askai-anchor {
+  font-family: var(--rt-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.reader-askai-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reader-askai-question {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: 12px 12px 2px 12px;
+  background: var(--rt-green-deep);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.reader-askai-answer {
+  font-family: var(--rt-serif);
+  font-size: 15px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.reader-askai-typing { color: var(--rt-ink-3); }
+
+.reader-askai-error {
+  color: var(--rt-danger, #b42318);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.reader-askai-proposal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  border: 1px dashed var(--rt-rule);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--rt-green-deep) 6%, transparent);
+}
+
+.reader-askai-proposal > span {
+  color: var(--rt-green-deep);
+  font-family: var(--rt-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.reader-askai-proposal p { font-size: 14px; line-height: 1.6; }
+.reader-askai-proposal small { color: var(--rt-ink-3); font-size: 11px; }
+
+.reader-askai-compose {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rt-rule);
+}
+
+.reader-askai-compose textarea {
+  flex: 1;
+  resize: none;
+  padding: 10px 12px;
+  border: 1px solid var(--rt-rule);
+  border-radius: 8px;
+  background: var(--rt-bg);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.reader-askai-compose button {
+  min-height: 40px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--rt-green-deep);
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.reader-askai-compose button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .reader-askai {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    height: 80vh;
+    padding: 18px 18px calc(18px + env(safe-area-inset-bottom, 0));
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 14px 14px 0 0;
+  }
+
+  .reader-askai .reader-sheet-handle { display: block; }
+}

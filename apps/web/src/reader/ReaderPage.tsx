@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
 import type { Briefing } from '@readtailor/contracts';
@@ -25,6 +25,7 @@ import type {
   ContentWidthSetting,
   Highlight,
   ObservedReaderAnchor,
+  QaAnchor,
   ReaderBootstrap,
   ReaderNode,
   ReaderNodeEnhancement,
@@ -50,6 +51,7 @@ import type { RenderedHeading, RenderedNode } from './content';
 import { createRestoreCoordinator } from './restoreCoordinator';
 import { NotePopover, popoverPlacement } from './NotePopover';
 import type { ActivePopover } from './NotePopover';
+import { AskAiPanel } from './AskAiPanel';
 
 type ReaderSettings = ReadingSettings;
 
@@ -255,6 +257,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [bookInfoOpen, setBookInfoOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  const [askAiOpen, setAskAiOpen] = useState(false);
   const [currentOrder, setCurrentOrder] = useState(document.manifest.nodes[0]?.order ?? 1);
   const [popover, setPopover] = useState<ActivePopover | null>(null);
   const [scrollProgress, setScrollProgress] = useState(0);
@@ -870,6 +873,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       setSettingsOpen(false);
       setBookInfoOpen(false);
       setStatsOpen(false);
+      setAskAiOpen(false);
       setPopover(null);
       setSelectionDraft(null);
       setHighlightEditor(null);
@@ -1095,6 +1099,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     setSettingsOpen(false);
     setBookInfoOpen(false);
     setStatsOpen(false);
+    setAskAiOpen(false);
     setChromeHidden(false);
     setTocOpen(true);
   };
@@ -1103,6 +1108,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     setTocOpen(false);
     setBookInfoOpen(false);
     setStatsOpen(false);
+    setAskAiOpen(false);
     setChromeHidden(false);
     setSettingsOpen(true);
   };
@@ -1111,6 +1117,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     setTocOpen(false);
     setSettingsOpen(false);
     setStatsOpen(false);
+    setAskAiOpen(false);
     setChromeHidden(false);
     setBookInfoOpen(true);
   };
@@ -1119,9 +1126,42 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     setTocOpen(false);
     setSettingsOpen(false);
     setBookInfoOpen(false);
+    setAskAiOpen(false);
     setChromeHidden(false);
     setStatsOpen(true);
   };
+  const openAskAi = () => {
+    void flushActivitySlice.current(false, true);
+    setTocOpen(false);
+    setSettingsOpen(false);
+    setBookInfoOpen(false);
+    setStatsOpen(false);
+    setChromeHidden(false);
+    setAskAiOpen(true);
+  };
+  // §8 anchor: the current on-screen node, or the live text selection if one sits inside the
+  // reader. Resolved at ask time so it tracks where the reader actually is.
+  const resolveAnchor = useCallback((): QaAnchor | null => {
+    const nodes = document.manifest.nodes;
+    const node = nodes.find((item) => item.order === currentOrderRef.current) ?? nodes[0];
+    if (!node) return null;
+    const selection = window.getSelection();
+    const selectedText = selection && !selection.isCollapsed ? selection.toString().trim() : '';
+    const withinReader = Boolean(
+      selection
+        && selection.rangeCount > 0
+        && scrollRoot.current?.contains(selection.getRangeAt(0).commonAncestorContainer),
+    );
+    if (selectedText && withinReader) {
+      return {
+        anchor: 'highlight',
+        sectionId: node.section_id,
+        segment: node.segment,
+        highlightedText: selectedText.slice(0, 8000),
+      };
+    }
+    return { anchor: 'screen', sectionId: node.section_id, segment: node.segment };
+  }, [document.manifest.nodes]);
 
   return (
     <div
@@ -1137,6 +1177,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
           <div className="reader-title" title={document.book.title}>{document.book.title}</div>
           <div className="reader-desktop-actions">
             <ReaderAction glyph="≡" label="目录" onClick={openToc} />
+            <ReaderAction glyph="?" label="问 AI" onClick={openAskAi} />
             <ReaderAction glyph="···" label="本书" onClick={openBookInfo} />
             <ReaderAction glyph="◔" label="统计" onClick={openStats} />
             <ReaderAction glyph="Aa" label="设置" onClick={openSettings} />
@@ -1146,6 +1187,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
 
       <nav className="reader-mobile-bar" data-hidden={chromeHidden} aria-label="阅读工具">
         <ReaderAction glyph="≡" label="目录" onClick={openToc} />
+        <ReaderAction glyph="?" label="问 AI" onClick={openAskAi} />
         <ReaderAction glyph="···" label="本书" onClick={openBookInfo} />
         <ReaderAction glyph="◔" label="统计" onClick={openStats} />
         <ReaderAction glyph="Aa" label="设置" onClick={openSettings} />
@@ -1154,6 +1196,14 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       {settingsOpen && <button className="reader-modal-scrim" type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭阅读设置" />}
       {bookInfoOpen && <button className="reader-modal-scrim" type="button" onClick={() => setBookInfoOpen(false)} aria-label="关闭本书说明" />}
       {statsOpen && <button className="reader-modal-scrim" type="button" onClick={() => setStatsOpen(false)} aria-label="关闭阅读统计" />}
+      {askAiOpen && <button className="reader-modal-scrim" type="button" onClick={() => setAskAiOpen(false)} aria-label="关闭问 AI" />}
+      {askAiOpen && (
+        <AskAiPanel
+          userBookId={document.userBookId}
+          resolveAnchor={resolveAnchor}
+          close={() => setAskAiOpen(false)}
+        />
+      )}
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
