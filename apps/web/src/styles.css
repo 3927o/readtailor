@@ -2816,7 +2816,7 @@ h1 {
 .brief-card {
   padding: 26px 28px 22px;
   border: 1px solid var(--rt-rule);
-  border-radius: 8px;
+  border-radius: 14px;
   background: var(--rt-bg-card);
   box-shadow: 0 6px 24px -16px rgba(20, 40, 30, 0.25);
 }
@@ -2850,6 +2850,9 @@ h1 {
 
 .brief-section h3 {
   margin: 0 0 5px;
+  /* Reading serif rather than the app's default sans UI face, matching the tailored
+     output's .blabel — a book-like label over the serif briefing paragraph. */
+  font-family: var(--rt-read);
   color: var(--rt-ink);
   font-size: 14px;
   font-weight: 700;
@@ -2929,35 +2932,6 @@ h1 {
 .assistance-content h4 { font-size: 1.02em; }
 .assistance-content h5,
 .assistance-content h6 { font-size: 1em; }
-
-.brief-terms {
-  display: grid;
-  gap: 11px;
-  margin: 8px 0 0;
-  padding-top: 18px;
-  border-top: 1px dashed var(--rt-rule);
-}
-
-.brief-terms div {
-  display: grid;
-  grid-template-columns: minmax(86px, 0.3fr) 1fr;
-  gap: 14px;
-}
-
-.brief-terms dt {
-  color: var(--rt-green-deep);
-  font-family: var(--rt-serif);
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.brief-terms dd {
-  margin: 0;
-  color: var(--rt-ink-2);
-  font-family: var(--rt-read);
-  font-size: 14px;
-  line-height: 1.75;
-}
 
 .strategy-copy {
   max-width: 620px;
@@ -3573,7 +3547,6 @@ h1 {
   .workflow-message { min-height: 300px; padding-inline: 8px; }
   .interview-prompt { font-size: 21px; }
   .brief-card { padding: 22px 18px 18px; }
-  .brief-terms div { grid-template-columns: 1fr; gap: 3px; }
   .strategy-copy h2 { font-size: 21px; }
   .workflow-actions .button,
   .trial-navigation .button {
