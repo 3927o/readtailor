@@ -1,6 +1,6 @@
 import type { Briefing } from '@readtailor/contracts';
 import type { TailoredContent, TextRange, WorkflowStatus } from '../user-books/api';
-import type { HeartbeatPayload } from './session';
+import type { ActivitySlicePayload, HeartbeatPayload } from './session';
 
 export interface ReaderBook {
   id: string;
@@ -401,17 +401,32 @@ export async function deleteHighlight(userBookId: string, highlightId: string): 
 // §11.8 — fire-and-forget effective-reading heartbeat. Cumulative + idempotent by clientIntervalId, so
 // a dropped/duplicated send never double-counts; failures are swallowed. `keepalive` lets a flush on
 // pagehide / node-change outlive the unload.
-export function sendHeartbeat(userBookId: string, payload: HeartbeatPayload, opts: { keepalive?: boolean } = {}): void {
+export function sendHeartbeat(userBookId: string, payload: HeartbeatPayload, opts: { keepalive?: boolean } = {}): Promise<void> {
   try {
-    void fetch(`${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reading-sessions/heartbeat`, {
+    return fetch(`${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reading-sessions/heartbeat`, {
       method: 'POST',
       credentials: 'include',
       ...(opts.keepalive ? { keepalive: true } : {}),
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
-    }).catch(() => {});
+    }).then(() => undefined).catch(() => undefined);
   } catch {
     // never throw from a heartbeat
+    return Promise.resolve();
+  }
+}
+
+export function sendActivitySlice(userBookId: string, payload: ActivitySlicePayload, opts: { keepalive?: boolean } = {}): Promise<void> {
+  try {
+    return fetch(`${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reading-activity-slices`, {
+      method: 'POST',
+      credentials: 'include',
+      ...(opts.keepalive ? { keepalive: true } : {}),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(() => undefined).catch(() => undefined);
+  } catch {
+    return Promise.resolve();
   }
 }
 

@@ -37,6 +37,8 @@ import {
   ReaderFocusRequestSchema,
   ReaderProfileOnboardingRequestSchema,
   ReaderProfileResponseSchema,
+  ReadingActivitySliceRequestSchema,
+  ReadingActivitySliceResponseSchema,
   ReadingSettingsResponseSchema,
   ReadingSettingsSchema,
   ReadingStatsGlobalSchema,
@@ -1001,6 +1003,25 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
         return await deps.userBooks.forUser(request.authUser!.id).recordHeartbeat(request.params.id, request.body);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.post(
+    '/v1/user-books/:id/reading-activity-slices',
+    {
+      schema: {
+        params: userBookIdParams,
+        body: ReadingActivitySliceRequestSchema,
+        response: { 200: ReadingActivitySliceResponseSchema, 400: ErrorResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).recordReadingActivitySlice(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }

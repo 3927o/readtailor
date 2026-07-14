@@ -176,6 +176,64 @@ describe('ReadingSessionTracker — interval lifecycle & snapshot', () => {
   });
 });
 
+describe('ReadingSessionTracker — activity slices', () => {
+  const position = (order: number, offset: number) => ({
+    order,
+    sectionId: `chapter-${order}`,
+    segment: 1,
+    blockIndex: 1,
+    offset,
+  });
+
+  it('emits immutable slices with a stable session id and increasing sequence', () => {
+    const t = makeTracker({
+      newSessionId: () => 'session-1',
+      timezoneOf: () => 'Asia/Shanghai',
+    });
+    t.setVisible(true);
+    t.setInReader(true);
+    t.initPosition(position(1, 0));
+
+    t.recordActivity(0);
+    t.tick(0);
+    t.recordActivity(1000, true);
+    t.tick(1000);
+
+    expect(t.activitySlice(1000, position(1, 30), 'original')).toEqual({
+      clientSessionId: 'session-1',
+      sequence: 1,
+      sliceStartedAt: new Date(0).toISOString(),
+      sliceEndedAt: new Date(1000).toISOString(),
+      timezone: 'Asia/Shanghai',
+      startPosition: position(1, 0),
+      endPosition: position(1, 30),
+      activityArea: 'original',
+    });
+
+    t.recordActivity(2000, true);
+    t.tick(2000);
+    expect(t.activitySlice(2000, position(1, 60), 'original')?.sequence).toBe(2);
+  });
+
+  it('ends an idle-edge slice at the last credited tick, not the later idle observation', () => {
+    const t = makeTracker({
+      newSessionId: () => 'session-1',
+      timezoneOf: () => 'Asia/Shanghai',
+    });
+    t.setVisible(true);
+    t.setInReader(true);
+    t.initPosition(position(1, 0));
+    t.recordActivity(0);
+    t.tick(0);
+    t.recordActivity(2000);
+    t.tick(2000);
+    t.tick(5000);
+    expect(t.tick(6000)).toBe(false);
+
+    expect(t.activitySlice(6000, position(1, 10), 'original')?.sliceEndedAt).toBe(new Date(5000).toISOString());
+  });
+});
+
 describe('local day helpers', () => {
   it('formats a local day and a Monday week-start as YYYY-MM-DD', () => {
     const now = Date.now();

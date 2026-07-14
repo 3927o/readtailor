@@ -26,6 +26,9 @@ import type {
   ReaderProfile,
   ReadingSettings,
   ReadingSettingsResponse,
+  ReadingActivityClassification,
+  ReadingActivitySliceRequest,
+  ReadingActivitySliceResponse,
   ReadingStatsGlobal,
   ReadingStatsPerBook,
   ReadingStatsQuery,
@@ -45,6 +48,7 @@ import type {
 import { DEFAULT_READING_SETTINGS } from '@readtailor/contracts';
 import {
   bookPackages,
+  bookReadingStats,
   bookReaderProfileVersions,
   dailyReadingTotals,
   highlights,
@@ -56,6 +60,8 @@ import {
   readerProfileVersions,
   readerReadNodes,
   readerStates,
+  readingActivitySlices,
+  readingDailyBookStats,
   readingSessions,
   sharedBooks,
   strategyDraftVersions,
@@ -94,6 +100,209 @@ const MIN_PERSONAL_SAMPLE_CHARS = 1500;
 // Abnormal-speed filter: ignore a personal speed outside a sane band and keep the default instead.
 const MIN_REASONABLE_SPEED_CHARS_PER_SEC = 1;
 const MAX_REASONABLE_SPEED_CHARS_PER_SEC = 60;
+const MAX_HEARTBEAT_INTERVAL_SECONDS = 12 * 60 * 60;
+const HEARTBEAT_CLOCK_SKEW_MS = 5 * 60 * 1000;
+const HEARTBEAT_ROUNDING_TOLERANCE_SECONDS = 2;
+
+function isValidLocalDate(value: string): boolean {
+  return localDateParts(value) !== null;
+}
+
+function localDateParts(value: string): { year: number; month: number; day: number } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const valid = date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
+  return valid ? { year, month, day } : null;
+}
+
+function localDateTime(value: string): number {
+  const parts = localDateParts(value);
+  return parts ? Date.UTC(parts.year, parts.month - 1, parts.day) : Number.NaN;
+}
+
+export function validateHeartbeat(input: HeartbeatRequest, now: Date): { startedAt: Date; endedAt: Date } {
+  const startedAt = new Date(input.startedAt);
+  const endedAt = new Date(input.at);
+  if (Number.isNaN(startedAt.getTime()) || Number.isNaN(endedAt.getTime())) {
+    throw new UserBookError('阅读心跳时间无效', 400);
+  }
+  if (!isValidLocalDate(input.day)) throw new UserBookError('阅读心跳日期无效', 400);
+  if (endedAt.getTime() < startedAt.getTime()) {
+    throw new UserBookError('阅读心跳结束时间早于开始时间', 400);
+  }
+  if (startedAt.getTime() > now.getTime() + HEARTBEAT_CLOCK_SKEW_MS || endedAt.getTime() > now.getTime() + HEARTBEAT_CLOCK_SKEW_MS) {
+    throw new UserBookError('阅读心跳时间来自未来', 400);
+  }
+  const spanSeconds = Math.ceil((endedAt.getTime() - startedAt.getTime()) / 1000);
+  if (spanSeconds > MAX_HEARTBEAT_INTERVAL_SECONDS) {
+    throw new UserBookError('阅读心跳跨度过长', 400);
+  }
+  if (input.effectiveSeconds > spanSeconds + HEARTBEAT_ROUNDING_TOLERANCE_SECONDS) {
+    throw new UserBookError('有效阅读时长超过心跳跨度', 400);
+  }
+  if (input.forwardSeconds > input.effectiveSeconds) {
+    throw new UserBookError('向前阅读时长超过有效阅读时长', 400);
+  }
+  return { startedAt, endedAt };
+}
+
+export function localDayInTimeZone(ms: number, timezone: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(ms));
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+  const day = parts.find((part) => part.type === 'day')?.value;
+  if (!year || !month || !day) throw new UserBookError('阅读活动时区无效', 400);
+  return `${year}-${month}-${day}`;
+}
+
+export function validateReadingActivitySlice(
+  input: ReadingActivitySliceRequest,
+  now: Date,
+): { startedAt: Date; endedAt: Date; effectiveSeconds: number; day: string } {
+  const startedAt = new Date(input.sliceStartedAt);
+  const endedAt = new Date(input.sliceEndedAt);
+  if (Number.isNaN(startedAt.getTime()) || Number.isNaN(endedAt.getTime())) {
+    throw new UserBookError('阅读活动时间无效', 400);
+  }
+  if (endedAt.getTime() < startedAt.getTime()) {
+    throw new UserBookError('阅读活动结束时间早于开始时间', 400);
+  }
+  if (startedAt.getTime() > now.getTime() + HEARTBEAT_CLOCK_SKEW_MS || endedAt.getTime() > now.getTime() + HEARTBEAT_CLOCK_SKEW_MS) {
+    throw new UserBookError('阅读活动时间来自未来', 400);
+  }
+  const effectiveSeconds = Math.round((endedAt.getTime() - startedAt.getTime()) / 1000);
+  if (effectiveSeconds > MAX_HEARTBEAT_INTERVAL_SECONDS) {
+    throw new UserBookError('阅读活动跨度过长', 400);
+  }
+  try {
+    return {
+      startedAt,
+      endedAt,
+      effectiveSeconds,
+      day: localDayInTimeZone(startedAt.getTime(), input.timezone),
+    };
+  } catch (error) {
+    if (error instanceof UserBookError) throw error;
+    throw new UserBookError('阅读活动时区无效', 400);
+  }
+}
+
+export function validateReadingStatsQuery(query: ReadingStatsQuery): void {
+  const day = localDateTime(query.day);
+  const weekStart = localDateTime(query.weekStart);
+  if (Number.isNaN(day) || Number.isNaN(weekStart)) {
+    throw new UserBookError('阅读统计日期无效', 400);
+  }
+  if (weekStart > day) throw new UserBookError('阅读统计周起始日晚于查询日期', 400);
+  if ((day - weekStart) / 86_400_000 > 6) throw new UserBookError('阅读统计周范围无效', 400);
+  if (new Date(weekStart).getUTCDay() !== 1) throw new UserBookError('阅读统计周起始日必须是周一', 400);
+}
+
+function positionAbsoluteChar(
+  meta: ManifestMeta,
+  position: ReadingActivitySliceRequest['startPosition'],
+): number | null {
+  const node = meta.nodesByOrder.get(position.order);
+  if (!node || node.sectionId !== position.sectionId || node.segment !== position.segment) return null;
+  if (node.blocks.length === 0) {
+    return node.nodeStart + Math.min(Math.max(0, position.offset), node.charCount);
+  }
+  const block = node.blocks.find((item) => item.block_index === position.blockIndex);
+  if (!block) return null;
+  const beforeBlock = node.blocks
+    .filter((item) => item.block_index < position.blockIndex)
+    .reduce((sum, item) => sum + Math.max(0, item.block_utf16_length), 0);
+  const inBlock = Math.min(Math.max(0, position.offset), Math.max(0, block.block_utf16_length));
+  return node.nodeStart + Math.min(node.charCount, beforeBlock + inBlock);
+}
+
+export function classifyReadingActivitySlice(
+  meta: ManifestMeta,
+  input: ReadingActivitySliceRequest,
+  effectiveSeconds: number,
+): {
+  classification: ReadingActivityClassification;
+  forwardSeconds: number;
+  forwardChars: number;
+} {
+  if (input.activityArea === 'assistance') {
+    return { classification: 'assistance', forwardSeconds: 0, forwardChars: 0 };
+  }
+  if (input.activityArea === 'reader_chrome') {
+    return { classification: 'stationary', forwardSeconds: 0, forwardChars: 0 };
+  }
+  const startAbs = positionAbsoluteChar(meta, input.startPosition);
+  const endAbs = positionAbsoluteChar(meta, input.endPosition);
+  if (startAbs === null || endAbs === null) {
+    return { classification: 'stationary', forwardSeconds: 0, forwardChars: 0 };
+  }
+  if (input.discontinuous) {
+    return { classification: 'original_jump', forwardSeconds: 0, forwardChars: 0 };
+  }
+  if (endAbs === startAbs) {
+    return { classification: 'stationary', forwardSeconds: 0, forwardChars: 0 };
+  }
+  if (endAbs < startAbs) {
+    return { classification: 'original_reread', forwardSeconds: 0, forwardChars: 0 };
+  }
+  return {
+    classification: 'original_forward',
+    forwardSeconds: effectiveSeconds,
+    forwardChars: endAbs - startAbs,
+  };
+}
+
+export function splitActivitySliceByLocalDay(
+  startedAt: Date,
+  endedAt: Date,
+  timezone: string,
+): Array<{ day: string; effectiveSeconds: number }> {
+  const startMs = startedAt.getTime();
+  const endMs = endedAt.getTime();
+  const totalSeconds = Math.max(0, Math.round((endMs - startMs) / 1000));
+  const startDay = localDayInTimeZone(startMs, timezone);
+  const endDay = localDayInTimeZone(endMs, timezone);
+  if (totalSeconds === 0 || startDay === endDay) return [{ day: startDay, effectiveSeconds: totalSeconds }];
+
+  let low = startMs + 1;
+  let high = endMs;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (localDayInTimeZone(mid, timezone) === startDay) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  const firstSeconds = Math.max(0, Math.min(totalSeconds, Math.round((low - startMs) / 1000)));
+  return [
+    { day: startDay, effectiveSeconds: firstSeconds },
+    { day: endDay, effectiveSeconds: totalSeconds - firstSeconds },
+  ].filter((bucket) => bucket.effectiveSeconds > 0);
+}
+
+function allocateBySeconds(total: number, buckets: Array<{ effectiveSeconds: number }>): number[] {
+  const totalSeconds = buckets.reduce((sum, bucket) => sum + bucket.effectiveSeconds, 0);
+  if (total <= 0 || totalSeconds <= 0) return buckets.map(() => 0);
+  let allocated = 0;
+  return buckets.map((bucket, index) => {
+    if (index === buckets.length - 1) return Math.max(0, total - allocated);
+    const value = Math.round((total * bucket.effectiveSeconds) / totalSeconds);
+    allocated += value;
+    return value;
+  });
+}
 
 // §11.10 — pick the reading speed for the remaining-time estimate. Uses the book's own forward-reading
 // speed (ΣforwardChars / ΣforwardSeconds) once the sample clears both floors and lands in a sane band;
@@ -171,10 +380,13 @@ type ManifestNode = {
   section_id: string;
   segment: number;
   order: number;
+  region?: string;
+  data_type?: string;
   title?: string;
   parent_section_id?: string | null;
   tailoring_eligible: boolean;
   blocks: ManifestBlock[];
+  node_absolute_start?: number;
 };
 
 type ManifestOutline = {
@@ -231,6 +443,16 @@ function asManifest(value: unknown): ReadingManifest {
   return manifest as ReadingManifest;
 }
 
+interface ManifestMetaNode {
+  sectionId: string;
+  segment: number;
+  region: string | null;
+  dataType: string | null;
+  nodeStart: number;
+  charCount: number;
+  blocks: ManifestBlock[];
+}
+
 // The manifest is immutable per (immutable) book package, so memoize its position-relevant metadata
 // per process. The position-save path (§11.5) stamps `version` onto every reader_states row for
 // future migration识别 and validates the reported `order` against `nodesByOrder` (§4.3) — but it runs
@@ -243,7 +465,7 @@ export interface ManifestMeta {
   language: string | null;
   bookTotalChars: number | null;
   charCountByOrder: Map<number, number>;
-  nodesByOrder: Map<number, { sectionId: string; segment: number }>;
+  nodesByOrder: Map<number, ManifestMetaNode>;
 }
 
 // §2.2/§4.3: an anchor is self-consistent only when the manifest node it names by `order` really
@@ -280,17 +502,39 @@ async function getManifestMeta(books: BookService, sharedBookId: string): Promis
       document?: { language?: unknown };
       nodes?: unknown;
     } | null;
-    const nodesByOrder = new Map<number, { sectionId: string; segment: number }>();
+    const nodesByOrder = new Map<number, ManifestMetaNode>();
     const charCountByOrder = new Map<number, number>();
     let sumChars = 0;
     let sawChars = false;
     if (Array.isArray(raw?.nodes)) {
       for (const node of raw.nodes as Array<ManifestNode & { character_count?: unknown }>) {
         if (typeof node?.order === 'number' && typeof node?.section_id === 'string' && typeof node?.segment === 'number') {
-          nodesByOrder.set(node.order, { sectionId: node.section_id, segment: node.segment });
+          const charCount = typeof node.character_count === 'number' && Number.isFinite(node.character_count)
+            ? Math.max(0, node.character_count)
+            : 0;
+          const blocks = Array.isArray(node.blocks)
+            ? node.blocks.filter((block) => (
+                typeof block?.block_index === 'number'
+                && typeof block?.block_utf16_length === 'number'
+                && Number.isFinite(block.block_utf16_length)
+              ))
+            : [];
+          const nodeStart = typeof node.node_absolute_start === 'number'
+            && Number.isFinite(node.node_absolute_start)
+            ? Math.max(0, node.node_absolute_start)
+            : sumChars;
+          nodesByOrder.set(node.order, {
+            sectionId: node.section_id,
+            segment: node.segment,
+            region: typeof node.region === 'string' ? node.region : null,
+            dataType: typeof node.data_type === 'string' ? node.data_type : null,
+            nodeStart,
+            charCount,
+            blocks,
+          });
           if (typeof node.character_count === 'number' && Number.isFinite(node.character_count)) {
-            charCountByOrder.set(node.order, node.character_count);
-            sumChars += node.character_count;
+            charCountByOrder.set(node.order, charCount);
+            sumChars += charCount;
             sawChars = true;
           }
         }
@@ -2089,8 +2333,7 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
         throw new UserBookError('尚未完成试读确认', 409);
       }
       const now = new Date();
-      const startedAt = new Date(input.startedAt);
-      const endedAt = new Date(input.at);
+      const { startedAt, endedAt } = validateHeartbeat(input, now);
       await db.transaction(async (tx) => {
         await tx
           .insert(readingSessions)
@@ -2107,9 +2350,13 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
             updatedAt: now,
           })
           .onConflictDoUpdate({
-            target: readingSessions.clientIntervalId,
+            target: [
+              readingSessions.userId,
+              readingSessions.userBookId,
+              readingSessions.clientIntervalId,
+            ],
             set: {
-              endedAt,
+              endedAt: sql`greatest(coalesce(${readingSessions.endedAt}, ${endedAt}), ${endedAt})`,
               effectiveSeconds: sql`greatest(${readingSessions.effectiveSeconds}, ${input.effectiveSeconds})`,
               forwardSeconds: sql`greatest(${readingSessions.forwardSeconds}, ${input.forwardSeconds})`,
               forwardChars: sql`greatest(${readingSessions.forwardChars}, ${input.forwardChars})`,
@@ -2134,10 +2381,180 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       return { accepted: true };
     },
 
+    async recordReadingActivitySlice(
+      userBookId: string,
+      input: ReadingActivitySliceRequest,
+    ): Promise<ReadingActivitySliceResponse> {
+      const owned = await getOwnedBook(userBookId);
+      if (owned.userBook.workflowStatus !== 'active_reading') {
+        throw new UserBookError('尚未完成试读确认', 409);
+      }
+      const now = new Date();
+      const validated = validateReadingActivitySlice(input, now);
+      const meta = await getManifestMeta(options.books, owned.sharedBook.id);
+      const classified = classifyReadingActivitySlice(meta, input, validated.effectiveSeconds);
+      const buckets = splitActivitySliceByLocalDay(validated.startedAt, validated.endedAt, input.timezone);
+      const bucketForwardSeconds = allocateBySeconds(classified.forwardSeconds, buckets);
+      const bucketForwardChars = allocateBySeconds(classified.forwardChars, buckets);
+
+      await db.transaction(async (tx) => {
+        const [session] = await tx
+          .insert(readingSessions)
+          .values({
+            userBookId,
+            userId,
+            clientIntervalId: input.clientSessionId,
+            day: validated.day,
+            startedAt: validated.startedAt,
+            endedAt: validated.endedAt,
+            effectiveSeconds: 0,
+            forwardSeconds: 0,
+            forwardChars: 0,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: [
+              readingSessions.userId,
+              readingSessions.userBookId,
+              readingSessions.clientIntervalId,
+            ],
+            set: {
+              startedAt: sql`least(${readingSessions.startedAt}, ${validated.startedAt})`,
+              endedAt: sql`greatest(coalesce(${readingSessions.endedAt}, ${validated.endedAt}), ${validated.endedAt})`,
+              updatedAt: now,
+            },
+          })
+          .returning({ id: readingSessions.id });
+        if (!session) throw new UserBookError('阅读 session 写入失败', 503);
+
+        const [inserted] = await tx
+          .insert(readingActivitySlices)
+          .values({
+            readingSessionId: session.id,
+            userBookId,
+            userId,
+            clientSessionId: input.clientSessionId,
+            sequence: input.sequence,
+            timezone: input.timezone,
+            day: validated.day,
+            startedAt: validated.startedAt,
+            endedAt: validated.endedAt,
+            startOrder: input.startPosition.order,
+            startSectionId: input.startPosition.sectionId,
+            startSegment: input.startPosition.segment,
+            startBlockIndex: input.startPosition.blockIndex,
+            startOffset: input.startPosition.offset,
+            endOrder: input.endPosition.order,
+            endSectionId: input.endPosition.sectionId,
+            endSegment: input.endPosition.segment,
+            endBlockIndex: input.endPosition.blockIndex,
+            endOffset: input.endPosition.offset,
+            activityArea: input.activityArea,
+            classification: classified.classification,
+            effectiveSeconds: validated.effectiveSeconds,
+            forwardSeconds: classified.forwardSeconds,
+            forwardChars: classified.forwardChars,
+          })
+          .onConflictDoNothing({
+            target: [
+              readingActivitySlices.userId,
+              readingActivitySlices.clientSessionId,
+              readingActivitySlices.sequence,
+            ],
+          })
+          .returning({ id: readingActivitySlices.id });
+        if (!inserted) return;
+
+        await tx
+          .update(readingSessions)
+          .set({
+            endedAt: sql`greatest(coalesce(${readingSessions.endedAt}, ${validated.endedAt}), ${validated.endedAt})`,
+            effectiveSeconds: sql`${readingSessions.effectiveSeconds} + ${validated.effectiveSeconds}`,
+            forwardSeconds: sql`${readingSessions.forwardSeconds} + ${classified.forwardSeconds}`,
+            forwardChars: sql`${readingSessions.forwardChars} + ${classified.forwardChars}`,
+            updatedAt: now,
+          })
+          .where(eq(readingSessions.id, session.id));
+
+        for (const [index, bucket] of buckets.entries()) {
+          if (bucket.effectiveSeconds <= 0) continue;
+          const forwardSeconds = bucketForwardSeconds[index] ?? 0;
+          const forwardChars = bucketForwardChars[index] ?? 0;
+          await tx
+            .insert(readingDailyBookStats)
+            .values({
+              userId,
+              userBookId,
+              day: bucket.day,
+              effectiveSeconds: bucket.effectiveSeconds,
+              forwardSeconds,
+              forwardChars,
+              lastReadAt: validated.endedAt,
+              updatedAt: now,
+            })
+            .onConflictDoUpdate({
+              target: [
+                readingDailyBookStats.userId,
+                readingDailyBookStats.userBookId,
+                readingDailyBookStats.day,
+              ],
+              set: {
+                effectiveSeconds: sql`${readingDailyBookStats.effectiveSeconds} + ${bucket.effectiveSeconds}`,
+                forwardSeconds: sql`${readingDailyBookStats.forwardSeconds} + ${forwardSeconds}`,
+                forwardChars: sql`${readingDailyBookStats.forwardChars} + ${forwardChars}`,
+                lastReadAt: sql`greatest(coalesce(${readingDailyBookStats.lastReadAt}, ${validated.endedAt}), ${validated.endedAt})`,
+                updatedAt: now,
+              },
+            });
+          await tx
+            .insert(dailyReadingTotals)
+            .values({
+              userId,
+              day: bucket.day,
+              effectiveSeconds: bucket.effectiveSeconds,
+              updatedAt: now,
+            })
+            .onConflictDoUpdate({
+              target: [dailyReadingTotals.userId, dailyReadingTotals.day],
+              set: {
+                effectiveSeconds: sql`${dailyReadingTotals.effectiveSeconds} + ${bucket.effectiveSeconds}`,
+                updatedAt: now,
+              },
+            });
+        }
+
+        if (validated.effectiveSeconds > 0) {
+          await tx
+            .insert(bookReadingStats)
+            .values({
+              userBookId,
+              userId,
+              effectiveSeconds: validated.effectiveSeconds,
+              forwardSeconds: classified.forwardSeconds,
+              forwardChars: classified.forwardChars,
+              lastReadAt: validated.endedAt,
+              updatedAt: now,
+            })
+            .onConflictDoUpdate({
+              target: [bookReadingStats.userBookId],
+              set: {
+                effectiveSeconds: sql`${bookReadingStats.effectiveSeconds} + ${validated.effectiveSeconds}`,
+                forwardSeconds: sql`${bookReadingStats.forwardSeconds} + ${classified.forwardSeconds}`,
+                forwardChars: sql`${bookReadingStats.forwardChars} + ${classified.forwardChars}`,
+                lastReadAt: sql`greatest(coalesce(${bookReadingStats.lastReadAt}, ${validated.endedAt}), ${validated.endedAt})`,
+                updatedAt: now,
+              },
+            });
+        }
+      });
+      return { accepted: true };
+    },
+
     // §11.9 global stats: 今日 / 本周 / 累计有效时长 + 当前连续阅读天数. Read entirely from the durable
     // daily rollup (survives book deletion, PRD :1204). `day`/`weekStart` come from the client so the
     // calendar boundaries honor its timezone; 'YYYY-MM-DD' compares chronologically as strings.
     async getGlobalReadingStats(query: ReadingStatsQuery): Promise<ReadingStatsGlobal> {
+      validateReadingStatsQuery(query);
       const rows = await db
         .select({ day: dailyReadingTotals.day, effectiveSeconds: dailyReadingTotals.effectiveSeconds })
         .from(dailyReadingTotals)
@@ -2161,15 +2578,29 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
     // (§11.10). Sessions are per-book, so this total dies with the book by design (PRD :1197).
     async getBookReadingStats(userBookId: string): Promise<ReadingStatsPerBook> {
       const owned = await getOwnedBook(userBookId);
-      const [agg] = await db
+      const [cached] = await db
         .select({
-          totalEffective: sql<number>`coalesce(sum(${readingSessions.effectiveSeconds}), 0)::int`,
-          forwardSeconds: sql<number>`coalesce(sum(${readingSessions.forwardSeconds}), 0)::int`,
-          forwardChars: sql<number>`coalesce(sum(${readingSessions.forwardChars}), 0)::int`,
-          lastReadAt: sql<Date | null>`max(${readingSessions.updatedAt})`,
+          totalEffective: bookReadingStats.effectiveSeconds,
+          forwardSeconds: bookReadingStats.forwardSeconds,
+          forwardChars: bookReadingStats.forwardChars,
+          lastReadAt: bookReadingStats.lastReadAt,
         })
-        .from(readingSessions)
-        .where(eq(readingSessions.userBookId, userBookId));
+        .from(bookReadingStats)
+        .where(eq(bookReadingStats.userBookId, userBookId))
+        .limit(1);
+      let agg = cached;
+      if (!agg) {
+        const [legacyAgg] = await db
+          .select({
+            totalEffective: sql<number>`coalesce(sum(${readingSessions.effectiveSeconds}), 0)::int`,
+            forwardSeconds: sql<number>`coalesce(sum(${readingSessions.forwardSeconds}), 0)::int`,
+            forwardChars: sql<number>`coalesce(sum(${readingSessions.forwardChars}), 0)::int`,
+            lastReadAt: sql<Date | null>`max(${readingSessions.endedAt})`,
+          })
+          .from(readingSessions)
+          .where(eq(readingSessions.userBookId, userBookId));
+        agg = legacyAgg;
+      }
       const [resume] = await db
         .select({ nodeOrder: readerStates.nodeOrder })
         .from(readerStates)

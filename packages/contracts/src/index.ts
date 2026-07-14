@@ -769,6 +769,31 @@ export const MarkReadNodeResponseSchema = Type.Object({
 });
 export type MarkReadNodeResponse = Static<typeof MarkReadNodeResponseSchema>;
 
+export const ReadingActivityAreaSchema = Type.Union([
+  Type.Literal('original'),
+  Type.Literal('assistance'),
+  Type.Literal('reader_chrome'),
+]);
+export type ReadingActivityArea = Static<typeof ReadingActivityAreaSchema>;
+
+export const ReadingActivityClassificationSchema = Type.Union([
+  Type.Literal('original_forward'),
+  Type.Literal('original_reread'),
+  Type.Literal('original_jump'),
+  Type.Literal('assistance'),
+  Type.Literal('stationary'),
+]);
+export type ReadingActivityClassification = Static<typeof ReadingActivityClassificationSchema>;
+
+export const ReadingActivityPositionSchema = Type.Object({
+  order: Type.Integer({ minimum: 1 }),
+  sectionId: Type.String({ minLength: 1 }),
+  segment: Type.Integer({ minimum: 1 }),
+  blockIndex: Type.Integer({ minimum: 1 }),
+  offset: Type.Integer({ minimum: 0 }),
+});
+export type ReadingActivityPosition = Static<typeof ReadingActivityPositionSchema>;
+
 // §11.8 — a reading heartbeat for one effective interval. `clientIntervalId` is the client's stable
 // idempotency key for a contiguous active period; every heartbeat carries the interval's *cumulative*
 // counters (not deltas), so the server upserts by that id and clamps monotonically — a network retry
@@ -778,9 +803,9 @@ export type MarkReadNodeResponse = Static<typeof MarkReadNodeResponseSchema>;
 // 浏览器时区) the interval's新增有效秒 rolls into. `startedAt`/`at` bound the interval (at → endedAt).
 export const HeartbeatRequestSchema = Type.Object({
   clientIntervalId: Type.String({ minLength: 8, maxLength: 64 }),
-  effectiveSeconds: Type.Integer({ minimum: 0 }),
-  forwardSeconds: Type.Integer({ minimum: 0 }),
-  forwardChars: Type.Integer({ minimum: 0 }),
+  effectiveSeconds: Type.Integer({ minimum: 0, maximum: 2147483647 }),
+  forwardSeconds: Type.Integer({ minimum: 0, maximum: 2147483647 }),
+  forwardChars: Type.Integer({ minimum: 0, maximum: 2147483647 }),
   day: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' }),
   startedAt: Type.String({ format: 'date-time' }),
   at: Type.String({ format: 'date-time' }),
@@ -791,6 +816,27 @@ export const HeartbeatResponseSchema = Type.Object({
   accepted: Type.Boolean(),
 });
 export type HeartbeatResponse = Static<typeof HeartbeatResponseSchema>;
+
+// §10.3 / reading_stats_architecture: an immutable observed activity slice. The client sends facts
+// (time span, positions, area, sequence); the server validates, classifies, splits by local day and
+// updates aggregate stats. `(user_id, clientSessionId, sequence)` is the idempotency key.
+export const ReadingActivitySliceRequestSchema = Type.Object({
+  clientSessionId: Type.String({ minLength: 8, maxLength: 64 }),
+  sequence: Type.Integer({ minimum: 1, maximum: 2147483647 }),
+  sliceStartedAt: Type.String({ format: 'date-time' }),
+  sliceEndedAt: Type.String({ format: 'date-time' }),
+  timezone: Type.String({ minLength: 1, maxLength: 100 }),
+  startPosition: ReadingActivityPositionSchema,
+  endPosition: ReadingActivityPositionSchema,
+  activityArea: ReadingActivityAreaSchema,
+  discontinuous: Type.Optional(Type.Boolean()),
+});
+export type ReadingActivitySliceRequest = Static<typeof ReadingActivitySliceRequestSchema>;
+
+export const ReadingActivitySliceResponseSchema = Type.Object({
+  accepted: Type.Boolean(),
+});
+export type ReadingActivitySliceResponse = Static<typeof ReadingActivitySliceResponseSchema>;
 
 // §11.9 — the client passes its own local `day` and week start (Monday) so 今日/本周 respect the
 // user's timezone; the server can't know the client's calendar boundaries otherwise. 连续阅读天数 is

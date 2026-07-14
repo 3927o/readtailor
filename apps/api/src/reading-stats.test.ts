@@ -2,8 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   computeBookProgress,
   computeStreakDays,
+  classifyReadingActivitySlice,
+  splitActivitySliceByLocalDay,
+  validateReadingActivitySlice,
+  validateReadingStatsQuery,
   resolveReadingSpeed,
+  validateHeartbeat,
   type ManifestMeta,
+  UserBookError,
 } from './user-books';
 
 // §11.10 speed选择: the book's own forward-reading speed once the sample is solid and sane, else the
@@ -111,5 +117,118 @@ describe('computeStreakDays', () => {
   it('is zero when neither today nor yesterday has reading', () => {
     expect(computeStreakDays(new Set(['2026-07-10']), '2026-07-14')).toBe(0);
     expect(computeStreakDays(new Set(), '2026-07-14')).toBe(0);
+  });
+});
+
+describe('validateHeartbeat', () => {
+  const base = {
+    clientIntervalId: 'interval-abcdef01',
+    effectiveSeconds: 60,
+    forwardSeconds: 30,
+    forwardChars: 500,
+    day: '2026-07-14',
+    startedAt: '2026-07-14T09:00:00.000Z',
+    at: '2026-07-14T09:01:00.000Z',
+  };
+
+  it('accepts a bounded cumulative interval', () => {
+    const result = validateHeartbeat(base, new Date('2026-07-14T09:02:00.000Z'));
+    expect(result.startedAt.toISOString()).toBe(base.startedAt);
+    expect(result.endedAt.toISOString()).toBe(base.at);
+  });
+
+  it('rejects impossible counters and invalid local dates', () => {
+    expect(() => validateHeartbeat({ ...base, forwardSeconds: 61 }, new Date('2026-07-14T09:02:00.000Z'))).toThrow(UserBookError);
+    expect(() => validateHeartbeat({ ...base, effectiveSeconds: 70 }, new Date('2026-07-14T09:02:00.000Z'))).toThrow(UserBookError);
+    expect(() => validateHeartbeat({ ...base, day: '2026-02-31' }, new Date('2026-07-14T09:02:00.000Z'))).toThrow(UserBookError);
+  });
+});
+
+describe('reading activity slices', () => {
+  const base = {
+    clientSessionId: 'session-abcdef01',
+    sequence: 1,
+    sliceStartedAt: '2026-07-14T09:00:00.000Z',
+    sliceEndedAt: '2026-07-14T09:00:15.000Z',
+    timezone: 'Asia/Shanghai',
+    startPosition: { order: 1, sectionId: 'chapter-1', segment: 1, blockIndex: 1, offset: 0 },
+    endPosition: { order: 1, sectionId: 'chapter-1', segment: 1, blockIndex: 1, offset: 120 },
+    activityArea: 'original' as const,
+  };
+  const meta: ManifestMeta = {
+    version: 'v1',
+    language: 'zh',
+    bookTotalChars: 300,
+    charCountByOrder: new Map([[1, 200], [2, 100]]),
+    nodesByOrder: new Map([
+      [1, {
+        sectionId: 'chapter-1',
+        segment: 1,
+        region: 'bodymatter',
+        dataType: 'chapter',
+        nodeStart: 0,
+        charCount: 200,
+        blocks: [{ block_index: 1, block_utf16_length: 200 }],
+      }],
+      [2, {
+        sectionId: 'chapter-2',
+        segment: 1,
+        region: 'bodymatter',
+        dataType: 'chapter',
+        nodeStart: 200,
+        charCount: 100,
+        blocks: [{ block_index: 1, block_utf16_length: 100 }],
+      }],
+    ]),
+  };
+
+  it('validates a bounded slice and its timezone', () => {
+    const result = validateReadingActivitySlice(base, new Date('2026-07-14T09:01:00.000Z'));
+    expect(result.effectiveSeconds).toBe(15);
+    expect(result.day).toBe('2026-07-14');
+  });
+
+  it('splits a slice across the client timezone midnight', () => {
+    expect(splitActivitySliceByLocalDay(
+      new Date('2026-07-14T15:59:50.000Z'),
+      new Date('2026-07-14T16:00:10.000Z'),
+      'Asia/Shanghai',
+    )).toEqual([
+      { day: '2026-07-14', effectiveSeconds: 10 },
+      { day: '2026-07-15', effectiveSeconds: 10 },
+    ]);
+  });
+
+  it('classifies original forward movement as the speed sample', () => {
+    expect(classifyReadingActivitySlice(meta, base, 15)).toEqual({
+      classification: 'original_forward',
+      forwardSeconds: 15,
+      forwardChars: 120,
+    });
+  });
+
+  it('keeps assistance and jumps out of the speed sample', () => {
+    expect(classifyReadingActivitySlice(meta, { ...base, activityArea: 'assistance' }, 15)).toEqual({
+      classification: 'assistance',
+      forwardSeconds: 0,
+      forwardChars: 0,
+    });
+    expect(classifyReadingActivitySlice(meta, { ...base, discontinuous: true }, 15)).toEqual({
+      classification: 'original_jump',
+      forwardSeconds: 0,
+      forwardChars: 0,
+    });
+  });
+});
+
+describe('validateReadingStatsQuery', () => {
+  it('accepts a Monday-start local week window', () => {
+    expect(() => validateReadingStatsQuery({ day: '2026-07-15', weekStart: '2026-07-13' })).not.toThrow();
+  });
+
+  it('rejects invalid dates and malformed week windows', () => {
+    expect(() => validateReadingStatsQuery({ day: '2026-02-31', weekStart: '2026-02-23' })).toThrow(UserBookError);
+    expect(() => validateReadingStatsQuery({ day: '2026-07-13', weekStart: '2026-07-14' })).toThrow(UserBookError);
+    expect(() => validateReadingStatsQuery({ day: '2026-07-15', weekStart: '2026-07-12' })).toThrow(UserBookError);
   });
 });

@@ -28,6 +28,8 @@ import type {
   NormalizationValidationPhase,
   ReaderProfile,
   ReadingSettings,
+  ReadingActivityArea,
+  ReadingActivityClassification,
   SharedBookStatus,
   SourceUploadStatus,
   Strategy,
@@ -1083,7 +1085,11 @@ export const readingSessions = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex('reading_sessions_client_interval_unique').on(table.clientIntervalId),
+    uniqueIndex('reading_sessions_user_book_interval_unique').on(
+      table.userId,
+      table.userBookId,
+      table.clientIntervalId,
+    ),
     index('reading_sessions_user_book_idx').on(table.userBookId),
     // Composite (user_id, day): serves the daily-total SUM (user_id + day) and, via its user_id
     // prefix, the per-user total across all days.
@@ -1091,6 +1097,125 @@ export const readingSessions = pgTable(
     check('reading_sessions_effective_nonneg', sql`${table.effectiveSeconds} >= 0`),
     check('reading_sessions_forward_seconds_nonneg', sql`${table.forwardSeconds} >= 0`),
     check('reading_sessions_forward_chars_nonneg', sql`${table.forwardChars} >= 0`),
+  ],
+);
+
+export const readingActivitySlices = pgTable(
+  'reading_activity_slices',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    readingSessionId: uuid('reading_session_id')
+      .notNull()
+      .references(() => readingSessions.id),
+    userBookId: uuid('user_book_id')
+      .notNull()
+      .references(() => userBooks.id),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    clientSessionId: text('client_session_id').notNull(),
+    sequence: integer('sequence').notNull(),
+    timezone: text('timezone').notNull(),
+    day: date('day', { mode: 'string' }).notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+    endedAt: timestamp('ended_at', { withTimezone: true }).notNull(),
+    startOrder: integer('start_order').notNull(),
+    startSectionId: text('start_section_id').notNull(),
+    startSegment: integer('start_segment').notNull(),
+    startBlockIndex: integer('start_block_index').notNull(),
+    startOffset: integer('start_offset').notNull(),
+    endOrder: integer('end_order').notNull(),
+    endSectionId: text('end_section_id').notNull(),
+    endSegment: integer('end_segment').notNull(),
+    endBlockIndex: integer('end_block_index').notNull(),
+    endOffset: integer('end_offset').notNull(),
+    activityArea: text('activity_area').$type<ReadingActivityArea>().notNull(),
+    classification: text('classification').$type<ReadingActivityClassification>().notNull(),
+    effectiveSeconds: integer('effective_seconds').notNull().default(0),
+    forwardSeconds: integer('forward_seconds').notNull().default(0),
+    forwardChars: integer('forward_chars').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('reading_activity_slices_session_sequence_unique').on(
+      table.userId,
+      table.clientSessionId,
+      table.sequence,
+    ),
+    index('reading_activity_slices_user_day_idx').on(table.userId, table.day),
+    index('reading_activity_slices_user_book_day_idx').on(table.userBookId, table.day),
+    check('reading_activity_slices_sequence_positive', sql`${table.sequence} > 0`),
+    check('reading_activity_slices_time_order_valid', sql`${table.endedAt} >= ${table.startedAt}`),
+    check('reading_activity_slices_effective_nonneg', sql`${table.effectiveSeconds} >= 0`),
+    check('reading_activity_slices_forward_seconds_nonneg', sql`${table.forwardSeconds} >= 0`),
+    check('reading_activity_slices_forward_chars_nonneg', sql`${table.forwardChars} >= 0`),
+    check('reading_activity_slices_forward_seconds_lte_effective', sql`${table.forwardSeconds} <= ${table.effectiveSeconds}`),
+    check(
+      'reading_activity_slices_forward_only_original',
+      sql`${table.classification} = 'original_forward' or (${table.forwardSeconds} = 0 and ${table.forwardChars} = 0)`,
+    ),
+    check(
+      'reading_activity_slices_activity_area_valid',
+      sql`${table.activityArea} in ('original', 'assistance', 'reader_chrome')`,
+    ),
+    check(
+      'reading_activity_slices_classification_valid',
+      sql`${table.classification} in ('original_forward', 'original_reread', 'original_jump', 'assistance', 'stationary')`,
+    ),
+    check('reading_activity_slices_order_positive', sql`${table.startOrder} > 0 and ${table.endOrder} > 0`),
+    check('reading_activity_slices_segment_positive', sql`${table.startSegment} > 0 and ${table.endSegment} > 0`),
+    check('reading_activity_slices_block_positive', sql`${table.startBlockIndex} > 0 and ${table.endBlockIndex} > 0`),
+    check('reading_activity_slices_offset_nonneg', sql`${table.startOffset} >= 0 and ${table.endOffset} >= 0`),
+  ],
+);
+
+export const readingDailyBookStats = pgTable(
+  'reading_daily_book_stats',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    userBookId: uuid('user_book_id')
+      .notNull()
+      .references(() => userBooks.id),
+    day: date('day', { mode: 'string' }).notNull(),
+    effectiveSeconds: integer('effective_seconds').notNull().default(0),
+    forwardSeconds: integer('forward_seconds').notNull().default(0),
+    forwardChars: integer('forward_chars').notNull().default(0),
+    lastReadAt: timestamp('last_read_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.userBookId, table.day] }),
+    index('reading_daily_book_stats_user_book_idx').on(table.userBookId),
+    check('reading_daily_book_stats_effective_nonneg', sql`${table.effectiveSeconds} >= 0`),
+    check('reading_daily_book_stats_forward_seconds_nonneg', sql`${table.forwardSeconds} >= 0`),
+    check('reading_daily_book_stats_forward_chars_nonneg', sql`${table.forwardChars} >= 0`),
+    check('reading_daily_book_stats_forward_seconds_lte_effective', sql`${table.forwardSeconds} <= ${table.effectiveSeconds}`),
+  ],
+);
+
+export const bookReadingStats = pgTable(
+  'book_reading_stats',
+  {
+    userBookId: uuid('user_book_id')
+      .primaryKey()
+      .references(() => userBooks.id),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    effectiveSeconds: integer('effective_seconds').notNull().default(0),
+    forwardSeconds: integer('forward_seconds').notNull().default(0),
+    forwardChars: integer('forward_chars').notNull().default(0),
+    lastReadAt: timestamp('last_read_at', { withTimezone: true }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('book_reading_stats_user_idx').on(table.userId),
+    check('book_reading_stats_effective_nonneg', sql`${table.effectiveSeconds} >= 0`),
+    check('book_reading_stats_forward_seconds_nonneg', sql`${table.forwardSeconds} >= 0`),
+    check('book_reading_stats_forward_chars_nonneg', sql`${table.forwardChars} >= 0`),
+    check('book_reading_stats_forward_seconds_lte_effective', sql`${table.forwardSeconds} <= ${table.effectiveSeconds}`),
   ],
 );
 

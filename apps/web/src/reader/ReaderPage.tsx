@@ -18,7 +18,7 @@ import {
   putReadingSettings,
   reportReaderFocus,
   saveReaderPositionBeacon,
-  sendHeartbeat,
+  sendActivitySlice,
   updateHighlightNote,
 } from './api';
 import type {
@@ -35,7 +35,7 @@ import type {
   ReadingStatsPerBook,
   ThemeSetting,
 } from './api';
-import { localDay, localWeekStart, ReadingSessionTracker } from './session';
+import { localDay, localWeekStart, ReadingSessionTracker, type ReadingActivityArea, type ReadingActivityPosition } from './session';
 import {
   domBoundaryForOffset,
   getFragmentTargetId,
@@ -363,7 +363,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   };
 
   // §11.8/§11.10 effective-reading session. One tracker instance for the reader's lifetime; the
-  // lifecycle effect below drives its 1s tick, heartbeats, and flushes. Order changes (from the
+  // lifecycle effect below drives its 1s tick and activity-slice flushes. Order changes (from the
   // IntersectionObserver and jumps) feed forward-progress; scroll/pointer/key feed activity. All sends
   // are fire-and-forget — session tracking must never block or crash reading.
   const sessionRef = useRef<ReadingSessionTracker | null>(null);
@@ -372,13 +372,60 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     () => new Map(document.manifest.nodes.map((node) => [node.order, node.character_count])),
     [document.manifest.nodes],
   );
+  const nodeByOrder = useMemo(
+    () => new Map(document.manifest.nodes.map((node) => [node.order, node])),
+    [document.manifest.nodes],
+  );
+  const fallbackActivityPosition = (order: number): ReadingActivityPosition => {
+    const node = nodeByOrder.get(order) ?? document.manifest.nodes[0];
+    return {
+      order: node?.order ?? order,
+      sectionId: node?.section_id ?? 'unknown',
+      segment: node?.segment ?? 1,
+      blockIndex: 1,
+      offset: 0,
+    };
+  };
+  const toActivityPosition = (observed: ObservedReaderAnchor | null): ReadingActivityPosition => {
+    if (!observed) return fallbackActivityPosition(currentOrderRef.current);
+    return {
+      order: observed.order,
+      sectionId: observed.position.sectionId,
+      segment: observed.position.segment,
+      blockIndex: observed.position.blockIndex,
+      offset: observed.position.offset,
+    };
+  };
+  const resolveActivityArea = (): ReadingActivityArea => {
+    if (tocOpen || settingsOpen || statsOpen || bookInfoOpen) return 'reader_chrome';
+    if (popover) return 'assistance';
+    const root = scrollRoot.current;
+    if (!root) return 'reader_chrome';
+    const rect = root.getBoundingClientRect();
+    const target = window.document.elementFromPoint(
+      rect.left + rect.width / 2,
+      rect.top + READING_ANCHOR_TOP,
+    ) as HTMLElement | null;
+    if (target?.closest('.reader-tailored-block')) return 'assistance';
+    if (target?.closest('.reader-original')) return 'original';
+    return 'reader_chrome';
+  };
   // Set on a TOC jump: order changes within JUMP_SETTLE_MS after it are treated as a jump (no forward
   // credit for skipped content, §11.10 目录大跳不算读完中间).
   const jumpEndRef = useRef(0);
-  const flushHeartbeat = useRef<(keepalive?: boolean) => void>(() => {});
-  flushHeartbeat.current = (keepalive = false) => {
-    const snapshot = sessionRef.current?.snapshot(Date.now());
-    if (snapshot) sendHeartbeat(document.userBookId, snapshot, keepalive ? { keepalive: true } : {});
+  const flushActivitySlice = useRef<(keepalive?: boolean, tickFirst?: boolean, discontinuous?: boolean) => Promise<void>>(() => Promise.resolve());
+  flushActivitySlice.current = (keepalive = false, tickFirst = false, discontinuous = false) => {
+    const now = Date.now();
+    if (tickFirst) sessionRef.current?.tick(now);
+    const observed = computeAnchorRef.current();
+    const payload = sessionRef.current?.activitySlice(
+      now,
+      toActivityPosition(observed),
+      resolveActivityArea(),
+      discontinuous,
+    );
+    if (payload) return sendActivitySlice(document.userBookId, payload, keepalive ? { keepalive: true } : {});
+    return Promise.resolve();
   };
   const recordOrder = useRef<(order: number) => void>(() => {});
   recordOrder.current = (order) => {
@@ -413,8 +460,10 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   // Opening the stats panel pulls the freshest data (§11.9 「再次进入统计视图必须看到已提交的数据」).
   useEffect(() => {
     if (!statsOpen) return;
-    void refetchGlobalStats();
-    void refetchBookStats();
+    void flushActivitySlice.current(false, true).finally(() => {
+      void refetchGlobalStats();
+      void refetchBookStats();
+    });
   }, [statsOpen, refetchGlobalStats, refetchBookStats]);
 
   const enhancements = useMemo(() => new Map(
@@ -669,6 +718,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
         // §11.10: feed the settled node into the session tracker so forward-read chars accrue (a jump
         // within JUMP_SETTLE_MS is credited as a jump, not forward reading).
         recordOrder.current(order);
+        flushActivitySlice.current();
       }
     }, { root, rootMargin: '-12% 0px -72% 0px', threshold: 0 });
     root.querySelectorAll<HTMLElement>('[data-node-order]').forEach((element) => observer.observe(element));
@@ -707,7 +757,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
 
   // §11.8: drive the effective-reading session. A 1s accountant advances the tracker (which decides
   // active vs idle) and, on the active→idle edge, flushes + ends the interval so idle time is never
-  // back-filled. A 15s heartbeat flushes the running interval; node changes, backgrounding, and unload
+  // back-filled. A 15s activity-slice flush sends the running interval; node changes, backgrounding, and unload
   // flush + end immediately (immediate submit, §11.8). Being mounted IS being in the formal reader.
   useEffect(() => {
     const tracker = sessionRef.current;
@@ -715,6 +765,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     tracker.setInReader(true);
     tracker.setVisible(window.document.visibilityState === 'visible');
     tracker.initOrder(currentOrderRef.current);
+    tracker.initPosition(fallbackActivityPosition(currentOrderRef.current));
 
     // Scroll direction is handled in handleScroll; here we capture the other activity kinds. A moving
     // pointer / key / touch marks presence but not forward reading (that's forward scroll only).
@@ -726,24 +777,24 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     const tickTimer = window.setInterval(() => {
       const active = tracker.tick(Date.now());
       if (wasActive && !active) {
-        flushHeartbeat.current();
+        flushActivitySlice.current();
         tracker.endInterval();
       }
       wasActive = active;
     }, TICK_MS);
-    const beatTimer = window.setInterval(() => flushHeartbeat.current(), HEARTBEAT_MS);
+    const beatTimer = window.setInterval(() => flushActivitySlice.current(), HEARTBEAT_MS);
 
     const onVisibility = () => {
       const visible = window.document.visibilityState === 'visible';
       tracker.setVisible(visible);
       if (!visible) {
-        flushHeartbeat.current(true);
+        void flushActivitySlice.current(true, true);
         tracker.endInterval();
         wasActive = false;
       }
     };
     const onPageHide = () => {
-      flushHeartbeat.current(true);
+      void flushActivitySlice.current(true, true);
       tracker.endInterval();
       wasActive = false;
     };
@@ -758,7 +809,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       window.removeEventListener('pagehide', onPageHide);
       // Leaving the reader (unmount / route change) ends the interval and flushes it (keepalive so a
       // fast teardown still delivers).
-      flushHeartbeat.current(true);
+      void flushActivitySlice.current(true, true);
       tracker.endInterval();
     };
   }, [document.userBookId]);
@@ -899,13 +950,13 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   };
 
   const jumpToOrder = (order: number) => {
+    flushActivitySlice.current();
     scrollRoot.current?.querySelector<HTMLElement>(`[data-node-order="${order}"]`)
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     setTocOpen(false);
     // §11.10: the settling scroll after this jump must not be credited as forward reading of the
     // skipped content. Mark the jump window and flush the session (node-change immediate submit, §11.8).
     jumpEndRef.current = Date.now() + JUMP_SETTLE_MS;
-    flushHeartbeat.current();
     // Explicit jump: this is the one place §2.1 allows an active save of a node's first block/offset 0.
     // Report the target now (with the top-of-node anchor) so its window is prioritized and the saved
     // position matches the jump before the scroll settles. clientObservedAt is stamped at click time
@@ -981,6 +1032,8 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     setPopover(null);
   };
   const jumpToHighlight = (highlightId: string) => {
+    flushActivitySlice.current();
+    jumpEndRef.current = Date.now() + JUMP_SETTLE_MS;
     setBookInfoOpen(false);
     // A cross-block highlight renders one mark per block sharing the id; the first is its start.
     scrollRoot.current
@@ -1038,6 +1091,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     .filter((item) => item.first_node_order <= currentOrder)
     .at(-1)?.section_id;
   const openToc = () => {
+    void flushActivitySlice.current(false, true);
     setSettingsOpen(false);
     setBookInfoOpen(false);
     setStatsOpen(false);
@@ -1045,6 +1099,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     setTocOpen(true);
   };
   const openSettings = () => {
+    void flushActivitySlice.current(false, true);
     setTocOpen(false);
     setBookInfoOpen(false);
     setStatsOpen(false);
@@ -1052,6 +1107,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     setSettingsOpen(true);
   };
   const openBookInfo = () => {
+    void flushActivitySlice.current(false, true);
     setTocOpen(false);
     setSettingsOpen(false);
     setStatsOpen(false);
@@ -1059,6 +1115,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     setBookInfoOpen(true);
   };
   const openStats = () => {
+    void flushActivitySlice.current(false, true);
     setTocOpen(false);
     setSettingsOpen(false);
     setBookInfoOpen(false);

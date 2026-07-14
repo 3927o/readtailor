@@ -141,6 +141,20 @@
       "when": 1784048322709,
       "tag": "0019_briefing_structured",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784050000000,
+      "tag": "0020_reading_session_interval_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784130000000,
+      "tag": "0021_reading_activity_slices",
+      "breakpoints": true
     }
   ]
 }

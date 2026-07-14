@@ -20,6 +20,9 @@ docs/
 6. [`architecture/technical_architecture_v2.md`](architecture/technical_architecture_v2.md)：当前实现方案。
 7. [`architecture/technical_architecture.md`](architecture/technical_architecture.md)：未来系统加固参考。
 
+`project/reading_stats_architecture.md` 记录阅读统计从当前 heartbeat 实现演进到可重建 slice
+模型的架构方案。
+
 `product/product_mvp_plan.md` 保存产品方向和背景说明。用户可见行为发生冲突时，以
 `product/product_prd.md` 为准。
 

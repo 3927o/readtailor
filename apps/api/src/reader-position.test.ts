@@ -11,7 +11,14 @@ function meta(entries: Array<[number, { sectionId: string; segment: number }]>):
     language: null,
     bookTotalChars: null,
     charCountByOrder: new Map(),
-    nodesByOrder: new Map(entries),
+    nodesByOrder: new Map(entries.map(([order, node]) => [order, {
+      ...node,
+      region: null,
+      dataType: null,
+      nodeStart: 0,
+      charCount: 0,
+      blocks: [],
+    }])),
   };
 }
 

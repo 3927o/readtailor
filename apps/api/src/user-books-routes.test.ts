@@ -112,6 +112,9 @@ function fakeService(overrides: Partial<UserBookUserService> = {}): UserBookServ
     async recordHeartbeat() {
       return { accepted: true };
     },
+    async recordReadingActivitySlice() {
+      return { accepted: true };
+    },
     async getGlobalReadingStats() {
       return { todaySeconds: 600, weekSeconds: 3600, totalSeconds: 7200, streakDays: 3 };
     },
@@ -529,6 +532,58 @@ describe('user book workflow routes', () => {
         day: '2026-07-14',
         startedAt: '2026-07-14T09:00:00.000Z',
         at: '2026-07-14T09:01:00.000Z',
+      },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('accepts a reading activity slice and passes it through', async () => {
+    let received: unknown;
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async recordReadingActivitySlice(_userBookId, input) {
+          received = input;
+          return { accepted: true };
+        },
+      }),
+    });
+    const payload = {
+      clientSessionId: 'session-abcdef01',
+      sequence: 1,
+      sliceStartedAt: '2026-07-14T09:00:00.000Z',
+      sliceEndedAt: '2026-07-14T09:00:15.000Z',
+      timezone: 'Asia/Shanghai',
+      startPosition: { order: 1, sectionId: 'chapter-1', segment: 1, blockIndex: 1, offset: 0 },
+      endPosition: { order: 1, sectionId: 'chapter-1', segment: 1, blockIndex: 1, offset: 120 },
+      activityArea: 'original',
+    };
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/reading-activity-slices`,
+      headers: { origin: 'http://localhost:5173' },
+      payload,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ accepted: true });
+    expect(received).toEqual(payload);
+  });
+
+  it('rejects a malformed reading activity slice before the handler runs', async () => {
+    const app = await buildApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/reading-activity-slices`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: {
+        clientSessionId: 'session-abcdef01',
+        sequence: 0,
+        sliceStartedAt: '2026-07-14T09:00:00.000Z',
+        sliceEndedAt: '2026-07-14T09:00:15.000Z',
+        timezone: 'Asia/Shanghai',
+        startPosition: { order: 1, sectionId: 'chapter-1', segment: 1, blockIndex: 1, offset: 0 },
+        endPosition: { order: 1, sectionId: 'chapter-1', segment: 1, blockIndex: 1, offset: 120 },
+        activityArea: 'scrolling_around',
       },
     });
     expect(response.statusCode).toBe(400);

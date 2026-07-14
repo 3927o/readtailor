@@ -1,5 +1,5 @@
-// §11.8 / §11.10 — the effective-reading accumulator. It owns one "interval" (a contiguous active
-// period, §11.8) at a time and buckets three quantities the server later trusts verbatim:
+// §11.8 / §11.10 — the effective-reading tracker. It owns one legacy "interval" (a contiguous active
+// period, §11.8) and emits immutable activity slices for the server to classify:
 //   • effectiveSeconds — all active reading time (原文 + 导读 + 注释 + 助读). Accrues while the reader is
 //     in the formal reader, the page is foreground-visible, and there was activity within the idle
 //     threshold. A short reading pause under that threshold still counts (§11.8「近期存在活动」); only
@@ -12,9 +12,9 @@
 // The class is pure and timeline-driven: every method takes an explicit `nowMs`, so a scripted
 // sequence of ticks/events reproduces any real session deterministically (see session.test.ts). The
 // React hook (ReaderPage) is the only impure part — it forwards DOM events, a 1s tick, and page
-// visibility, and flushes snapshots to the heartbeat endpoint. Idempotency (a retry never
-// double-counts) is guaranteed server-side by the clientIntervalId GREATEST clamp, so the client is
-// free to resend the current cumulative snapshot at will.
+// visibility, and flushes slices to the activity endpoint. Idempotency (a retry never double-counts)
+// is guaranteed server-side by (clientSessionId, sequence), while the legacy heartbeat snapshot stays
+// available during migration.
 
 export interface HeartbeatPayload {
   clientIntervalId: string;
@@ -26,6 +26,28 @@ export interface HeartbeatPayload {
   at: string;
 }
 
+export interface ReadingActivityPosition {
+  order: number;
+  sectionId: string;
+  segment: number;
+  blockIndex: number;
+  offset: number;
+}
+
+export type ReadingActivityArea = 'original' | 'assistance' | 'reader_chrome';
+
+export interface ActivitySlicePayload {
+  clientSessionId: string;
+  sequence: number;
+  sliceStartedAt: string;
+  sliceEndedAt: string;
+  timezone: string;
+  startPosition: ReadingActivityPosition;
+  endPosition: ReadingActivityPosition;
+  activityArea: ReadingActivityArea;
+  discontinuous?: boolean;
+}
+
 export interface SessionTrackerConfig {
   // Sustained inactivity beyond this pauses the interval (§11.8 空闲阈值 — an implementation param).
   idleThresholdMs?: number;
@@ -33,7 +55,9 @@ export interface SessionTrackerConfig {
   forwardWindowMs?: number;
   // Cap a single tick's credit so a throttled/background timer that fires late can't dump a huge delta.
   maxTickMs?: number;
+  newSessionId?: () => string;
   newIntervalId?: () => string;
+  timezoneOf?: () => string;
   dayOf?: (ms: number) => string;
   isoOf?: (ms: number) => string;
 }
@@ -67,16 +91,24 @@ export class ReadingSessionTracker {
   private readonly idleThresholdMs: number;
   private readonly forwardWindowMs: number;
   private readonly maxTickMs: number;
+  private readonly clientSessionId: string;
   private readonly newIntervalId: () => string;
+  private readonly timezoneOf: () => string;
   private readonly dayOf: (ms: number) => string;
   private readonly isoOf: (ms: number) => string;
 
   private intervalId: string | null = null;
+  private sequence = 0;
   private day = '';
   private startedAtIso = '';
   private effectiveMs = 0;
   private forwardMs = 0;
   private forwardChars = 0;
+  private sliceStartedAtMs: number | null = null;
+  private sliceEffectiveMs = 0;
+  private sliceStartPosition: ReadingActivityPosition | null = null;
+  private lastCreditedMs: number | null = null;
+  private pendingDiscontinuous = false;
   private lastTickMs: number | null = null;
   private lastActivityMs = 0;
   private lastForwardMs = 0;
@@ -89,7 +121,9 @@ export class ReadingSessionTracker {
     this.idleThresholdMs = config.idleThresholdMs ?? 30_000;
     this.forwardWindowMs = config.forwardWindowMs ?? 5_000;
     this.maxTickMs = config.maxTickMs ?? 15_000;
+    this.clientSessionId = (config.newSessionId ?? randomIntervalId)();
     this.newIntervalId = config.newIntervalId ?? randomIntervalId;
+    this.timezoneOf = config.timezoneOf ?? (() => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
     this.dayOf = config.dayOf ?? localDay;
     this.isoOf = config.isoOf ?? ((ms: number) => new Date(ms).toISOString());
   }
@@ -113,6 +147,12 @@ export class ReadingSessionTracker {
     this.frontier = Math.max(this.frontier, order);
   }
 
+  initPosition(position: ReadingActivityPosition): void {
+    this.currentOrder = position.order;
+    this.frontier = Math.max(this.frontier, position.order);
+    if (this.sliceStartPosition === null) this.sliceStartPosition = position;
+  }
+
   // Any user activity (scroll / pointer / key / touch). `forward` marks a forward scroll, which is the
   // only kind that keeps forward-time eligible.
   recordActivity(nowMs: number, forward = false): void {
@@ -128,6 +168,7 @@ export class ReadingSessionTracker {
     if (viaJump) {
       this.frontier = Math.max(this.frontier, newOrder);
       this.currentOrder = newOrder;
+      this.pendingDiscontinuous = true;
       this.recordActivity(nowMs, false);
       return;
     }
@@ -154,6 +195,9 @@ export class ReadingSessionTracker {
     this.forwardMs = 0;
     this.forwardChars = 0;
     this.lastTickMs = nowMs;
+    this.sliceStartedAtMs = nowMs;
+    this.sliceEffectiveMs = 0;
+    this.lastCreditedMs = nowMs;
     // Don't imply a forward scroll just because an interval opened — forward accrues only after a real
     // forward event lands within the window.
     this.lastForwardMs = 0;
@@ -169,6 +213,8 @@ export class ReadingSessionTracker {
     this.lastTickMs = nowMs;
     if (active && this.intervalId !== null) {
       this.effectiveMs += elapsed;
+      this.sliceEffectiveMs += elapsed;
+      this.lastCreditedMs = nowMs;
       const atFrontier = this.currentOrder === null || this.currentOrder >= this.frontier;
       const recentForward = nowMs - this.lastForwardMs <= this.forwardWindowMs;
       if (atFrontier && recentForward) this.forwardMs += elapsed;
@@ -191,9 +237,47 @@ export class ReadingSessionTracker {
     };
   }
 
+  activitySlice(
+    nowMs: number,
+    endPosition: ReadingActivityPosition,
+    activityArea: ReadingActivityArea,
+    discontinuous = false,
+  ): ActivitySlicePayload | null {
+    if (this.intervalId === null) return null;
+    const roundedSeconds = Math.round(this.sliceEffectiveMs / 1000);
+    if (roundedSeconds <= 0) {
+      if (this.sliceStartPosition === null) this.sliceStartPosition = endPosition;
+      return null;
+    }
+    const startedMs = this.sliceStartedAtMs ?? nowMs;
+    const endedMs = this.lastCreditedMs ?? nowMs;
+    const startPosition = this.sliceStartPosition ?? endPosition;
+    const payload: ActivitySlicePayload = {
+      clientSessionId: this.clientSessionId,
+      sequence: this.sequence += 1,
+      sliceStartedAt: this.isoOf(startedMs),
+      sliceEndedAt: this.isoOf(endedMs),
+      timezone: this.timezoneOf(),
+      startPosition,
+      endPosition,
+      activityArea,
+      ...((discontinuous || this.pendingDiscontinuous) ? { discontinuous: true } : {}),
+    };
+    this.sliceStartedAtMs = endedMs;
+    this.sliceEffectiveMs = 0;
+    this.sliceStartPosition = endPosition;
+    this.pendingDiscontinuous = false;
+    return payload;
+  }
+
   // End the current interval. The next active tick opens a fresh one with a new id. Snapshot first if
   // the final values still need flushing.
   endInterval(): void {
     this.intervalId = null;
+    this.sliceStartedAtMs = null;
+    this.sliceEffectiveMs = 0;
+    this.sliceStartPosition = null;
+    this.lastCreditedMs = null;
+    this.pendingDiscontinuous = false;
   }
 }
