@@ -2024,6 +2024,17 @@ h1 {
   background: var(--rt-mark-margin);
 }
 
+.note-dialog[data-variant='tailored'] header i {
+  background: var(--rt-green);
+}
+
+/* Match the tailored 裁读注 body to the book-note reading weight (.rt-reader-note-content). */
+.note-dialog[data-variant='tailored'] .note-dialog-content .assistance-content {
+  font-size: 14.5px;
+  line-height: 1.9;
+  color: var(--rt-ink);
+}
+
 .note-dialog header em {
   color: var(--rt-ink-3);
   font-style: normal;
@@ -3035,44 +3046,21 @@ h1 {
   color: var(--rt-ink-2);
 }
 
-.tailored-annotations {
-  display: grid;
-  gap: 12px;
-  margin: 24px 0;
-  padding: 20px 0;
-  border-top: 1px dashed var(--rt-rule);
-  border-bottom: 1px dashed var(--rt-rule);
+.tailored-text-anchor {
+  color: inherit;
+  background: none;
+  border-bottom: 2px dotted var(--rt-green);
+  text-underline-offset: 2px;
+  cursor: pointer;
 }
 
-.tailored-text-anchor {
-  padding: 0 1px;
-  border-bottom: 1px solid var(--rt-green-deep);
-  border-radius: 2px;
-  color: inherit;
-  background: color-mix(in srgb, var(--rt-green) 22%, transparent);
-  cursor: pointer;
+.tailored-text-anchor:hover {
+  border-bottom-color: var(--rt-green-deep);
 }
 
 .tailored-text-anchor:focus-visible {
   outline: 2px solid var(--rt-green-deep);
   outline-offset: 2px;
-}
-
-.tailored-annotation {
-  padding: 7px 0 7px 13px;
-  border-left: 2px solid var(--rt-green);
-  color: var(--rt-ink-2);
-  font-size: 14px;
-  line-height: 1.8;
-}
-
-.tailored-anchor {
-  margin-bottom: 6px;
-  color: var(--rt-green-deep);
-  font-family: var(--rt-mono);
-  font-size: 8px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
 }
 
 .trial-navigation {

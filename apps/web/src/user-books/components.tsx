@@ -4,10 +4,7 @@ import { EmptyState } from '../components/core/EmptyState';
 import { Kicker } from '../components/core/Kicker';
 import { bookCoverUrl } from '../library/api';
 import { LibraryChrome } from '../library/LibraryChrome';
-import type {
-  TailoredAnnotation,
-  UserBookSharedBook,
-} from './api';
+import type { UserBookSharedBook } from './api';
 
 export function WorkflowPage({ book, kicker, title, children, hideHeader }: {
   book: UserBookSharedBook;
@@ -81,26 +78,6 @@ export function AssistanceContent({ content }: { content: string }) {
         return <p key={index}>{block.replace(/^#{1,6}\s+/, '')}</p>;
       })}
     </div>
-  );
-}
-
-export function AnnotationList({ annotations }: { annotations: TailoredAnnotation[] }) {
-  if (!annotations.length) return null;
-  return (
-    <section className="tailored-annotations" aria-label="裁读注">
-      <Kicker>TAILORED NOTES · 裁读注</Kicker>
-      {annotations.map((annotation, index) => (
-        <article className="tailored-annotation" id={`tailored-annotation-${annotation.id}`} key={annotation.id}>
-          <div className="tailored-anchor">
-            注 {index + 1} · BLOCK {annotation.range.start.blockIndex}
-            {' · '}{annotation.range.start.offset}–{annotation.range.end.blockIndex === annotation.range.start.blockIndex
-              ? annotation.range.end.offset
-              : `${annotation.range.end.blockIndex}:${annotation.range.end.offset}`}
-          </div>
-          <AssistanceContent content={annotation.content} />
-        </article>
-      ))}
-    </section>
   );
 }
 

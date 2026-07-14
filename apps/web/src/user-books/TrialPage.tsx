@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router';
 import { bookAssetBaseUrl } from '../library/api';
 import { prepareStandaloneContent } from '../reader/content';
+import { NotePopover, popoverPlacement } from '../reader/NotePopover';
+import type { ActivePopover } from '../reader/NotePopover';
 import {
   adoptTrial,
   ApiError,
@@ -14,7 +16,6 @@ import {
 import type { TrialSample, TrialSnapshot } from './api';
 import {
   AdjustmentForm,
-  AnnotationList,
   AssistanceContent,
   BackToShelf,
   WorkflowFallback,
@@ -36,6 +37,7 @@ export function TrialPage() {
   });
   const [sampleIndex, setSampleIndex] = useState(0);
   const [feedback, setFeedback] = useState('');
+  const [popover, setPopover] = useState<ActivePopover | null>(null);
   const viewedAttempts = useRef(new Set<string>());
   const resyncOnConflict = async (error: Error) => {
     if (error instanceof ApiError && error.status === 409) {
@@ -100,6 +102,13 @@ export function TrialPage() {
     ) : '',
     [current, gate.query.data?.sharedBook.id],
   );
+  // Flat id → content lookup so a click on an in-text 裁读注 anchor opens its note as a
+  // popover — the same interaction as the reader — instead of scrolling to a list.
+  const annotationContentById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const annotation of current?.tailoredContent.annotations ?? []) map.set(annotation.id, annotation.content);
+    return map;
+  }, [current]);
 
   useEffect(() => {
     setSampleIndex(0);
@@ -113,6 +122,23 @@ export function TrialPage() {
     viewedAttempts.current.add(key);
     viewed.mutate(current);
   }, [current, trial.data?.revision, trial.data?.status]);
+
+  // The fixed-position popover is anchored to an in-text mark, so any scroll/resize would
+  // leave it detached — close it. Switching samples re-renders the passage under it too.
+  useEffect(() => setPopover(null), [sampleIndex]);
+  useEffect(() => {
+    if (!popover) return;
+    const close = () => setPopover(null);
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setPopover(null); };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [popover]);
 
   if (gate.query.isPending || !gate.active) return <WorkflowFallback title="正在打开试读" detail="正在确认当前试读版本。" />;
   if (gate.query.isError) return <WorkflowFallback title="试读暂时打不开" detail={gate.query.error.message} retry={() => void gate.query.refetch()} />;
@@ -153,10 +179,10 @@ export function TrialPage() {
             className="trial-sample"
             onClick={(event) => {
               const anchor = (event.target as HTMLElement).closest<HTMLElement>('[data-annotation-id]');
-              if (anchor?.dataset.annotationId) {
-                document.getElementById(`tailored-annotation-${anchor.dataset.annotationId}`)
-                  ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              }
+              if (!anchor?.dataset.annotationId) return;
+              const content = annotationContentById.get(anchor.dataset.annotationId);
+              if (!content) return;
+              setPopover({ body: { kind: 'tailored', content }, ...popoverPlacement(anchor.getBoundingClientRect()) });
             }}
           >
             {current.tailoredContent.guide ? (
@@ -166,7 +192,6 @@ export function TrialPage() {
               </section>
             ) : null}
             <div className="trial-original rt-reader-content" dangerouslySetInnerHTML={{ __html: currentHtml }} />
-            <AnnotationList annotations={current.tailoredContent.annotations} />
             {current.tailoredContent.afterReading ? (
               <section className="tailored-after-reading">
                 <span>AFTER READING · 节后助读</span>
@@ -203,6 +228,7 @@ export function TrialPage() {
             </button>
             <BackToShelf />
           </div>
+          <NotePopover popover={popover} close={() => setPopover(null)} />
         </div>
       ) : <WorkflowMessage title="试读结果不完整">当前 revision 没有返回完整的三个片段，请重新读取。</WorkflowMessage>}
     </WorkflowPage>

@@ -4,11 +4,13 @@ import { Link, useParams } from 'react-router';
 import { ProgressBar } from '../components/chrome/ProgressBar';
 import { Segmented } from '../components/core/Segmented';
 import { Slider } from '../components/core/Slider';
-import { AnnotationList, AssistanceContent, BriefCard } from '../user-books/components';
+import { AssistanceContent, BriefCard } from '../user-books/components';
 import { getReaderBootstrap, getReaderDocument, reportReaderFocus } from './api';
 import type { ReaderNodeEnhancement, ReaderOutlineItem } from './api';
 import { getFragmentTargetId, getOutlineDepth, prepareBookContent } from './content';
-import type { OriginalNote, RenderedHeading, RenderedNode } from './content';
+import type { RenderedHeading, RenderedNode } from './content';
+import { NotePopover, popoverPlacement } from './NotePopover';
+import type { ActivePopover } from './NotePopover';
 
 type ThemeSetting = 'system' | 'paper' | 'night';
 type ContentWidthSetting = 'narrow' | 'medium' | 'wide';
@@ -18,14 +20,6 @@ interface ReaderSettings {
   lineHeight: number;
   contentWidth: ContentWidthSetting;
   theme: ThemeSetting;
-}
-
-interface ActiveNote {
-  note: OriginalNote;
-  left: number;
-  edge: number;
-  caretLeft: number;
-  placement: 'above' | 'below';
 }
 
 const defaultSettings: ReaderSettings = {
@@ -104,12 +98,16 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [bookInfoOpen, setBookInfoOpen] = useState(false);
   const [currentOrder, setCurrentOrder] = useState(document.manifest.nodes[0]?.order ?? 1);
-  const [note, setNote] = useState<ActiveNote | null>(null);
+  const [popover, setPopover] = useState<ActivePopover | null>(null);
   const [scrollProgress, setScrollProgress] = useState(0);
   const [chromeHidden, setChromeHidden] = useState(false);
   const scrollRoot = useRef<HTMLDivElement>(null);
   const lastScrollTop = useRef(0);
-  const enhancementAnchor = useRef<{ order: number; top: number } | undefined>(undefined);
+  // Layout-anchor state (§6.2): `committedEnhancementVersion` tracks which enhancement content is
+  // currently in the DOM, and `pendingAnchor` carries the pre-commit position snapshot into the
+  // post-commit layout effect. See the render-phase snapshot below.
+  const committedEnhancementVersion = useRef<string | null>(null);
+  const pendingAnchor = useRef<{ order: number; top: number } | null>(null);
   const prefersDark = usePrefersDark();
   const theme = resolvedTheme(settings.theme, prefersDark);
   const queryClient = useQueryClient();
@@ -136,6 +134,15 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       enhancement.status === 'ready' ? enhancement.tailoredContent?.annotations ?? [] : [],
     ]),
   ), [enhancements]);
+  // Flat id → content lookup so a click on an in-text 裁读注 anchor can open its note
+  // inline as a popover instead of scrolling to a list at the node's end.
+  const annotationContentById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const list of annotationsByNode.values()) {
+      for (const annotation of list) map.set(annotation.id, annotation.content);
+    }
+    return map;
+  }, [annotationsByNode]);
   const prepared = useMemo(
     () => prepareBookContent(
       document.html,
@@ -150,17 +157,31 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     .map((item) => `${item.sectionId}:${item.segment}:${item.status}:${item.tailoredContent ? 'content' : 'empty'}`)
     .join('|');
 
-  useLayoutEffect(() => {
+  // getSnapshotBeforeUpdate-equivalent: when the enhancement content is about to change the DOM,
+  // snapshot the current node's viewport top from the *old* DOM during render — before React commits
+  // the newly inserted annotation blocks. Reading here (pre-commit) is what keeps the anchor from
+  // going stale as the reader scrolls freely within a node between 3s bootstrap polls; the previous
+  // implementation reused a top recorded at the last effect run and undid the reader's own scrolling.
+  if (enhancementVersion !== committedEnhancementVersion.current && pendingAnchor.current === null) {
     const root = scrollRoot.current;
     const node = root?.querySelector<HTMLElement>(`[data-node-order="${currentOrder}"]`);
-    if (!root || !node) return;
-    const top = node.getBoundingClientRect().top;
-    const previous = enhancementAnchor.current;
-    if (previous?.order === currentOrder) {
-      root.scrollTop += top - previous.top;
+    if (root && node) {
+      pendingAnchor.current = { order: currentOrder, top: node.getBoundingClientRect().top };
     }
-    enhancementAnchor.current = { order: currentOrder, top: node.getBoundingClientRect().top };
-  }, [currentOrder, enhancementVersion]);
+  }
+
+  useLayoutEffect(() => {
+    committedEnhancementVersion.current = enhancementVersion;
+    const snapshot = pendingAnchor.current;
+    pendingAnchor.current = null;
+    if (!snapshot) return;
+    const root = scrollRoot.current;
+    const node = root?.querySelector<HTMLElement>(`[data-node-order="${snapshot.order}"]`);
+    if (!root || !node) return;
+    // Content inserted above the anchor shifted it by (top - snapshot.top); undo that shift so the
+    // paragraph the reader is on stays visually put across the re-render.
+    root.scrollTop += node.getBoundingClientRect().top - snapshot.top;
+  }, [enhancementVersion]);
   useEffect(() => {
     const root = scrollRoot.current;
     if (!root) return;
@@ -188,16 +209,16 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       setTocOpen(false);
       setSettingsOpen(false);
       setBookInfoOpen(false);
-      setNote(null);
+      setPopover(null);
     };
     window.addEventListener('keydown', closeOverlays);
     return () => window.removeEventListener('keydown', closeOverlays);
   }, []);
 
   useEffect(() => {
-    const closeNote = () => setNote(null);
-    window.addEventListener('resize', closeNote);
-    return () => window.removeEventListener('resize', closeNote);
+    const closePopover = () => setPopover(null);
+    window.addEventListener('resize', closePopover);
+    return () => window.removeEventListener('resize', closePopover);
   }, []);
 
   const handleScroll = () => {
@@ -206,13 +227,13 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     const max = root.scrollHeight - root.clientHeight;
     setScrollProgress(max > 0 ? (root.scrollTop / max) * 100 : 0);
     const delta = root.scrollTop - lastScrollTop.current;
-    if (delta > 4 && root.scrollTop > 180 && !tocOpen && !settingsOpen && !bookInfoOpen && !note) {
+    if (delta > 4 && root.scrollTop > 180 && !tocOpen && !settingsOpen && !bookInfoOpen && !popover) {
       setChromeHidden(true);
     } else if ((delta < -4 || root.scrollTop < 120) && chromeHidden) {
       setChromeHidden(false);
     }
     lastScrollTop.current = root.scrollTop;
-    setNote(null);
+    setPopover(null);
   };
 
   const jumpToOrder = (order: number) => {
@@ -227,8 +248,9 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     setChromeHidden(false);
     const tailoredAnchor = (event.target as HTMLElement).closest<HTMLElement>('[data-annotation-id]');
     if (tailoredAnchor?.dataset.annotationId) {
-      globalThis.document.getElementById(`tailored-annotation-${tailoredAnchor.dataset.annotationId}`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const content = annotationContentById.get(tailoredAnchor.dataset.annotationId);
+      if (!content) return;
+      setPopover({ body: { kind: 'tailored', content }, ...popoverPlacement(tailoredAnchor.getBoundingClientRect()) });
       return;
     }
     const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>('a[href]');
@@ -239,18 +261,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     if (isNoteref) {
       event.preventDefault();
       if (anchor.dataset.broken === 'true' || !originalNote) return;
-      const rect = anchor.getBoundingClientRect();
-      const popoverWidth = Math.min(392, window.innerWidth - 32);
-      const anchorCenter = rect.left + rect.width / 2;
-      const left = Math.max(16, Math.min(anchorCenter - popoverWidth / 2, window.innerWidth - popoverWidth - 16));
-      const placement = window.innerHeight - rect.bottom < 280 && rect.top > 280 ? 'above' : 'below';
-      setNote({
-        note: originalNote,
-        left,
-        edge: placement === 'above' ? window.innerHeight - rect.top + 8 : rect.bottom + 8,
-        caretLeft: Math.max(24, Math.min(anchorCenter - left, popoverWidth - 24)),
-        placement,
-      });
+      setPopover({ body: { kind: 'note', html: originalNote.html }, ...popoverPlacement(anchor.getBoundingClientRect()) });
       return;
     }
     if (!targetId) return;
@@ -373,7 +384,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
         close={() => setTocOpen(false)}
         jump={jumpToOrder}
       />
-      <NoteDialog note={note} close={() => setNote(null)} />
+      <NotePopover popover={popover} close={() => setPopover(null)} />
       <div className="reader-bottom-fade" aria-hidden="true" />
     </div>
   );
@@ -418,7 +429,6 @@ function ReadingNode({ node, bookTitle, enhancement }: {
         <div className="reader-enhancement-state" data-failed="true">裁读内容暂时没有生成，原文不受影响。</div>
       ) : null}
       <div className="reader-original rt-reader-content" dangerouslySetInnerHTML={{ __html: node.html }} />
-      <AnnotationList annotations={content?.annotations ?? []} />
       {content?.afterReading ? (
         <section className="tailored-after-reading reader-tailored-block">
           <span>AFTER READING · 节后助读</span>
@@ -551,29 +561,6 @@ function BookInfoPanel({ title, briefing, strategySummary, close }: {
       ) : null}
       {!hasBriefing && !hasStrategy ? <p className="reader-book-info-empty">当前没有可展示的读前简报或处理方式。</p> : null}
     </aside>
-  );
-}
-
-function NoteDialog({ note, close }: { note: ActiveNote | null; close: () => void }) {
-  if (!note) return null;
-  return (
-    <div className="note-dialog-wrap" role="presentation" onClick={close}>
-      <aside
-        className="note-dialog"
-        role="dialog"
-        aria-label="原书注"
-        data-placement={note.placement}
-        style={{
-          left: note.left,
-          ...(note.placement === 'above' ? { bottom: note.edge } : { top: note.edge }),
-          '--note-caret-left': `${note.caretLeft}px`,
-        } as React.CSSProperties & { '--note-caret-left': string }}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header><span><i aria-hidden="true" />原书注 <em>Book note</em></span></header>
-        <div className="note-dialog-content rt-reader-note-content" dangerouslySetInnerHTML={{ __html: note.note.html }} />
-      </aside>
-    </div>
   );
 }
 
