@@ -9,7 +9,7 @@
   规则实现在同目录 nb_linter.py。
 - 包资源层（永远跑）：assets/... 路径安全且引用文件真实存在。
 - 保真层（提供 --baseline 时跑）：产物相对源 EPUB 有没有丢内容。
-  * char_recall  —— 可见字符召回率和逐条 diff（诊断性 warning，不阻断发布）
+  * char_recall  —— 可见文本 n-gram 召回率（诊断性 warning，不阻断发布）
   * img_recall   —— assets 图片按字节哈希做多重集守恒（同一张图用 3 次丢 1 次也能抓到）
   * note 守恒    —— EPUB 里的 epub:type noteref/footnote 数 ↔ 产物 noteref/note 数
   * TOC 对账     —— EPUB nav 文档条目数 ↔ 产物 nav[data-role=toc] 条目数
@@ -22,7 +22,6 @@
 from __future__ import annotations
 
 import argparse
-import difflib
 import hashlib
 import html as html_mod
 import json
@@ -51,11 +50,8 @@ from nb_linter import (  # noqa: E402
 WS_RE = re.compile(r"\s+")
 CHAR_RECALL_THRESHOLD = 0.999
 VALIDATOR_VERSION = "nb-check-1.0"
-# 新增内容达到该长度时输出诊断 warning，避免单字符结构噪声刷屏。
-DELETE_ERROR_LEN = 5
-# 规范性变换白名单：EPUB → nb-1.0 过程中"应当"消失的文本模式。
-# 注释体开头的 "[N]" 编号标记（§10：编号由 noteref 承载，note 体不保留）。
-NOTE_NUM_RE = re.compile(r"^(\[\d+\])+$")
+CHAR_NGRAM_SIZE = 16
+MAX_NGRAM_WARNING_REGIONS = 20
 
 
 def norm_text(s: str) -> str:
@@ -296,71 +292,107 @@ class FidelityChecker:
         self.check_note_conservation()
         self.check_toc_reconciliation()
 
-    # ---- char_recall + diff ---------------------------------------------------
+    # ---- char_recall（固定长度字符片段多重集） ---------------------------------
 
-    def _is_normative_loss(self, lost: str) -> Optional[str]:
-        """规范要求的变换导致的"合法丢失"。返回归类名，非白名单返回 None。"""
-        if NOTE_NUM_RE.match(lost):
-            return "note 编号标记（§10 结构化后由 noteref 承载）"
-        # TOC 移位：EPUB 的 HTML 目录页文本在产物里变成了 nav[data-role=toc]。
-        # 丢失片段若（去掉"目录"字样后）出现在产物 TOC 文本里，判为移位而非丢失。
-        if self._prod_toc_text:
-            candidate = lost.replace("目录", "", 1)
-            if candidate and (
-                candidate in self._prod_toc_text or self._prod_toc_text in candidate
-            ):
-                return "TOC 移位（源目录页 → 产物 nav[data-role=toc]）"
-        return None
+    @staticmethod
+    def _ngram_counts(text: str, size: int) -> Counter:
+        if not text or len(text) < size:
+            return Counter()
+        return Counter(text[index:index + size] for index in range(len(text) - size + 1))
+
+    @staticmethod
+    def _unmatched_regions(
+        text: str,
+        unmatched: Counter,
+        size: int,
+    ) -> list[tuple[int, int, int]]:
+        """Return (start, end, ngram_count) for consecutive unmatched windows."""
+        remaining = unmatched.copy()
+        positions: list[int] = []
+        for index in range(max(0, len(text) - size + 1)):
+            gram = text[index:index + size]
+            if remaining.get(gram, 0) > 0:
+                positions.append(index)
+                remaining[gram] -= 1
+
+        regions: list[tuple[int, int, int]] = []
+        for position in positions:
+            if regions and position == regions[-1][1] - size + 1:
+                start, _end, count = regions[-1]
+                regions[-1] = (start, position + size, count + 1)
+            else:
+                regions.append((position, position + size, 1))
+        return regions
 
     def check_char_recall(self) -> None:
         epub_text = self.baseline.visible_text()
         body = self.product.find("body")
         prod_text = norm_text(body.get_text()) if body else ""
 
-        toc_nav = self.product.find("nav", attrs={"data-role": "toc"})
-        self._prod_toc_text = norm_text(toc_nav.get_text()) if toc_nav else ""
+        if not epub_text:
+            ngram_size = min(CHAR_NGRAM_SIZE, len(prod_text)) if prod_text else CHAR_NGRAM_SIZE
+            source_counts: Counter = Counter()
+            product_counts = self._ngram_counts(prod_text, ngram_size)
+        else:
+            ngram_size = min(CHAR_NGRAM_SIZE, len(epub_text))
+            source_counts = self._ngram_counts(epub_text, ngram_size)
+            product_counts = self._ngram_counts(prod_text, ngram_size)
 
-        sm = difflib.SequenceMatcher(None, epub_text, prod_text, autojunk=False)
-        matched = sum(block.size for block in sm.get_matching_blocks())
-        normative_losses: Counter = Counter()
-        whitelisted_chars = 0
-        for tag, i1, i2, j1, j2 in sm.get_opcodes():
-            if tag in ("delete", "replace") and i2 > i1:
-                lost = epub_text[i1:i2]
-                kind = self._is_normative_loss(lost)
-                if kind:
-                    normative_losses[kind] += 1
-                    whitelisted_chars += len(lost)
-                    continue
-                ctx = epub_text[max(0, i1 - 20):i1]
-                self.warnings.append(
-                    f"[内容差异·非阻断] 丢失片段（{len(lost)} 字符）: "
-                    f"{lost[:80]!r}  上文: …{ctx}"
-                )
-            if tag in ("insert", "replace") and j2 > j1:
-                added = prod_text[j1:j2]
-                if len(added) >= DELETE_ERROR_LEN:
-                    if self._prod_toc_text and (
-                        added in self._prod_toc_text or self._prod_toc_text in added
-                    ):
-                        continue
-                    ctx = prod_text[max(0, j1 - 20):j1]
-                    self.warnings.append(
-                        f"[内容差异·非阻断] 产物比源多出（{len(added)} 字符）: "
-                        f"{added[:80]!r}  上文: …{ctx}"
-                    )
+        matched_counts = source_counts & product_counts
+        missing_counts = source_counts - product_counts
+        extra_counts = product_counts - source_counts
+        source_total = sum(source_counts.values())
+        product_total = sum(product_counts.values())
+        matched = sum(matched_counts.values())
+        missing = sum(missing_counts.values())
+        extra = sum(extra_counts.values())
+        recall = matched / source_total if source_total else 1.0
+        extra_ratio = extra / product_total if product_total else 0.0
 
-        recall = (matched + whitelisted_chars) / len(epub_text) if epub_text else 1.0
         self.metrics["char_recall"] = recall
         self.metrics["char_recall_gate"] = "advisory"
-        for kind, n in normative_losses.items():
-            self.metrics.setdefault("normative_transforms", []).append(f"{kind} × {n}")
+        self.metrics["char_recall_method"] = "character_ngram_multiset"
+        self.metrics["char_ngram_size"] = ngram_size
+        self.metrics["source_ngrams"] = source_total
+        self.metrics["matched_ngrams"] = matched
+        self.metrics["missing_ngrams"] = missing
+        self.metrics["extra_ngrams"] = extra
+        self.metrics["extra_ngram_ratio"] = extra_ratio
+
+        missing_regions = self._unmatched_regions(epub_text, missing_counts, ngram_size)
+        extra_regions = self._unmatched_regions(prod_text, extra_counts, ngram_size)
+        self.metrics["missing_regions"] = len(missing_regions)
+        self.metrics["extra_regions"] = len(extra_regions)
+
+        for start, end, count in missing_regions[:MAX_NGRAM_WARNING_REGIONS]:
+            context = epub_text[max(0, start - 20):min(len(epub_text), end + 20)]
+            self.warnings.append(
+                f"[内容差异·非阻断] 源文本局部片段未召回（约 {end - start} 字符，"
+                f"{count} 个 {ngram_size}-gram）: {context[:120]!r}"
+            )
+        if len(missing_regions) > MAX_NGRAM_WARNING_REGIONS:
+            self.warnings.append(
+                f"[内容差异·非阻断] 另有 {len(missing_regions) - MAX_NGRAM_WARNING_REGIONS} "
+                "个源文本缺失区域未展开"
+            )
+
+        for start, end, count in extra_regions[:MAX_NGRAM_WARNING_REGIONS]:
+            context = prod_text[max(0, start - 20):min(len(prod_text), end + 20)]
+            self.warnings.append(
+                f"[内容差异·非阻断] 产物存在源中未召回的局部片段（约 {end - start} 字符，"
+                f"{count} 个 {ngram_size}-gram）: {context[:120]!r}"
+            )
+        if len(extra_regions) > MAX_NGRAM_WARNING_REGIONS:
+            self.warnings.append(
+                f"[内容差异·非阻断] 另有 {len(extra_regions) - MAX_NGRAM_WARNING_REGIONS} "
+                "个产物新增区域未展开"
+            )
 
         if recall < CHAR_RECALL_THRESHOLD:
             self.warnings.append(
                 f"[内容差异·非阻断] char_recall = {recall*100:.4f}% "
                 f"低于参考阈值 {CHAR_RECALL_THRESHOLD*100}%"
-                f"（已扣除规范性变换 {whitelisted_chars} 字符）"
+                f"（{ngram_size}-gram 多重集召回）"
             )
 
     # ---- img_recall（多重集守恒） ------------------------------------------------

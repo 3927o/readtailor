@@ -25,6 +25,14 @@ class FakeBaseline:
         return Counter({self.image_hash: 1}), {self.image_hash: ["chapter.xhtml"]}
 
 
+class TextBaseline:
+    def __init__(self, text: str):
+        self.text = text
+
+    def visible_text(self) -> str:
+        return self.text
+
+
 def soup_with_image(src: str) -> BeautifulSoup:
     return BeautifulSoup(f'<html><body><img src="{src}"></body></html>', "html.parser")
 
@@ -115,7 +123,55 @@ class AssetCheckerTests(unittest.TestCase):
             self.assertTrue(any("[图片丢失]" in error for error in checker.errors))
 
 
-class FidelityTextDiffTests(unittest.TestCase):
+class FidelityTextNgramTests(unittest.TestCase):
+    def check_text(self, source: str, product: str) -> FidelityChecker:
+        checker = FidelityChecker(
+            BeautifulSoup(f"<body><p>{product}</p></body>", "html.parser"),
+            TextBaseline(source),
+            Path("."),
+        )
+        checker.check_char_recall()
+        return checker
+
+    def test_identical_text_has_full_ngram_recall(self) -> None:
+        checker = self.check_text("这是完整且保持不变的一段正文内容。", "这是完整且保持不变的一段正文内容。")
+
+        self.assertEqual(checker.metrics["char_recall"], 1.0)
+        self.assertEqual(checker.metrics["char_recall_method"], "character_ngram_multiset")
+        self.assertEqual(checker.metrics["missing_ngrams"], 0)
+        self.assertEqual(checker.metrics["extra_ngrams"], 0)
+        self.assertEqual(checker.warnings, [])
+
+    def test_moved_long_blocks_keep_most_local_content(self) -> None:
+        first = "".join(chr(0x4E00 + index) for index in range(80))
+        second = "".join(chr(0x5000 + index) for index in range(80))
+        third = "".join(chr(0x5200 + index) for index in range(80))
+        checker = self.check_text(first + second + third, first + third + second)
+
+        self.assertGreater(checker.metrics["char_recall"], 0.8)
+        self.assertLess(checker.metrics["char_recall"], 1.0)
+        self.assertGreater(checker.metrics["missing_ngrams"], 0)
+
+    def test_deleted_text_reports_missing_regions(self) -> None:
+        source = "开头内容保持不变" + "这一整段正文被意外删除需要检测出来" + "结尾内容同样保持不变"
+        product = "开头内容保持不变" + "结尾内容同样保持不变"
+        checker = self.check_text(source, product)
+
+        self.assertLess(checker.metrics["char_recall"], 1.0)
+        self.assertGreater(checker.metrics["missing_ngrams"], 0)
+        self.assertGreater(checker.metrics["missing_regions"], 0)
+        self.assertTrue(any("源文本局部片段未召回" in warning for warning in checker.warnings))
+
+    def test_duplicated_text_reports_extra_ngrams(self) -> None:
+        source = "正文第一部分内容足够长用于生成字符窗口正文第二部分也保持原样"
+        product = source + "正文第一部分内容足够长用于生成字符窗口"
+        checker = self.check_text(source, product)
+
+        self.assertEqual(checker.metrics["char_recall"], 1.0)
+        self.assertGreater(checker.metrics["extra_ngrams"], 0)
+        self.assertGreater(checker.metrics["extra_regions"], 0)
+        self.assertTrue(any("产物存在源中未召回" in warning for warning in checker.warnings))
+
     def test_endnote_reordering_is_reported_but_does_not_block(self) -> None:
         baseline = EpubBaseline.__new__(EpubBaseline)
         baseline._docs = [
