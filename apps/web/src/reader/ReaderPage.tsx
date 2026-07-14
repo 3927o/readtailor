@@ -10,8 +10,6 @@ import {
   createHighlight,
   defaultReadingSettings,
   deleteHighlight,
-  getBookReadingStats,
-  getGlobalReadingStats,
   getReaderBootstrap,
   getReaderDocument,
   markReadNode,
@@ -31,11 +29,9 @@ import type {
   ReaderOutlineItem,
   ReaderPosition,
   ReadingSettings,
-  ReadingStatsGlobal,
-  ReadingStatsPerBook,
   ThemeSetting,
 } from './api';
-import { localDay, localWeekStart, ReadingSessionTracker, type ReadingActivityArea, type ReadingActivityPosition } from './session';
+import { ReadingSessionTracker, type ReadingActivityArea, type ReadingActivityPosition } from './session';
 import {
   domBoundaryForOffset,
   getFragmentTargetId,
@@ -83,25 +79,6 @@ const SETTINGS_CACHE_KEY = 'readtailor:reading-settings';
 const TICK_MS = 1000;
 const HEARTBEAT_MS = 15_000;
 const JUMP_SETTLE_MS = 1200;
-
-// §11.9 — reading-length format ("适合阅读的分钟/小时格式"). Sub-minute rounds up to 1 分钟 so a just-
-// started session never shows 0.
-function formatReadingDuration(totalSeconds: number): string {
-  const minutes = Math.max(0, Math.round(totalSeconds / 60));
-  if (minutes < 1) return totalSeconds > 0 ? '1 分钟' : '0 分钟';
-  if (minutes < 60) return `${minutes} 分钟`;
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  return rest === 0 ? `${hours} 小时` : `${hours} 小时 ${rest} 分`;
-}
-
-// §11.10 — the remaining-time label. Approximate estimates (language-default speed) read「约 …」; a
-// personal-speed estimate drops the 约. Null (unknown book length) shows a dash.
-function formatRemaining(remaining: ReadingStatsPerBook['remaining'] | undefined): string {
-  if (!remaining || remaining.seconds === null) return '—';
-  const body = formatReadingDuration(remaining.seconds);
-  return remaining.approximate ? `约 ${body}` : body;
-}
 
 // The viewport-relative line the reader "reads from": position save probes for the character at
 // this offset below the scroll top, and restore scrolls that character back to it. Save and restore
@@ -254,7 +231,6 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const [tocOpen, setTocOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [bookInfoOpen, setBookInfoOpen] = useState(false);
-  const [statsOpen, setStatsOpen] = useState(false);
   const [currentOrder, setCurrentOrder] = useState(document.manifest.nodes[0]?.order ?? 1);
   const [popover, setPopover] = useState<ActivePopover | null>(null);
   const [scrollProgress, setScrollProgress] = useState(0);
@@ -397,7 +373,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     };
   };
   const resolveActivityArea = (): ReadingActivityArea => {
-    if (tocOpen || settingsOpen || statsOpen || bookInfoOpen) return 'reader_chrome';
+    if (tocOpen || settingsOpen || bookInfoOpen) return 'reader_chrome';
     if (popover) return 'assistance';
     const root = scrollRoot.current;
     if (!root) return 'reader_chrome';
@@ -434,37 +410,6 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     const viaJump = Date.now() < jumpEndRef.current || restorePhaseRef.current === 'restoring';
     sessionRef.current?.recordOrder(Date.now(), order, (o) => charCountByOrder.get(o) ?? 0, viaJump);
   };
-
-  // §11.9/§11.10 stats. Per-book stats back the remaining-time indicator (near the progress bar) and
-  // the stats panel; global stats (今日/本周/累计/连续天数) load when the panel opens. `day`/`weekStart`
-  // are the client's local calendar boundaries so 今日/本周 honor its timezone.
-  const bookStats = useQuery({
-    queryKey: ['reading-stats-book', document.userBookId],
-    queryFn: () => getBookReadingStats(document.userBookId),
-    staleTime: 30_000,
-  });
-  const globalStats = useQuery({
-    queryKey: ['reading-stats-global', document.userBookId],
-    queryFn: () => getGlobalReadingStats(localDay(Date.now()), localWeekStart(Date.now())),
-    enabled: statsOpen,
-    staleTime: 15_000,
-  });
-  const refetchBookStats = bookStats.refetch;
-  const refetchGlobalStats = globalStats.refetch;
-  // Refresh per-book stats a beat after the settled node changes: the remaining-time estimate depends
-  // on the stored position, which persists on an 800ms debounce, so wait past that before re-reading.
-  useEffect(() => {
-    const handle = window.setTimeout(() => void refetchBookStats(), 2500);
-    return () => window.clearTimeout(handle);
-  }, [currentOrder, refetchBookStats]);
-  // Opening the stats panel pulls the freshest data (§11.9 「再次进入统计视图必须看到已提交的数据」).
-  useEffect(() => {
-    if (!statsOpen) return;
-    void flushActivitySlice.current(false, true).finally(() => {
-      void refetchGlobalStats();
-      void refetchBookStats();
-    });
-  }, [statsOpen, refetchGlobalStats, refetchBookStats]);
 
   const enhancements = useMemo(() => new Map(
     document.bootstrap.enhancements.map((item) => [`${item.sectionId}:${item.segment}`, item]),
@@ -869,7 +814,6 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       setTocOpen(false);
       setSettingsOpen(false);
       setBookInfoOpen(false);
-      setStatsOpen(false);
       setPopover(null);
       setSelectionDraft(null);
       setHighlightEditor(null);
@@ -1094,7 +1038,6 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     void flushActivitySlice.current(false, true);
     setSettingsOpen(false);
     setBookInfoOpen(false);
-    setStatsOpen(false);
     setChromeHidden(false);
     setTocOpen(true);
   };
@@ -1102,7 +1045,6 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     void flushActivitySlice.current(false, true);
     setTocOpen(false);
     setBookInfoOpen(false);
-    setStatsOpen(false);
     setChromeHidden(false);
     setSettingsOpen(true);
   };
@@ -1110,17 +1052,8 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     void flushActivitySlice.current(false, true);
     setTocOpen(false);
     setSettingsOpen(false);
-    setStatsOpen(false);
     setChromeHidden(false);
     setBookInfoOpen(true);
-  };
-  const openStats = () => {
-    void flushActivitySlice.current(false, true);
-    setTocOpen(false);
-    setSettingsOpen(false);
-    setBookInfoOpen(false);
-    setChromeHidden(false);
-    setStatsOpen(true);
   };
 
   return (
@@ -1138,7 +1071,6 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
           <div className="reader-desktop-actions">
             <ReaderAction glyph="≡" label="目录" onClick={openToc} />
             <ReaderAction glyph="···" label="本书" onClick={openBookInfo} />
-            <ReaderAction glyph="◔" label="统计" onClick={openStats} />
             <ReaderAction glyph="Aa" label="设置" onClick={openSettings} />
           </div>
         </header>
@@ -1147,13 +1079,11 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       <nav className="reader-mobile-bar" data-hidden={chromeHidden} aria-label="阅读工具">
         <ReaderAction glyph="≡" label="目录" onClick={openToc} />
         <ReaderAction glyph="···" label="本书" onClick={openBookInfo} />
-        <ReaderAction glyph="◔" label="统计" onClick={openStats} />
         <ReaderAction glyph="Aa" label="设置" onClick={openSettings} />
       </nav>
 
       {settingsOpen && <button className="reader-modal-scrim" type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭阅读设置" />}
       {bookInfoOpen && <button className="reader-modal-scrim" type="button" onClick={() => setBookInfoOpen(false)} aria-label="关闭本书说明" />}
-      {statsOpen && <button className="reader-modal-scrim" type="button" onClick={() => setStatsOpen(false)} aria-label="关闭阅读统计" />}
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
@@ -1169,15 +1099,6 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
           highlights={highlights}
           jumpToHighlight={jumpToHighlight}
           close={() => setBookInfoOpen(false)}
-        />
-      )}
-      {statsOpen && (
-        <StatsPanel
-          global={globalStats.data}
-          book={bookStats.data}
-          progressPercent={textProgress}
-          loading={globalStats.isFetching || bookStats.isFetching}
-          close={() => setStatsOpen(false)}
         />
       )}
 
@@ -1196,12 +1117,6 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
               <span>原文阅读 · Original text</span>
               <i aria-hidden="true" />
               <span>全书 {textProgress}%</span>
-              {bookStats.data && bookStats.data.remaining.seconds !== null ? (
-                <>
-                  <i aria-hidden="true" />
-                  <span>预计还需 {formatRemaining(bookStats.data.remaining)}</span>
-                </>
-              ) : null}
             </div>
             <h1>{document.book.title}</h1>
             <p><span aria-hidden="true">◷</span>{document.book.authors.join(' · ') || '作者未详'}</p>
@@ -1462,59 +1377,6 @@ function BookInfoPanel({ title, briefing, strategySummary, highlights, jumpToHig
       </section>
       {!hasBriefing && !hasStrategy ? <p className="reader-book-info-empty">当前没有可展示的读前简报或处理方式。</p> : null}
     </aside>
-  );
-}
-
-// §11.9 最近阅读时间 — compact local date + time, or a "not started" placeholder.
-function formatLastRead(iso: string | null): string {
-  if (!iso) return '尚未开始';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '—';
-  return date.toLocaleString(undefined, { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-
-// §11.9 the reading-stats view: 全局 (今日/本周/累计/连续天数) + 本书 (累计/最近/进度/预计剩余). Data
-// arrives via TanStack Query and refetches on open, so a session that just ended shows up immediately.
-function StatsPanel({ global, book, progressPercent, loading, close }: {
-  global: ReadingStatsGlobal | undefined;
-  book: ReadingStatsPerBook | undefined;
-  progressPercent: number;
-  loading: boolean;
-  close: () => void;
-}) {
-  return (
-    <aside className="reader-stats" aria-label="阅读统计">
-      <div className="reader-sheet-handle" aria-hidden="true" />
-      <header><strong>阅读统计</strong><button type="button" onClick={close} aria-label="关闭阅读统计">×</button></header>
-      <section className="reader-stats-group">
-        <span className="reader-stats-title">全局</span>
-        <div className="reader-stats-grid">
-          <StatItem label="今日" value={global ? formatReadingDuration(global.todaySeconds) : '—'} />
-          <StatItem label="本周" value={global ? formatReadingDuration(global.weekSeconds) : '—'} />
-          <StatItem label="累计" value={global ? formatReadingDuration(global.totalSeconds) : '—'} />
-          <StatItem label="连续阅读" value={global ? `${global.streakDays} 天` : '—'} />
-        </div>
-      </section>
-      <section className="reader-stats-group">
-        <span className="reader-stats-title">本书</span>
-        <div className="reader-stats-grid">
-          <StatItem label="累计时长" value={book ? formatReadingDuration(book.totalEffectiveSeconds) : '—'} />
-          <StatItem label="最近阅读" value={formatLastRead(book?.lastReadAt ?? null)} />
-          <StatItem label="全书进度" value={`${book?.progressPercent ?? progressPercent}%`} />
-          <StatItem label="预计剩余" value={formatRemaining(book?.remaining)} />
-        </div>
-      </section>
-      <p className="reader-stats-hint">{loading ? '正在更新…' : '统计仅计入正式阅读器内的有效阅读时间。'}</p>
-    </aside>
-  );
-}
-
-function StatItem({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="reader-stat-item">
-      <span className="reader-stat-value">{value}</span>
-      <span className="reader-stat-label">{label}</span>
-    </div>
   );
 }
 
