@@ -85,7 +85,7 @@ describe('computeBookProgress', () => {
     expect(computeBookProgress(meta(null, []), 2)).toEqual({
       totalChars: null,
       charsBefore: 0,
-      remainingChars: 0,
+      remainingChars: null,
       progressPercent: 0,
     });
   });

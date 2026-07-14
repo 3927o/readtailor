@@ -6,6 +6,9 @@ import type { Briefing } from '@readtailor/contracts';
 import { ProgressBar } from '../components/chrome/ProgressBar';
 import { Segmented } from '../components/core/Segmented';
 import { Slider } from '../components/core/Slider';
+import { getBookReadingStats } from '../reading-stats/api';
+import { estimateReadingSeconds, readingSecondsPerCharacter } from '../reading-stats/estimate';
+import { formatReadingDuration, formatRemaining } from '../reading-stats/format';
 import { AssistanceContent, BriefCard } from '../user-books/components';
 import {
   createHighlight,
@@ -79,6 +82,14 @@ interface SearchHit {
   post: string;
   jump: () => void;
   tone?: 'tailored' | 'mine' | 'original';
+}
+
+interface ReaderChapterUnit {
+  sectionId: string;
+  title: string;
+  startOrder: number;
+  endOrder: number | null;
+  characterCount: number;
 }
 
 const defaultSettings: ReaderSettings = defaultReadingSettings;
@@ -230,6 +241,57 @@ const contentWidths: Record<ContentWidthSetting, number> = {
   wide: 760,
 };
 
+function readableOutlineDepth(item: ReaderOutlineItem, outline: ReaderOutlineItem[]): number {
+  const byId = new Map(outline.map((entry) => [entry.section_id, entry]));
+  let depth = 0;
+  let parent = item.parent_section_id ? byId.get(item.parent_section_id) : undefined;
+  while (parent && depth < 8) {
+    if (parent.data_type !== 'part') depth += 1;
+    parent = parent.parent_section_id ? byId.get(parent.parent_section_id) : undefined;
+  }
+  return depth;
+}
+
+function buildChapterUnits(outline: ReaderOutlineItem[], nodes: ReaderNode[]): ReaderChapterUnit[] {
+  const byStart = new Map<number, ReaderOutlineItem>();
+  for (const item of outline) {
+    if (item.data_type === 'part' || readableOutlineDepth(item, outline) > 0) continue;
+    if (!byStart.has(item.first_node_order)) byStart.set(item.first_node_order, item);
+  }
+  const starts = [...byStart.values()].sort((left, right) => left.first_node_order - right.first_node_order);
+  if (starts.length === 0 && nodes[0]) {
+    starts.push({
+      section_id: nodes[0].section_id,
+      data_type: nodes[0].data_type,
+      title: nodes[0].title || '正文',
+      parent_section_id: null,
+      first_node_order: nodes[0].order,
+    });
+  }
+  return starts.map((item, index) => {
+    const next = starts[index + 1];
+    const characterCount = nodes
+      .filter((node) => node.order >= item.first_node_order && (!next || node.order < next.first_node_order))
+      .reduce((sum, node) => sum + node.character_count, 0);
+    return {
+      sectionId: item.section_id,
+      title: item.title,
+      startOrder: item.first_node_order,
+      endOrder: next?.first_node_order ?? null,
+      characterCount,
+    };
+  });
+}
+
+function activeChapterUnit(units: ReaderChapterUnit[], order: number): ReaderChapterUnit | null {
+  return [...units].filter((unit) => unit.startOrder <= order).at(-1) ?? units[0] ?? null;
+}
+
+function readerRemainingLabel(remaining: Awaited<ReturnType<typeof getBookReadingStats>>['remaining'] | undefined): string {
+  if (!remaining || remaining.seconds === null) return '继续阅读后估算剩余时间';
+  return `预计还需 ${formatRemaining(remaining)}`;
+}
+
 export function ReaderPage() {
   const { id = '' } = useParams();
   const query = useQuery({
@@ -276,7 +338,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const [searchQuery, setSearchQuery] = useState('');
   const [currentOrder, setCurrentOrder] = useState(document.manifest.nodes[0]?.order ?? 1);
   const [popover, setPopover] = useState<ActivePopover | null>(null);
-  const [scrollProgress, setScrollProgress] = useState(0);
+  const [chapterProgress, setChapterProgress] = useState(0);
   const [chromeHidden, setChromeHidden] = useState(false);
   // §11.7 highlights: seeded once from bootstrap and mutated locally on CRUD, so a focus-report
   // response (which overwrites the bootstrap cache) can't drop a just-created highlight. Presentation
@@ -294,6 +356,11 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const prefersDark = usePrefersDark();
   const theme = resolvedTheme(settings.theme, prefersDark);
   const queryClient = useQueryClient();
+  const bookStats = useQuery({
+    queryKey: ['reading-stats-book', document.userBookId],
+    queryFn: () => getBookReadingStats(document.userBookId),
+    staleTime: 30_000,
+  });
   // Report the reading position so the host keeps the lazy-loading window generating (§6.2 /
   // PRD §11.3) and, via the optional anchor, persists the last reading position (§11.5). The host
   // grows the window only on order change and always saves the anchor, so intra-node scroll refines
@@ -305,17 +372,23 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     // §4.3 anti-regression: two focus responses can resolve out of order. Take the fresh bootstrap
     // (for newly-queued enhancements) but never let an older `resumePosition` overwrite a newer one
     // already in cache — compare by clientObservedAt (ISO order == chronological).
-    onSuccess: (bootstrap) => queryClient.setQueryData<ReaderBootstrap>(
-      ['reader-bootstrap', document.userBookId],
-      (previous) => {
-        const previousResume = previous?.resumePosition;
-        if (previousResume && (!bootstrap.resumePosition
-          || previousResume.clientObservedAt > bootstrap.resumePosition.clientObservedAt)) {
-          return { ...bootstrap, resumePosition: previousResume };
-        }
-        return bootstrap;
-      },
-    ),
+    onSuccess: (bootstrap) => {
+      queryClient.setQueryData<ReaderBootstrap>(
+        ['reader-bootstrap', document.userBookId],
+        (previous) => {
+          const previousResume = previous?.resumePosition;
+          if (previousResume && (!bootstrap.resumePosition
+            || previousResume.clientObservedAt > bootstrap.resumePosition.clientObservedAt)) {
+            return { ...bootstrap, resumePosition: previousResume };
+          }
+          return bootstrap;
+        },
+      );
+      void queryClient.invalidateQueries({
+        queryKey: ['reading-stats-book', document.userBookId],
+        refetchType: 'none',
+      });
+    },
   });
   const currentOrderRef = useRef(currentOrder);
   currentOrderRef.current = currentOrder;
@@ -443,7 +516,12 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       resolveActivityArea(),
       discontinuous,
     );
-    if (payload) return sendActivitySlice(document.userBookId, payload, keepalive ? { keepalive: true } : {});
+    if (payload) {
+      return sendActivitySlice(document.userBookId, payload, keepalive ? { keepalive: true } : {})
+        .then(() => queryClient.invalidateQueries({
+          queryKey: ['reading-stats-book', document.userBookId],
+        }));
+    }
     return Promise.resolve();
   };
   const recordOrder = useRef<(order: number) => void>(() => {});
@@ -496,6 +574,33 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     ),
     [annotationsByNode, highlightsByNode, document.assetBaseUrl, document.html, document.manifest],
   );
+  const chapterUnits = useMemo(
+    () => buildChapterUnits(document.manifest.outline, document.manifest.nodes),
+    [document.manifest.outline, document.manifest.nodes],
+  );
+  const computeChapterProgress = useCallback((order = currentOrderRef.current) => {
+    const root = scrollRoot.current;
+    const unit = activeChapterUnit(chapterUnits, order);
+    if (!root || !unit) return 0;
+    const rootRect = root.getBoundingClientRect();
+    const topOf = (target: HTMLElement) => (
+      root.scrollTop + target.getBoundingClientRect().top - rootRect.top
+    );
+    const start = root.querySelector<HTMLElement>(`[data-node-order="${unit.startOrder}"]`);
+    const end = unit.endOrder
+      ? root.querySelector<HTMLElement>(`[data-node-order="${unit.endOrder}"]`)
+      : null;
+    const startTop = start ? topOf(start) : 0;
+    const maxScrollTop = Math.max(0, root.scrollHeight - root.clientHeight);
+    const endTop = end ? topOf(end) : maxScrollTop + READING_ANCHOR_TOP;
+    const span = endTop - startTop;
+    if (span <= 0) {
+      if (unit.endOrder === null) return root.scrollTop >= maxScrollTop - 1 ? 100 : 0;
+      return order >= unit.endOrder ? 100 : 0;
+    }
+    const readingLine = root.scrollTop + READING_ANCHOR_TOP;
+    return Math.max(0, Math.min(100, (readingLine - startTop) / span * 100));
+  }, [chapterUnits]);
   // Layout-anchor key (§6.2): change when enhancement content OR the highlight marks change, so the
   // pre-commit snapshot below keeps the current paragraph visually put across either re-render. Note
   // text is included because it flips a mark's dataset; a `<mark>` reflows nothing, but keying on it
@@ -703,6 +808,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       const order = Number((visible[0]?.target as HTMLElement | undefined)?.dataset.nodeOrder);
       if (Number.isFinite(order)) {
         setCurrentOrder(order);
+        setChapterProgress(computeChapterProgress(order));
         // §11.10: feed the settled node into the session tracker so forward-read chars accrue (a jump
         // within JUMP_SETTLE_MS is credited as a jump, not forward reading).
         recordOrder.current(order);
@@ -711,7 +817,11 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     }, { root, rootMargin: '-12% 0px -72% 0px', threshold: 0 });
     root.querySelectorAll<HTMLElement>('[data-node-order]').forEach((element) => observer.observe(element));
     return () => observer.disconnect();
-  }, [prepared]);
+  }, [computeChapterProgress, prepared]);
+
+  useLayoutEffect(() => {
+    setChapterProgress(computeChapterProgress(currentOrderRef.current));
+  }, [computeChapterProgress, prepared.nodes]);
 
   // Warm the window for the opening/resumed node even if the reader never scrolls; scroll-driven
   // reports (schedulePositionReport) and jumps take over from here. Suppressed while the restore
@@ -921,8 +1031,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const handleScroll = () => {
     const root = scrollRoot.current;
     if (!root) return;
-    const max = root.scrollHeight - root.clientHeight;
-    setScrollProgress(max > 0 ? (root.scrollTop / max) * 100 : 0);
+    setChapterProgress(computeChapterProgress());
     const delta = root.scrollTop - lastScrollTop.current;
     if (delta > 4 && root.scrollTop > 180
       && !tocOpen && !settingsOpen && !briefOpen && !notebookOpen && !searchOpen && !askAiOpen && !popover) {
@@ -1083,7 +1192,39 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const charactersBefore = document.manifest.nodes
     .filter((node) => node.order < currentOrder)
     .reduce((sum, node) => sum + node.character_count, 0);
-  const textProgress = totalCharacters > 0 ? Math.round((charactersBefore / totalCharacters) * 100) : 0;
+  const bookProgressPercent = totalCharacters > 0
+    ? Math.round((charactersBefore / totalCharacters) * 100)
+    : bookStats.data?.progressPercent ?? 0;
+  const remainingCharacters = totalCharacters > 0 ? Math.max(0, totalCharacters - charactersBefore) : 0;
+  const statsRemainingSeconds = bookStats.data?.remaining.seconds;
+  const statsRemainingCharacters = bookStats.data?.remainingCharacters;
+  const secondsPerCharacter = readingSecondsPerCharacter(
+    statsRemainingSeconds,
+    statsRemainingCharacters,
+    document.book.language,
+  );
+  const currentRemainingSeconds = totalCharacters > 0
+    ? estimateReadingSeconds(remainingCharacters, secondsPerCharacter)
+    : statsRemainingSeconds;
+  const currentRemaining = bookStats.data
+    ? { ...bookStats.data.remaining, seconds: currentRemainingSeconds ?? null }
+    : undefined;
+  const bookRemainingText = bookStats.isPending
+    ? '预计还需估算中'
+    : readerRemainingLabel(currentRemaining);
+  const chapterEstimateApproximate = bookStats.data?.remaining.approximate ?? true;
+  const chapterEstimateByOrder = useMemo(() => {
+    const labels = new Map<number, string>();
+    for (const unit of chapterUnits) {
+      if (unit.characterCount <= 0) continue;
+      const seconds = Math.max(60, estimateReadingSeconds(unit.characterCount, secondsPerCharacter));
+      labels.set(
+        unit.startOrder,
+        `${chapterEstimateApproximate ? '本章约' : '本章预计'} ${formatReadingDuration(seconds)}读完`,
+      );
+    }
+    return labels;
+  }, [chapterEstimateApproximate, chapterUnits, secondsPerCharacter]);
   const activeSectionId = [...document.manifest.outline]
     .filter((item) => item.first_node_order <= currentOrder)
     .at(-1)?.section_id;
@@ -1212,7 +1353,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       data-reader-language={document.book.language}
       data-rt-theme={theme === 'night' ? 'night' : undefined}
     >
-      <ProgressBar value={scrollProgress} aria-label="阅读滚动进度" />
+      <ProgressBar value={chapterProgress} aria-label="章节阅读进度" />
       <div className="reader-chrome" data-hidden={chromeHidden}>
         <header className="reader-toolbar">
           <Link className="reader-back-button" to="/" aria-label="返回书架" title="返回书架">‹</Link>
@@ -1230,6 +1371,11 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
             <ReaderAction glyph="✦" label="问 AI" onClick={openAskAi} tint="green" />
           </div>
         </header>
+        <div className="reader-toolbar-summary" aria-label="全书阅读进度">
+          <strong>全书 {bookProgressPercent}%</strong>
+          <i aria-hidden="true" />
+          <span>{bookRemainingText}</span>
+        </div>
       </div>
 
       <nav className="reader-mobile-bar" data-hidden={chromeHidden} aria-label="阅读工具">
@@ -1295,7 +1441,6 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
             <div className="reader-chapter-kicker">
               <span>原文阅读 · Original text</span>
               <i aria-hidden="true" />
-              <span>全书 {textProgress}%</span>
             </div>
             <h1>{document.book.title}</h1>
             <p><span aria-hidden="true">◷</span>{document.book.authors.join(' · ') || '作者未详'}</p>
@@ -1306,6 +1451,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
               node={node}
               bookTitle={document.book.title}
               enhancement={enhancements.get(`${node.section_id}:${node.segment}`)}
+              chapterEstimate={chapterEstimateByOrder.get(node.order)}
             />
           ))}
           <footer className="reader-end"><span>⌜</span> 本书原文到此结束 <span>⌟</span></footer>
@@ -1404,10 +1550,11 @@ function ReaderAction({ glyph, label, onClick, tint, compact }: {
   );
 }
 
-function ReadingNode({ node, bookTitle, enhancement }: {
+function ReadingNode({ node, bookTitle, enhancement, chapterEstimate }: {
   node: RenderedNode;
   bookTitle: string;
   enhancement: ReaderNodeEnhancement | undefined;
+  chapterEstimate: string | undefined;
 }) {
   const headings = node.headings.filter((heading) => heading.title.trim() !== bookTitle.trim());
   const content = enhancement?.status === 'ready' ? enhancement.tailoredContent : null;
@@ -1423,6 +1570,12 @@ function ReadingNode({ node, bookTitle, enhancement }: {
       {headings.map((heading) => (
         <OutlineHeading key={heading.section_id} heading={heading} />
       ))}
+      {chapterEstimate ? (
+        <div className="reader-chapter-estimate">
+          <span aria-hidden="true">◷</span>
+          {chapterEstimate}
+        </div>
+      ) : null}
       {content?.guide ? (
         <section className="tailored-guide reader-tailored-block">
           <span>GUIDE · 导读</span>

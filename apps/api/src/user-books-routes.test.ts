@@ -123,6 +123,7 @@ function fakeService(overrides: Partial<UserBookUserService> = {}): UserBookServ
         totalEffectiveSeconds: 1800,
         lastReadAt: '2026-07-14T00:00:00.000Z',
         progressPercent: 42,
+        remainingCharacters: 35_100,
         remaining: { seconds: 5400, approximate: true },
       };
     },
@@ -614,7 +615,34 @@ describe('user book workflow routes', () => {
       totalEffectiveSeconds: 1800,
       lastReadAt: '2026-07-14T00:00:00.000Z',
       progressPercent: 42,
+      remainingCharacters: 35_100,
       remaining: { seconds: 5400, approximate: true },
+    });
+  });
+
+  it('serves null remaining characters and time when the manifest has no character statistics', async () => {
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async getBookReadingStats() {
+          return {
+            totalEffectiveSeconds: 0,
+            lastReadAt: null,
+            progressPercent: 0,
+            remainingCharacters: null,
+            remaining: { seconds: null, approximate: true },
+          };
+        },
+      }),
+    });
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/user-books/${USER_BOOK_ID}/reading-stats`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      remainingCharacters: null,
+      remaining: { seconds: null, approximate: true },
     });
   });
 });

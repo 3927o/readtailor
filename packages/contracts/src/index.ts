@@ -969,13 +969,15 @@ export const RemainingReadingTimeSchema = Type.Object({
 });
 export type RemainingReadingTime = Static<typeof RemainingReadingTimeSchema>;
 
-// §11.9 per-book stats: 累计有效时长 / 最近阅读时间 / 当前全书进度 / 预计剩余阅读时间. Progress reuses the
-// reader's whole-node charactersBefore/total 口径 (§11.10, 只算原文); `lastReadAt` is the latest
-// session's end (null → never read).
+// §11.9 per-book stats: 累计有效时长 / 最近阅读时间 / 当前全书进度 / 预计剩余阅读时间. Progress and
+// remainingCharacters reuse the reader's whole-node charactersBefore/total 口径 (§11.10, 只算原文);
+// remainingCharacters is null when the manifest has no character statistics. `lastReadAt` is the
+// latest session's end (null → never read).
 export const ReadingStatsPerBookSchema = Type.Object({
   totalEffectiveSeconds: Type.Integer({ minimum: 0 }),
   lastReadAt: Type.Union([Type.String(), Type.Null()]),
   progressPercent: Type.Integer({ minimum: 0, maximum: 100 }),
+  remainingCharacters: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
   remaining: RemainingReadingTimeSchema,
 });
 export type ReadingStatsPerBook = Static<typeof ReadingStatsPerBookSchema>;

@@ -1401,6 +1401,44 @@ h1 {
   -webkit-backdrop-filter: saturate(150%) blur(10px);
 }
 
+.reader-toolbar-summary {
+  display: flex;
+  min-height: 26px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 16px 8px;
+  background: color-mix(in srgb, var(--rt-bg) 86%, transparent);
+  color: var(--rt-ink-3);
+  font-family: var(--rt-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  line-height: 1.4;
+  backdrop-filter: saturate(150%) blur(10px);
+  -webkit-backdrop-filter: saturate(150%) blur(10px);
+}
+
+.reader-toolbar-summary strong {
+  color: var(--rt-green-deep);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.reader-toolbar-summary i {
+  width: 4px;
+  height: 4px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--rt-rule);
+}
+
+.reader-toolbar-summary span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .reader-back-button,
 .reader-icon-button {
   display: inline-flex;
@@ -1628,6 +1666,24 @@ h1 {
   font-size: 1em;
   line-height: 1.8;
   text-align: start;
+}
+
+.reader-chapter-estimate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: -12px 0 28px;
+  color: var(--rt-ink-3);
+  font-family: var(--rt-mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  line-height: 1.6;
+}
+
+.reader-chapter-estimate span {
+  color: var(--rt-green);
+  font-size: 10px;
 }
 
 :where(.rt-reader-content, .rt-reader-note-content) {
