@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=../../.env src/server.ts",
     "ingest:fixture": "tsx --env-file-if-exists=../../.env src/ingest-fixture.ts",
+    "ingest:preset": "tsx --env-file-if-exists=../../.env src/ingest-preset.ts",
     "ingest:agent": "tsx --env-file-if-exists=../../.env src/ingest-epub.ts",
     "build": "tsup",
     "start": "node --env-file-if-exists=../../.env dist/server.js",

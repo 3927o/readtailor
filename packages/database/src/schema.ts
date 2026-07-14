@@ -117,11 +117,17 @@ export const sharedBooks = pgTable(
     ),
     errorSummary: text('error_summary'),
     failureType: text('failure_type').$type<NormalizationFailureType>(),
+    // §预置书籍: a preset shared book is auto-bound to every new user's shelf when they finish
+    // onboarding (PRD §5.2 / §19.1「预置书籍只加入一次」). The flag is the config source of truth so
+    // the binding code never hardcodes book ids; flip it on a shared book to add/remove it from the
+    // preset set. See apps/api/src/preset-books.ts.
+    isPreset: boolean('is_preset').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex('shared_books_epub_sha256_unique').on(table.epubSha256),
+    index('shared_books_preset_idx').on(table.id).where(sql`${table.isPreset}`),
     check(
       'shared_books_status_valid',
       sql`${table.status} in ('queued', 'normalizing', 'validating', 'indexing', 'analyzing', 'ready', 'failed')`,
