@@ -36,6 +36,7 @@ import type {
   ReadingSettings,
   ThemeSetting,
 } from './api';
+import { activeChapterUnit, buildChapterUnits } from './chapter';
 import { ReadingSessionTracker, type ReadingActivityArea, type ReadingActivityPosition } from './session';
 import {
   domBoundaryForOffset,
@@ -82,14 +83,6 @@ interface SearchHit {
   post: string;
   jump: () => void;
   tone?: 'tailored' | 'mine' | 'original';
-}
-
-interface ReaderChapterUnit {
-  sectionId: string;
-  title: string;
-  startOrder: number;
-  endOrder: number | null;
-  characterCount: number;
 }
 
 const defaultSettings: ReaderSettings = defaultReadingSettings;
@@ -240,52 +233,6 @@ const contentWidths: Record<ContentWidthSetting, number> = {
   medium: 680,
   wide: 760,
 };
-
-function readableOutlineDepth(item: ReaderOutlineItem, outline: ReaderOutlineItem[]): number {
-  const byId = new Map(outline.map((entry) => [entry.section_id, entry]));
-  let depth = 0;
-  let parent = item.parent_section_id ? byId.get(item.parent_section_id) : undefined;
-  while (parent && depth < 8) {
-    if (parent.data_type !== 'part') depth += 1;
-    parent = parent.parent_section_id ? byId.get(parent.parent_section_id) : undefined;
-  }
-  return depth;
-}
-
-function buildChapterUnits(outline: ReaderOutlineItem[], nodes: ReaderNode[]): ReaderChapterUnit[] {
-  const byStart = new Map<number, ReaderOutlineItem>();
-  for (const item of outline) {
-    if (item.data_type === 'part' || readableOutlineDepth(item, outline) > 0) continue;
-    if (!byStart.has(item.first_node_order)) byStart.set(item.first_node_order, item);
-  }
-  const starts = [...byStart.values()].sort((left, right) => left.first_node_order - right.first_node_order);
-  if (starts.length === 0 && nodes[0]) {
-    starts.push({
-      section_id: nodes[0].section_id,
-      data_type: nodes[0].data_type,
-      title: nodes[0].title || '正文',
-      parent_section_id: null,
-      first_node_order: nodes[0].order,
-    });
-  }
-  return starts.map((item, index) => {
-    const next = starts[index + 1];
-    const characterCount = nodes
-      .filter((node) => node.order >= item.first_node_order && (!next || node.order < next.first_node_order))
-      .reduce((sum, node) => sum + node.character_count, 0);
-    return {
-      sectionId: item.section_id,
-      title: item.title,
-      startOrder: item.first_node_order,
-      endOrder: next?.first_node_order ?? null,
-      characterCount,
-    };
-  });
-}
-
-function activeChapterUnit(units: ReaderChapterUnit[], order: number): ReaderChapterUnit | null {
-  return [...units].filter((unit) => unit.startOrder <= order).at(-1) ?? units[0] ?? null;
-}
 
 function readerRemainingLabel(remaining: Awaited<ReturnType<typeof getBookReadingStats>>['remaining'] | undefined): string {
   if (!remaining || remaining.seconds === null) return '继续阅读后估算剩余时间';
