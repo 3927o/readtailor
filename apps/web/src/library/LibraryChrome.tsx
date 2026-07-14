@@ -22,10 +22,14 @@ export function LibraryChrome({ children, service, showBack = true }: {
             <NavLink to="/stats">统计</NavLink>
           </nav>
           {service ? (
-            <div className="service-state" data-connected={service.connected}>
-              <span className="service-dot" aria-hidden="true" />
-              {service.pending ? '正在连接' : service.connected ? '服务正常' : '服务未连接'}
-            </div>
+            service.pending || !service.connected ? (
+              <div className="service-state" data-connected={service.connected}>
+                <span className="service-dot" aria-hidden="true" />
+                {service.pending ? '正在连接' : '服务未连接'}
+              </div>
+            ) : (
+              <span className="masthead-spacer" aria-hidden="true" />
+            )
           ) : showBack ? (
             <Link className="masthead-back" to="/">‹ 返回书架</Link>
           ) : (

@@ -3,13 +3,11 @@ import { useQueries, useQuery } from '@tanstack/react-query';
 import type { ReadingStatsPerBook } from '@readtailor/contracts';
 import { Link } from 'react-router';
 import { EmptyState } from '../components/core/EmptyState';
-import { Kicker } from '../components/core/Kicker';
-import { LibraryChrome } from '../library/LibraryChrome';
 import { getUserBooks } from '../user-books/api';
 import type { UserBookSummary } from '../user-books/api';
 import { localDay, localWeekStart } from '../reader/session';
 import { getBookReadingStats, getGlobalReadingStats } from './api';
-import { formatLastRead, formatReadingDuration, formatRemaining } from './format';
+import { formatRemaining } from './format';
 
 interface RecentDay {
   day: string;
@@ -52,67 +50,65 @@ export function StatsPage() {
   const error = global.error ?? daily.error ?? books.error ?? bookStats.find((query) => query.error)?.error;
 
   return (
-    <LibraryChrome showBack={false}>
-      <main className="stats-page">
-        <Link className="text-button stats-back" to="/">‹ 书架</Link>
-        <Kicker>阅读统计 · READING STATS</Kicker>
-        <div className="stats-heading">
-          <div>
-            <h1>你走过的路</h1>
-            <p>不比昨天多读了多少，只想让你看见：你一直在往前走。</p>
-          </div>
+    <main className="stats-page">
+      <Link className="text-button stats-back" to="/">‹ 书架</Link>
+      <div className="stats-kicker">阅读统计 · Reading Stats</div>
+      <div className="stats-heading">
+        <div>
+          <h1>你走过的路</h1>
+          <p>不比昨天多读了多少，只想让你看见：你一直在往前走。</p>
         </div>
+      </div>
 
-        {error ? (
-          <EmptyState
-            title="统计暂时没有打开"
-            action={<button className="button button-ghost" type="button" onClick={() => {
-              void global.refetch();
-              void daily.refetch();
-              void books.refetch();
-            }}>重新连接</button>}
-          >{error.message}</EmptyState>
-        ) : (
-          <>
-            <section className="stats-card-grid" aria-label="阅读概览">
-              <StatsCard value={global.data ? String(global.data.streakDays) : '—'} label="连续天数" />
-              <StatsCard value={global.data ? String(Math.round(global.data.todaySeconds / 60)) : '—'} label="今日 · 分钟" />
-              <StatsCard value={global.data ? (global.data.weekSeconds / 3600).toFixed(1) : '—'} label="本周 · 小时" />
-            </section>
+      {error ? (
+        <EmptyState
+          title="统计暂时没有打开"
+          action={<button className="button button-ghost" type="button" onClick={() => {
+            void global.refetch();
+            void daily.refetch();
+            void books.refetch();
+          }}>重新连接</button>}
+        >{error.message}</EmptyState>
+      ) : (
+        <>
+          <section className="stats-card-grid" aria-label="阅读概览">
+            <StatsCard value={global.data ? String(global.data.streakDays) : '—'} label="连续天数" />
+            <StatsCard value={global.data ? String(Math.round(global.data.todaySeconds / 60)) : '—'} label="今日 · 分钟" />
+            <StatsCard value={global.data ? (global.data.weekSeconds / 3600).toFixed(1) : '—'} label="本周 · 小时" />
+          </section>
 
-            <section className="stats-section" aria-label="近七天每天分钟数">
-              <div className="stats-section-title">近七天 · 每天分钟数</div>
-              <WeekBars days={daily.data ?? recentDays} loading={loading} />
-            </section>
+          <section className="stats-section" aria-label="近七天每天分钟数">
+            <div className="stats-section-title">近七天 · 每天分钟数</div>
+            <WeekBars days={daily.data ?? recentDays} loading={loading} />
+          </section>
 
-            <section className="stats-section" aria-label="在读书目进度">
-              <div className="stats-section-title">在读 · 进度</div>
-              {books.isPending ? (
-                <div className="stats-list-loading">正在读取书架…</div>
-              ) : activeBooks.length === 0 ? (
-                <EmptyState
-                  title="还没有在读书目"
-                  action={<Link className="button button-secondary" to="/">去书架开始一本</Link>}
-                >开始正式阅读后，这里会汇总每本书的进度和预计剩余时间。</EmptyState>
-              ) : (
-                <div className="stats-book-list">
-                  {activeBooks.map((book, index) => (
-                    <StatsBookRow
-                      key={book.id}
-                      book={book}
-                      stats={bookStats[index]?.data}
-                      loading={bookStats[index]?.isPending ?? false}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
+          <section className="stats-section" aria-label="在读书目进度">
+            <div className="stats-section-title">在读 · 进度</div>
+            {books.isPending ? (
+              <div className="stats-list-loading">正在读取书架…</div>
+            ) : activeBooks.length === 0 ? (
+              <EmptyState
+                title="还没有在读书目"
+                action={<Link className="button button-secondary" to="/">去书架开始一本</Link>}
+              >开始正式阅读后，这里会汇总每本书的进度和预计剩余时间。</EmptyState>
+            ) : (
+              <div className="stats-book-list">
+                {activeBooks.map((book, index) => (
+                  <StatsBookRow
+                    key={book.id}
+                    book={book}
+                    stats={bookStats[index]?.data}
+                    loading={bookStats[index]?.isPending ?? false}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
 
-            <p className="stats-note">阅读速度按你实际停留的时长估算，越读越准。</p>
-          </>
-        )}
-      </main>
-    </LibraryChrome>
+          <p className="stats-note">阅读速度按你实际停留的时长估算，越读越准。</p>
+        </>
+      )}
+    </main>
   );
 }
 
@@ -157,7 +153,6 @@ function StatsBookRow({ book, stats, loading }: {
           <span>{book.sharedBook.title}</span>
           <strong>{loading ? '更新中…' : `${Math.round(progress)}% · ${formatRemaining(stats?.remaining)}`}</strong>
         </div>
-        <p>{formatLastRead(stats?.lastReadAt ?? null)} · 累计 {stats ? formatReadingDuration(stats.totalEffectiveSeconds) : '—'}</p>
       </div>
       <div className="stats-book-progress" aria-label={`阅读进度 ${Math.round(progress)}%`}>
         <span style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />

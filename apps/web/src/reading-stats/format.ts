@@ -14,11 +14,3 @@ export function formatRemaining(remaining: RemainingReadingTime | undefined): st
   const body = formatReadingDuration(remaining.seconds);
   return remaining.approximate ? `约 ${body}` : body;
 }
-
-export function formatLastRead(iso: string | null): string {
-  if (!iso) return '尚未开始';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '—';
-  return date.toLocaleString(undefined, { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-
