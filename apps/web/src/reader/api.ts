@@ -1,3 +1,4 @@
+import type { Briefing } from '@readtailor/contracts';
 import type { TailoredContent, TextRange, WorkflowStatus } from '../user-books/api';
 import type { HeartbeatPayload } from './session';
 
@@ -156,8 +157,8 @@ export interface ReaderBootstrap {
   sharedBookId: string;
   workflowStatus: WorkflowStatus;
   enhancements: ReaderNodeEnhancement[];
-  // Raw backend strings — rendered directly, no fabricated briefing structure (§5).
-  briefing: string;
+  // Structured pre-reading briefing (BriefCard sections). strategySummary stays a raw string.
+  briefing: Briefing;
   strategySummary: string;
   // §11.5 last reading position to resume to (null → start from the first node).
   resumePosition: ReaderResumePosition | null;
@@ -242,7 +243,7 @@ interface RawReaderBootstrap {
   userBookId: string;
   sharedBookId: string;
   workflowStatus: 'active_reading';
-  briefing: string;
+  briefing: Briefing;
   strategySummary: string;
   resumePosition: ReaderResumePosition | null;
   settings: ReadingSettings;

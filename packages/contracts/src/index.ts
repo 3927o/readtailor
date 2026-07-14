@@ -425,6 +425,19 @@ export const StrategySchema = Type.Object({
 });
 export type Strategy = Static<typeof StrategySchema>;
 
+// The pre-reading briefing is a small structured object rendered as labelled sections
+// (design-system BriefCard): what the book is, how it unfolds, what it assumes you know,
+// and a personalised how-to-read note. Fields are lenient here (read side) so briefings
+// migrated from the legacy free-text column — which land wholly in `bookIdentity` with the
+// other three empty — still validate and render; the agent enforces per-field brevity on write.
+export const BriefingSchema = Type.Object({
+  bookIdentity: Type.String(),
+  arc: Type.String(),
+  assumedKnowledge: Type.String(),
+  readingAdvice: Type.String(),
+});
+export type Briefing = Static<typeof BriefingSchema>;
+
 export const StrategyDraftStatusSchema = Type.Union([
   Type.Literal('draft'),
   Type.Literal('approved_for_trial'),
@@ -437,7 +450,7 @@ export const StrategyDraftSchema = Type.Object({
   id: Type.String(),
   version: Type.Integer({ minimum: 1 }),
   status: StrategyDraftStatusSchema,
-  readingBriefing: Type.String({ minLength: 1 }),
+  readingBriefing: BriefingSchema,
   userFacingSummary: Type.String({ minLength: 1 }),
   strategy: StrategySchema,
   createdAt: Type.String(),
@@ -705,8 +718,8 @@ export const DeleteHighlightResponseSchema = Type.Object({
 export type DeleteHighlightResponse = Static<typeof DeleteHighlightResponseSchema>;
 
 // The reader bootstrap the active-reading page loads (§5): the formal shape for what was
-// previously served as Type.Unknown(). `briefing` / `strategySummary` are plain strings —
-// the frontend renders them directly instead of fabricating a structured briefing.
+// previously served as Type.Unknown(). `briefing` is the structured pre-reading briefing
+// (BriefCard sections); `strategySummary` stays a plain string rendered directly.
 export const ReaderBootstrapEnhancementSchema = Type.Object({
   generationId: Type.String(),
   sectionId: Type.String({ minLength: 1 }),
@@ -720,7 +733,7 @@ export const ReaderBootstrapSchema = Type.Object({
   userBookId: Type.String(),
   sharedBookId: Type.String(),
   workflowStatus: Type.Literal('active_reading'),
-  briefing: Type.String(),
+  briefing: BriefingSchema,
   strategySummary: Type.String(),
   enhancements: Type.Array(ReaderBootstrapEnhancementSchema),
   // §11.5 last reading position to resume to (null → start from the first node), with the restore

@@ -6,6 +6,7 @@ import type {
   ApproveStrategyRequest,
   ApproveStrategyResponse,
   BookReaderProfile,
+  Briefing,
   CreateHighlightRequest,
   DeleteHighlightResponse,
   Highlight,
@@ -353,6 +354,22 @@ function mapBookReaderProfile(value: {
   };
 }
 
+function mapBriefing(value: {
+  book_identity: string;
+  arc: string;
+  assumed_knowledge: string;
+  reading_advice: string;
+}): Briefing {
+  // snake_case (agent ReadingBriefingSchema) → camelCase contracts Briefing. Stored as jsonb
+  // and rendered by the frontend BriefCard as four labelled sections.
+  return {
+    bookIdentity: value.book_identity,
+    arc: value.arc,
+    assumedKnowledge: value.assumed_knowledge,
+    readingAdvice: value.reading_advice,
+  };
+}
+
 function mapStrategy(value: {
   goals: string[];
   expression_principles: string[];
@@ -655,7 +672,7 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
           bookReaderProfileVersionId: profile.id,
           version: 1,
           status: 'draft',
-          readingBriefing: outcome.briefing,
+          readingBriefing: mapBriefing(outcome.briefing),
           userFacingSummary: outcome.publicStrategy,
           strategy: mapStrategy(outcome.strategy),
         })

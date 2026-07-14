@@ -134,6 +134,13 @@
       "when": 1784044424801,
       "tag": "0018_classy_tyger_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784048322709,
+      "tag": "0019_briefing_structured",
+      "breakpoints": true
     }
   ]
 }

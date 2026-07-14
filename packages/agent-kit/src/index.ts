@@ -709,6 +709,18 @@ export const BookReaderProfileSchema = Type.Object({
 });
 export type BookReaderProfile = Static<typeof BookReaderProfileSchema>;
 
+// The reader-facing pre-reading briefing, produced as four short labelled sections instead of
+// one long blob so the frontend can render a scannable BriefCard. Each field is capped tight
+// (≤220 字) to keep it genuinely brief; the system prompt asks for 1-2 sentences per field.
+// snake_case here (agent tool convention); mapped to the camelCase contracts Briefing on save.
+export const ReadingBriefingSchema = Type.Object({
+  book_identity: Type.String({ minLength: 10, maxLength: 220 }),
+  arc: Type.String({ minLength: 10, maxLength: 220 }),
+  assumed_knowledge: Type.String({ minLength: 10, maxLength: 220 }),
+  reading_advice: Type.String({ minLength: 10, maxLength: 220 }),
+});
+export type ReadingBriefing = Static<typeof ReadingBriefingSchema>;
+
 export const ReadingStrategySchema = Type.Object({
   goals: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { minItems: 1, maxItems: 12 }),
   expression_principles: Type.Array(
@@ -771,7 +783,7 @@ export type ReadingSetupOutcome =
       type: 'completed';
       bookReaderProfile: BookReaderProfile;
       readerProfilePatch?: ReaderProfilePatch;
-      briefing: string;
+      briefing: ReadingBriefing;
       publicStrategy: string;
       strategy: ReadingStrategy;
     }
@@ -783,7 +795,7 @@ export type ReadingSetupOutcome =
     }
   | { type: 'fragments'; fragments: TrialFragmentSelection[] };
 
-const READING_SETUP_SYSTEM_PROMPT = `你是 ReadTailor 的单本书访谈与处理方式 Agent。你只处理当前用户与当前书的阅读准备，不修改原文。每轮必须调用一个宿主工具结束：信息不足时调用 present_interview_question；信息足够或已达到问题上限时调用 finish_interview。问题必须直接服务于本书处理方式，不重复长期画像中的明确信息，每次只问一题，给出 2-5 个清晰选项并允许文字补充。访谈是轻快的口语对话，务必言简意赅、克制不铺陈，不要长篇大论：acknowledgment 用一句短话真实回应用户上一答（30 字以内，不复述整段、不堆砌寒暄，首问留空串）；prompt 用一句话把问题问清楚（一般 40 字以内，不加铺垫、背景解释或多余修饰）；hint 一句话说明为什么问这道题、它会如何影响本书处理方式（40 字以内，贴着当前问题写、不空泛）；每个选项 label 是一个简短短语（15 字以内，不写成整句）；sufficiency 给出 0-100 的信息充足度自评（可随判断诚实回落）。finish_interview 必须提交本书画像、个性化读前简报、用户可读的处理方式和结构化策略。结构化策略要如实产出：整体处理目标 goals、表达原则 expression_principles（说明增强内容如何与原文协作、克制到什么程度）；导读 guide、裁读注 annotations、节后助读 after_reading 三段各自用 enabled 明确决定是否启用——启用时给出对应要点（guide.objectives / annotations.focuses 与 exclusions / after_reading.objectives），认为某段对本书无价值就把该段 enabled 设为 false 并把要点留空，不要为了填满而编造。trial_candidates 从 book profile 候选池中选择恰好三个不同候选，覆盖进入门槛、典型内容和较高难度内容。你没有确认权限，不能批准试读或创建正式策略。`;
+const READING_SETUP_SYSTEM_PROMPT = `你是 ReadTailor 的单本书访谈与处理方式 Agent。你只处理当前用户与当前书的阅读准备，不修改原文。每轮必须调用一个宿主工具结束：信息不足时调用 present_interview_question；信息足够或已达到问题上限时调用 finish_interview。问题必须直接服务于本书处理方式，不重复长期画像中的明确信息，每次只问一题，给出 2-5 个清晰选项并允许文字补充。访谈是轻快的口语对话，务必言简意赅、克制不铺陈，不要长篇大论：acknowledgment 用一句短话真实回应用户上一答（30 字以内，不复述整段、不堆砌寒暄，首问留空串）；prompt 用一句话把问题问清楚（一般 40 字以内，不加铺垫、背景解释或多余修饰）；hint 一句话说明为什么问这道题、它会如何影响本书处理方式（40 字以内，贴着当前问题写、不空泛）；每个选项 label 是一个简短短语（15 字以内，不写成整句）；sufficiency 给出 0-100 的信息充足度自评（可随判断诚实回落）。finish_interview 必须提交本书画像、个性化读前简报、用户可读的处理方式和结构化策略。读前简报 briefing 是给读者读正文前看的四段结构化短内容，务必简洁，每段只写 1-2 句、不铺陈：book_identity（这是一本什么书——它的定位与真正价值）；arc（全书怎么走——整体脉络或推进方式）；assumed_knowledge（假设你已经知道——读它默认你具备的背景，可结合该读者已有画像点明落差）；reading_advice（建议你的读法——针对这位读者的一句具体读法建议）。四段都要贴着本书与该读者写，不空泛、不复述处理方式细节。结构化策略要如实产出：整体处理目标 goals、表达原则 expression_principles（说明增强内容如何与原文协作、克制到什么程度）；导读 guide、裁读注 annotations、节后助读 after_reading 三段各自用 enabled 明确决定是否启用——启用时给出对应要点（guide.objectives / annotations.focuses 与 exclusions / after_reading.objectives），认为某段对本书无价值就把该段 enabled 设为 false 并把要点留空，不要为了填满而编造。trial_candidates 从 book profile 候选池中选择恰好三个不同候选，覆盖进入门槛、典型内容和较高难度内容。你没有确认权限，不能批准试读或创建正式策略。`;
 
 function userTurnMessage(text: string): AgentMessage {
   return { role: 'user', content: text, timestamp: Date.now() };
@@ -907,7 +919,7 @@ export async function runReadingSetupAgent(options: {
       parameters: Type.Object({
         book_reader_profile: BookReaderProfileSchema,
         reader_profile_patch: Type.Optional(ReaderProfilePatchSchema),
-        briefing: Type.String({ minLength: 100, maxLength: 12000 }),
+        briefing: ReadingBriefingSchema,
         public_strategy: Type.String({ minLength: 50, maxLength: 8000 }),
         strategy: ReadingStrategySchema,
       }),
@@ -916,7 +928,7 @@ export async function runReadingSetupAgent(options: {
         const value = input as {
           book_reader_profile: BookReaderProfile;
           reader_profile_patch?: ReaderProfilePatch;
-          briefing: string;
+          briefing: ReadingBriefing;
           public_strategy: string;
           strategy: ReadingStrategy;
         };

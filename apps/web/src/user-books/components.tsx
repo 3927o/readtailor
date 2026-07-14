@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
+import type { Briefing } from '@readtailor/contracts';
 import { EmptyState } from '../components/core/EmptyState';
 import { Kicker } from '../components/core/Kicker';
 import { bookCoverUrl } from '../library/api';
@@ -53,14 +54,34 @@ export function WorkflowMessage({ title, children, action }: {
   );
 }
 
-export function BriefCard({ briefing }: { briefing: string }) {
+// The four labelled sections of the pre-reading briefing, in reading order. The last one
+// (建议你的读法) is personalised advice, so it gets the green `prep` wash — mirroring the
+// design-system BriefCard's flagged section.
+const BRIEFING_SECTIONS: Array<{ key: keyof Briefing; label: string; prep?: boolean }> = [
+  { key: 'bookIdentity', label: '这是一本什么书' },
+  { key: 'arc', label: '全书怎么走' },
+  { key: 'assumedKnowledge', label: '假设你已经知道' },
+  { key: 'readingAdvice', label: '建议你的读法', prep: true },
+];
+
+export function BriefCard({ briefing }: { briefing: Briefing }) {
+  // Only render sections that actually carry text, so a briefing migrated from the legacy
+  // free-text column (everything in bookIdentity, the rest empty) degrades to a single section
+  // instead of showing three blank headings.
+  const sections = BRIEFING_SECTIONS
+    .map((section) => ({ ...section, text: briefing[section.key]?.trim() ?? '' }))
+    .filter((section) => section.text.length > 0);
+  if (sections.length === 0) return null;
   return (
     <section className="brief-card">
       <Kicker>BEFORE YOU READ · 读前简报</Kicker>
       <h2>读之前，我想先和你说几句</h2>
-      <div className="brief-section" data-personalized>
-        <AssistanceContent content={briefing} />
-      </div>
+      {sections.map((section) => (
+        <div className="brief-section" key={section.key} data-personalized={section.prep ? 'true' : undefined}>
+          <h3>{section.label}</h3>
+          <p>{section.text}</p>
+        </div>
+      ))}
     </section>
   );
 }

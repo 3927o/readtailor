@@ -27,6 +27,12 @@ const fakeAuth: AuthService = {
   async developmentLogin() { throw new Error('not used'); },
   async logout() {},
 };
+const BRIEFING = {
+  bookIdentity: 'What it is',
+  arc: 'How it goes',
+  assumedKnowledge: 'What it assumes',
+  readingAdvice: 'How to read it',
+};
 const item = {
   id: USER_BOOK_ID,
   sharedBookId: SHARED_BOOK_ID,
@@ -80,7 +86,7 @@ function fakeService(overrides: Partial<UserBookUserService> = {}): UserBookServ
         userBookId: USER_BOOK_ID,
         sharedBookId: SHARED_BOOK_ID,
         workflowStatus: 'active_reading',
-        briefing: 'Briefing',
+        briefing: BRIEFING,
         strategySummary: 'Strategy',
         enhancements: [],
         resumePosition: null,
@@ -94,7 +100,7 @@ function fakeService(overrides: Partial<UserBookUserService> = {}): UserBookServ
         userBookId: USER_BOOK_ID,
         sharedBookId: SHARED_BOOK_ID,
         workflowStatus: 'active_reading',
-        briefing: 'Briefing',
+        briefing: BRIEFING,
         strategySummary: 'Strategy',
         enhancements: [],
         resumePosition: null,
@@ -156,7 +162,7 @@ describe('user book workflow routes', () => {
             userBookId: USER_BOOK_ID,
             sharedBookId: SHARED_BOOK_ID,
             workflowStatus: 'active_reading',
-            briefing: 'Briefing',
+            briefing: BRIEFING,
             strategySummary: 'Strategy',
             enhancements: [
               { generationId: 'g1', sectionId: 'chapter-3', segment: 1, status: 'queued', result: null },
@@ -210,7 +216,7 @@ describe('user book workflow routes', () => {
             userBookId: USER_BOOK_ID,
             sharedBookId: SHARED_BOOK_ID,
             workflowStatus: 'active_reading',
-            briefing: 'Briefing',
+            briefing: BRIEFING,
             strategySummary: 'Strategy',
             enhancements: [],
             resumePosition: null,

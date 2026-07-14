@@ -16,6 +16,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import type {
   BookReaderProfile,
+  Briefing,
   GenerationResult,
   GenerationScope,
   InterviewSessionStatus,
@@ -702,7 +703,7 @@ export const strategyDraftVersions = pgTable(
     sourceMessageId: uuid('source_message_id').references(() => interviewMessages.id),
     version: integer('version').notNull(),
     status: text('status').$type<StrategyDraftStatus>().notNull().default('draft'),
-    readingBriefing: text('reading_briefing').notNull(),
+    readingBriefing: jsonb('reading_briefing').$type<Briefing>().notNull(),
     userFacingSummary: text('user_facing_summary').notNull(),
     strategy: jsonb('strategy').$type<Strategy>().notNull(),
     approvedForTrialAt: timestamp('approved_for_trial_at', { withTimezone: true }),
@@ -737,7 +738,7 @@ export const strategyDraftVersions = pgTable(
     ),
     check(
       'strategy_draft_versions_content_nonempty',
-      sql`length(btrim(${table.readingBriefing})) > 0 and length(btrim(${table.userFacingSummary})) > 0`,
+      sql`jsonb_typeof(${table.readingBriefing}) = 'object' and length(btrim(${table.userFacingSummary})) > 0`,
     ),
   ],
 );

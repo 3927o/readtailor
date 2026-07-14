@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
+import type { Briefing } from '@readtailor/contracts';
 import { ProgressBar } from '../components/chrome/ProgressBar';
 import { Segmented } from '../components/core/Segmented';
 import { Slider } from '../components/core/Slider';
@@ -1365,13 +1366,13 @@ function SettingsPanel({ settings, update, close }: {
 
 function BookInfoPanel({ title, briefing, strategySummary, highlights, jumpToHighlight, close }: {
   title: string;
-  briefing: string;
+  briefing: Briefing;
   strategySummary: string;
   highlights: Highlight[];
   jumpToHighlight: (highlightId: string) => void;
   close: () => void;
 }) {
-  const hasBriefing = briefing.trim().length > 0;
+  const hasBriefing = Object.values(briefing).some((section) => section.trim().length > 0);
   const hasStrategy = strategySummary.trim().length > 0;
   return (
     <aside className="reader-book-info" aria-label="本书说明">

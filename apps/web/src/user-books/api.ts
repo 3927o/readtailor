@@ -1,4 +1,4 @@
-import type { InterviewStreamEvent, SharedBookStatus } from '@readtailor/contracts';
+import type { Briefing, InterviewStreamEvent, SharedBookStatus } from '@readtailor/contracts';
 import { apiBaseUrl } from '../library/api';
 
 export type WorkflowStatus =
@@ -75,7 +75,7 @@ export interface InterviewSnapshot {
 export interface StrategySnapshot {
   draftId: string;
   draftVersion: number;
-  readingBriefing: string;
+  readingBriefing: Briefing;
   userFacingSummary: string;
   adjustmentCount: number;
   adjustmentLimit: number;
@@ -207,7 +207,7 @@ interface RawStrategySnapshot {
   draft: {
     id: string;
     version: number;
-    readingBriefing: string;
+    readingBriefing: Briefing;
     userFacingSummary: string;
   };
   adjustmentCount: number;

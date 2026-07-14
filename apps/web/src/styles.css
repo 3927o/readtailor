@@ -2820,8 +2820,15 @@ h1 {
   line-height: 1.55;
 }
 
+/* One labelled briefing section: a bold label over a reading-face paragraph. The last section
+   (建议你的读法) opts into the green "prep" wash via [data-personalized]. Mirrors the
+   design-system BriefCard section spec. */
 .brief-section {
   margin-bottom: 18px;
+}
+
+.brief-section:last-child {
+  margin-bottom: 0;
 }
 
 .brief-section[data-personalized='true'] {
@@ -2832,9 +2839,23 @@ h1 {
 }
 
 .brief-section h3 {
-  margin: 0 0 6px;
+  margin: 0 0 5px;
   color: var(--rt-ink);
   font-size: 14px;
+  font-weight: 700;
+}
+
+.brief-section > p {
+  margin: 0;
+  color: var(--rt-ink-2);
+  font-family: var(--rt-read);
+  font-size: 15px;
+  line-height: 1.85;
+}
+
+.brief-section[data-personalized='true'] h3,
+.brief-section[data-personalized='true'] > p {
+  color: var(--rt-green-deep);
 }
 
 .assistance-content p,
@@ -2848,12 +2869,6 @@ h1 {
 
 .assistance-content > :last-child { margin-bottom: 0; }
 .assistance-content ul { padding-left: 1.4em; }
-
-.brief-section .assistance-content {
-  color: var(--rt-ink-2);
-  font-size: 15px;
-  line-height: 1.85;
-}
 
 .brief-terms {
   display: grid;

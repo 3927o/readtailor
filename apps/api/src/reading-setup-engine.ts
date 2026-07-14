@@ -179,7 +179,12 @@ function fakeCompleted(context: Record<string, unknown>): ReadingSetupOutcome {
       reading_goals: ['抓住全书主线，并理解关键概念在具体段落中的作用。'],
       likely_barriers: ['概念或背景密集时可能失去局部内容与全书结构之间的联系。'],
     },
-    briefing: `《${title}》并不适合只靠摘取结论来读。${summary}\n\n${structure}\n\n阅读时可以先保持正文推进；遇到真正影响理解的概念和背景，再展开裁读内容。局部感到困难是正常的，重点是持续知道作者此刻在做什么，以及这一段与全书主线有什么关系。`,
+    briefing: {
+      book_identity: `《${title}》并不适合只靠摘取结论来读。${summary}`,
+      arc: structure,
+      assumed_knowledge: '默认你对相关领域有初步认识；真正陌生的概念与背景，我会在正文旁替你补上。',
+      reading_advice: '先保持正文推进，遇到影响理解的概念再展开裁读内容；重点是始终知道作者此刻在做什么、这一段与全书主线的关系。',
+    },
     publicStrategy: '阅读节点开始前，我会用简短导读说明当前位置和真正值得留意的问题。正文中只在关键概念、必要背景或论证跳步处加入裁读注，已经清楚的句子不重复解释。节点结束后，我会视内容需要补一段助读，帮助你把刚读过的内容放回全书结构。任何增强内容都只附加在原文旁边，不改写原文。',
     strategy,
   };
