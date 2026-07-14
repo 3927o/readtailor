@@ -1,5 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { Logger } from 'pino';
+import type { ResolvedModelEndpoint } from '@readtailor/config';
 import {
   normalizationRuns,
   sharedBooks,
@@ -8,7 +9,7 @@ import {
 } from '@readtailor/database';
 import { sha256 } from '@readtailor/normalized-book';
 import type { ObjectStorage } from '@readtailor/storage';
-import { runFormalNormalization } from './coordinator';
+import { classifyNormalizationFailure, runFormalNormalization } from './coordinator';
 import { publishValidatedNormalization } from './publication';
 
 export interface NormalizationExecutionOptions {
@@ -18,10 +19,8 @@ export interface NormalizationExecutionOptions {
   repoRoot: string;
   e2bApiKey: string;
   e2bTemplate?: string;
-  modelApiBaseUrl: string;
-  modelApiKey: string;
-  normalizationModel: string;
-  analysisModel: string;
+  normalizationModel: ResolvedModelEndpoint;
+  analysisModel: ResolvedModelEndpoint;
   maxAttempts: number;
   maxTurns: number;
   attemptTimeoutMs: number;
@@ -78,9 +77,9 @@ export async function executeNormalizationRun(options: NormalizationExecutionOpt
       repoRoot: options.repoRoot,
       e2bApiKey: options.e2bApiKey,
       ...(options.e2bTemplate ? { e2bTemplate: options.e2bTemplate } : {}),
-      modelApiBaseUrl: options.modelApiBaseUrl,
-      modelApiKey: options.modelApiKey,
-      modelName: options.normalizationModel,
+      modelApiBaseUrl: options.normalizationModel.baseUrl,
+      modelApiKey: options.normalizationModel.apiKey,
+      modelName: options.normalizationModel.modelName,
       maxAttempts: options.maxAttempts,
       maxTurns: options.maxTurns,
       attemptTimeoutMs: options.attemptTimeoutMs,
@@ -92,20 +91,22 @@ export async function executeNormalizationRun(options: NormalizationExecutionOpt
       normalizationRunId: options.normalizationRunId,
       candidate,
       repoRoot: options.repoRoot,
-      modelApiBaseUrl: options.modelApiBaseUrl,
-      modelApiKey: options.modelApiKey,
-      analysisModelName: options.analysisModel,
+      modelApiBaseUrl: options.analysisModel.baseUrl,
+      modelApiKey: options.analysisModel.apiKey,
+      analysisModelName: options.analysisModel.modelName,
       analysisMaxTurns: options.analysisMaxTurns,
       analysisTimeoutMs: options.analysisTimeoutMs,
       logger: options.logger,
     });
   } catch (error) {
     const summary = error instanceof Error ? error.message : String(error);
+    const failureType = classifyNormalizationFailure(error);
     await options.db
       .update(normalizationRuns)
       .set({
         status: 'failed',
         errorSummary: summary.slice(0, 2000),
+        failureType,
         completedAt: sql`now()`,
         heartbeatAt: sql`now()`,
       })
@@ -118,7 +119,12 @@ export async function executeNormalizationRun(options: NormalizationExecutionOpt
       .catch(() => undefined);
     await options.db
       .update(sharedBooks)
-      .set({ status: 'failed', errorSummary: summary.slice(0, 2000), updatedAt: sql`now()` })
+      .set({
+        status: 'failed',
+        errorSummary: summary.slice(0, 2000),
+        failureType,
+        updatedAt: sql`now()`,
+      })
       .where(and(eq(sharedBooks.id, run.bookId), sql`${sharedBooks.currentPackageId} is null`))
       .catch(() => undefined);
     throw error;

@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
+import type { NormalizationFailureType } from '@readtailor/contracts';
 import { runNormalizationAgent } from '@readtailor/agent-kit';
 import {
   normalizationArtifacts,
@@ -103,7 +104,7 @@ function createArtifactRecorder(options: {
   return { sink, latestKeys };
 }
 
-function classifyFailure(error: unknown): string {
+export function classifyNormalizationFailure(error: unknown): NormalizationFailureType {
   const message = error instanceof Error ? error.message : String(error);
   if (/timed out|turn limit|aborted/i.test(message)) return 'timeout';
   if (/nb_check|validation|blocking error|inventory/i.test(message)) return 'validation_failed';
@@ -290,7 +291,9 @@ export async function runFormalNormalization(options: {
     } catch (error) {
       lastError = error;
       const summary = error instanceof Error ? error.message : String(error);
-      await repository.failAttempt(started.id, classifyFailure(error), summary).catch(() => undefined);
+      await repository
+        .failAttempt(started.id, classifyNormalizationFailure(error), summary)
+        .catch(() => undefined);
       await sandbox?.close().catch(() => undefined);
       await rm(workspace, { recursive: true, force: true });
       options.logger.warn(

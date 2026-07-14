@@ -284,6 +284,17 @@ export async function executeContentGeneration(options: {
       .returning({ id: trialSegments.id, trialRevisionId: trialSegments.trialRevisionId });
     const trialSegment = changedSegment[0];
     if (!trialSegment) return;
+    // Serialize the all-ready check + publish across the three concurrent segment jobs. Without
+    // this row lock, under READ COMMITTED two siblings finishing at once each miss the other's
+    // uncommitted `ready`, so neither publishes and the revision is stranded in `generating`
+    // (§6.3). Locking the revision row first forces the last job through here to observe every
+    // committed sibling and publish. Also serializes against the failure path's revision UPDATE.
+    await tx
+      .select({ id: trialRevisions.id })
+      .from(trialRevisions)
+      .where(eq(trialRevisions.id, trialSegment.trialRevisionId))
+      .limit(1)
+      .for('update');
     const siblings = await tx.select().from(trialSegments).where(eq(trialSegments.trialRevisionId, trialSegment.trialRevisionId));
     const allReady = siblings.length === 3 && siblings.every((item) => item.id === trialSegment.id ? true : item.status === 'ready');
     if (!allReady) return;

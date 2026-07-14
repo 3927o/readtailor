@@ -3,7 +3,12 @@ import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
 import { and, eq, sql } from 'drizzle-orm';
-import { readLogLevel, requireString } from '@readtailor/config';
+import {
+  readLogLevel,
+  readModelEndpoint,
+  requireCompleteModelEndpoint,
+  requireString,
+} from '@readtailor/config';
 import {
   bookPackages,
   bookProfiles,
@@ -44,10 +49,24 @@ async function main(): Promise<void> {
   const epubSha256 = sha256(source);
   const databaseUrl = requireString(process.env, 'DATABASE_URL');
   const e2bApiKey = requireString(process.env, 'E2B_API_KEY');
-  const modelApiBaseUrl = requireString(process.env, 'MODEL_API_BASE_URL');
-  const modelApiKey = requireString(process.env, 'MODEL_API_KEY');
-  const normalizationModel = optional('NORMALIZATION_MODEL_NAME') ?? requireString(process.env, 'MODEL_NAME');
-  const analysisModel = optional('BOOK_ANALYSIS_MODEL_NAME') ?? normalizationModel;
+  const normalizationModel = requireCompleteModelEndpoint(
+    readModelEndpoint(process.env, 'NORMALIZATION'),
+    'normalization',
+  );
+  if (!normalizationModel) {
+    throw new Error(
+      'normalization model not configured: set MODEL_API_BASE_URL, MODEL_API_KEY and MODEL_NAME (or the NORMALIZATION_MODEL_* overrides)',
+    );
+  }
+  const analysisModel = requireCompleteModelEndpoint(
+    readModelEndpoint(process.env, 'BOOK_ANALYSIS', 'NORMALIZATION'),
+    'book-analysis',
+  );
+  if (!analysisModel) {
+    throw new Error(
+      'book-analysis model not configured: set MODEL_API_BASE_URL, MODEL_API_KEY and MODEL_NAME (or the BOOK_ANALYSIS_MODEL_* overrides)',
+    );
+  }
   const e2bTemplate = optional('E2B_TEMPLATE');
   const storage = createObjectStorage({
     localRoot: optional('OBJECT_STORAGE_LOCAL_ROOT')
@@ -248,9 +267,9 @@ async function main(): Promise<void> {
       repoRoot: REPO_ROOT,
       e2bApiKey,
       ...(e2bTemplate ? { e2bTemplate } : {}),
-      modelApiBaseUrl,
-      modelApiKey,
-      modelName: normalizationModel,
+      modelApiBaseUrl: normalizationModel.baseUrl,
+      modelApiKey: normalizationModel.apiKey,
+      modelName: normalizationModel.modelName,
       maxAttempts: integer('NORMALIZATION_MAX_ATTEMPTS', 3, 1),
       maxTurns: integer('NORMALIZATION_MAX_TURNS', 50, 1),
       attemptTimeoutMs: integer('NORMALIZATION_ATTEMPT_TIMEOUT_MS', 30 * 60_000, 60_000),
@@ -262,9 +281,9 @@ async function main(): Promise<void> {
       normalizationRunId: currentRunId,
       candidate,
       repoRoot: REPO_ROOT,
-      modelApiBaseUrl,
-      modelApiKey,
-      analysisModelName: analysisModel,
+      modelApiBaseUrl: analysisModel.baseUrl,
+      modelApiKey: analysisModel.apiKey,
+      analysisModelName: analysisModel.modelName,
       analysisMaxTurns: integer('BOOK_ANALYSIS_MAX_TURNS', 20, 1),
       analysisTimeoutMs: integer('BOOK_ANALYSIS_TIMEOUT_MS', 20 * 60_000, 60_000),
       logger,

@@ -1,4 +1,10 @@
-import { readInteger, readLogLevel, readOptionalString, readString } from '@readtailor/config';
+import {
+  readInteger,
+  readLogLevel,
+  readModelEndpoint,
+  readOptionalString,
+  readString,
+} from '@readtailor/config';
 
 export type ApiConfig = ReturnType<typeof loadApiConfig>;
 
@@ -14,9 +20,9 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env) {
     objectStorageBucket: readOptionalString(env, 'OBJECT_STORAGE_BUCKET'),
     objectStorageAccessKeyId: readOptionalString(env, 'OBJECT_STORAGE_ACCESS_KEY_ID'),
     objectStorageSecretAccessKey: readOptionalString(env, 'OBJECT_STORAGE_SECRET_ACCESS_KEY'),
-    modelBaseUrl: readOptionalString(env, 'MODEL_API_BASE_URL'),
-    modelApiKey: readOptionalString(env, 'MODEL_API_KEY'),
-    modelName: readOptionalString(env, 'MODEL_NAME'),
+    // AI 功能各自可独立配置端点/key/模型，缺省回退到全局 MODEL_* 。
+    systemChatModel: readModelEndpoint(env, 'SYSTEM_CHAT'),
+    readingSetupModel: readModelEndpoint(env, 'READING_SETUP'),
     authCookieSecret: readOptionalString(env, 'AUTH_COOKIE_SECRET'),
     authCookieSecure: (readOptionalString(env, 'AUTH_COOKIE_SECURE') ?? String(production)) === 'true',
     authSessionDays: readInteger(env, 'AUTH_SESSION_DAYS', 30, { min: 1, max: 365 }),

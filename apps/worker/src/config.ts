@@ -1,21 +1,45 @@
-import { readInteger, readLogLevel, readOptionalString, readString } from '@readtailor/config';
+import {
+  readEnumList,
+  readInteger,
+  readLogLevel,
+  readModelEndpoint,
+  readOptionalString,
+  readString,
+} from '@readtailor/config';
+
+// The queue consumers this worker binary knows how to run. A process starts a consumer only
+// when its kind is selected via WORKER_QUEUES *and* its dependencies are configured — the two
+// gates compose, so you can run dedicated pools (e.g. a content-generation-only fleet).
+export const WORKER_QUEUE_KINDS = ['system', 'normalization', 'content-generation'] as const;
+export type WorkerQueueKind = (typeof WORKER_QUEUE_KINDS)[number];
 
 export type WorkerConfig = ReturnType<typeof loadWorkerConfig>;
 
 export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
+  // WORKER_CONCURRENCY is the base default; each queue may override it independently so a
+  // content-generation pool can fan out without also multiplying heavy normalization sandboxes.
+  const concurrency = readInteger(env, 'WORKER_CONCURRENCY', 1, { min: 1 });
   return {
     host: readString(env, 'WORKER_HOST', '0.0.0.0'),
     port: readInteger(env, 'WORKER_PORT', 3002, { min: 1, max: 65_535 }),
-    concurrency: readInteger(env, 'WORKER_CONCURRENCY', 1, { min: 1 }),
+    concurrency,
+    systemConcurrency: readInteger(env, 'SYSTEM_CONCURRENCY', concurrency, { min: 1 }),
+    normalizationConcurrency: readInteger(env, 'NORMALIZATION_CONCURRENCY', concurrency, { min: 1 }),
+    // Content generation is lightweight LLM I/O, not a heavy E2B sandbox, so it defaults to 5 —
+    // enough to run a trial's three segments in parallel with headroom — decoupled from the
+    // conservative base so bumping it never fans out normalization. Safe now that the publish
+    // path serializes with a row lock (tailoring/job.ts §6.3).
+    contentGenerationConcurrency: readInteger(env, 'CONTENT_GENERATION_CONCURRENCY', 5, { min: 1 }),
+    queues: readEnumList(env, 'WORKER_QUEUES', WORKER_QUEUE_KINDS, WORKER_QUEUE_KINDS),
     redisUrl: readOptionalString(env, 'REDIS_URL'),
     databaseUrl: readOptionalString(env, 'DATABASE_URL'),
     e2bApiKey: readOptionalString(env, 'E2B_API_KEY'),
     e2bTemplate: readOptionalString(env, 'E2B_TEMPLATE'),
-    modelApiBaseUrl: readOptionalString(env, 'MODEL_API_BASE_URL'),
-    modelApiKey: readOptionalString(env, 'MODEL_API_KEY'),
-    modelName: readOptionalString(env, 'MODEL_NAME'),
-    normalizationModelName: readOptionalString(env, 'NORMALIZATION_MODEL_NAME'),
-    analysisModelName: readOptionalString(env, 'BOOK_ANALYSIS_MODEL_NAME'),
+    // AI 功能各自可独立配置端点/key/模型，缺省回退到全局 MODEL_* 。
+    // book-analysis 未单独配置时先继承 normalization，再回退全局，保持既有流水线行为。
+    normalizationModel: readModelEndpoint(env, 'NORMALIZATION'),
+    analysisModel: readModelEndpoint(env, 'BOOK_ANALYSIS', 'NORMALIZATION'),
+    contentGenerationModel: readModelEndpoint(env, 'CONTENT_GENERATION'),
     objectStorageLocalRoot: readOptionalString(env, 'OBJECT_STORAGE_LOCAL_ROOT'),
     objectStorageEndpoint: readOptionalString(env, 'OBJECT_STORAGE_ENDPOINT'),
     objectStorageRegion: readOptionalString(env, 'OBJECT_STORAGE_REGION'),

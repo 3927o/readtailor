@@ -2,6 +2,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import { eq, sql } from 'drizzle-orm';
+import { requireCompleteModelEndpoint } from '@readtailor/config';
 import { createDatabase, systemJobs } from '@readtailor/database';
 import { createFakeModelEngine, createOpenAiCompatibleEngine } from '@readtailor/model';
 import { createLogger } from '@readtailor/observability';
@@ -39,20 +40,16 @@ type QueueStatus =
   | 'connecting'
   | 'connected'
   | 'disconnected';
-let queueStatus: QueueStatus = config.redisUrl
-  ? database
-    ? 'connecting'
-    : 'dependency_missing'
-  : 'not_configured';
+const enabledQueues = new Set(config.queues);
 
 if (config.redisUrl && !database) {
-  logger.warn('DATABASE_URL not set: system queue consumer disabled');
+  logger.warn('DATABASE_URL not set: queue consumers disabled');
 }
 
-const queueWorker = config.redisUrl && database
+const queueWorker = config.redisUrl && database && enabledQueues.has('system')
   ? createSystemWorker({
       redisUrl: config.redisUrl,
-      concurrency: config.concurrency,
+      concurrency: config.systemConcurrency,
       logger,
       handler: async (job) => {
         if (!job.data.jobId) {
@@ -69,20 +66,19 @@ const queueWorker = config.redisUrl && database
     })
   : undefined;
 
-const normalizationModel = config.normalizationModelName ?? config.modelName;
-const analysisModel = config.analysisModelName ?? normalizationModel;
+const normalizationModel = requireCompleteModelEndpoint(config.normalizationModel, 'normalization');
+const analysisModel = requireCompleteModelEndpoint(config.analysisModel, 'book-analysis');
 const normalizationConfigured = Boolean(
   config.redisUrl &&
     database &&
     objectStorage &&
     config.e2bApiKey &&
-    config.modelApiBaseUrl &&
-    config.modelApiKey &&
     normalizationModel &&
     analysisModel,
 );
 // 消费队列前先回收上一个进程崩溃遗留的孤儿 run，避免书籍永远卡在处理中。
-if (database) {
+// 归属规范化池：只在启用了 normalization 队列的进程上对账，内容生成专用池不越俎代庖。
+if (database && enabledQueues.has('normalization')) {
   await reconcileOrphanedNormalizationRuns({ db: database.db, logger }).catch((error: unknown) => {
     logger.error({ err: error }, 'failed to reconcile orphaned normalization runs');
   });
@@ -90,17 +86,16 @@ if (database) {
 
 const normalizationWorker =
   normalizationConfigured &&
+  enabledQueues.has('normalization') &&
   config.redisUrl &&
   database &&
   objectStorage &&
   config.e2bApiKey &&
-  config.modelApiBaseUrl &&
-  config.modelApiKey &&
   normalizationModel &&
   analysisModel
     ? createNormalizationWorker({
         redisUrl: config.redisUrl,
-        concurrency: config.concurrency,
+        concurrency: config.normalizationConcurrency,
         logger,
         handler: async (job) => {
           await executeNormalizationRun({
@@ -110,10 +105,8 @@ const normalizationWorker =
             repoRoot,
             e2bApiKey: config.e2bApiKey!,
             ...(config.e2bTemplate ? { e2bTemplate: config.e2bTemplate } : {}),
-            modelApiBaseUrl: config.modelApiBaseUrl!,
-            modelApiKey: config.modelApiKey!,
-            normalizationModel,
-            analysisModel,
+            normalizationModel: normalizationModel!,
+            analysisModel: analysisModel!,
             maxAttempts: config.normalizationMaxAttempts,
             maxTurns: config.normalizationMaxTurns,
             attemptTimeoutMs: config.normalizationAttemptTimeoutMs,
@@ -125,25 +118,22 @@ const normalizationWorker =
       })
     : undefined;
 
-const modelVars = [config.modelApiBaseUrl, config.modelApiKey, config.modelName];
-if (modelVars.some(Boolean) && !modelVars.every(Boolean)) {
-  throw new Error(
-    'partial model configuration: MODEL_API_BASE_URL, MODEL_API_KEY and MODEL_NAME must all be set (or none, to use the fake engine)',
-  );
-}
-const contentModel =
-  config.modelApiBaseUrl && config.modelApiKey && config.modelName
-    ? createOpenAiCompatibleEngine({
-        baseUrl: config.modelApiBaseUrl,
-        apiKey: config.modelApiKey,
-        model: config.modelName,
-      })
-    : createFakeModelEngine();
+const contentGenerationEndpoint = requireCompleteModelEndpoint(
+  config.contentGenerationModel,
+  'content-generation',
+);
+const contentModel = contentGenerationEndpoint
+  ? createOpenAiCompatibleEngine({
+      baseUrl: contentGenerationEndpoint.baseUrl,
+      apiKey: contentGenerationEndpoint.apiKey,
+      model: contentGenerationEndpoint.modelName,
+    })
+  : createFakeModelEngine();
 const contentGenerationWorker =
-  config.redisUrl && database && objectStorage
+  config.redisUrl && database && objectStorage && enabledQueues.has('content-generation')
     ? createContentGenerationWorker({
         redisUrl: config.redisUrl,
-        concurrency: config.concurrency,
+        concurrency: config.contentGenerationConcurrency,
         logger,
         handler: async (job) => {
           await executeContentGeneration({
@@ -163,16 +153,44 @@ const contentGenerationWorker =
       })
     : undefined;
 
-if (!normalizationWorker) {
+// Only warn about missing dependencies for queues this process was actually asked to run;
+// a queue left out of WORKER_QUEUES is disabled on purpose, not misconfigured.
+if (enabledQueues.has('system') && !queueWorker) {
+  logger.warn('system queue consumer disabled: Redis and database are required');
+}
+if (enabledQueues.has('normalization') && !normalizationWorker) {
   logger.warn(
     'normalization queue consumer disabled: Redis, database, object storage, E2B and model configuration are required',
   );
 }
-if (!contentGenerationWorker) {
+if (enabledQueues.has('content-generation') && !contentGenerationWorker) {
   logger.warn(
     'content generation queue consumer disabled: Redis, database and object storage are required',
   );
 }
+
+// Health/connection status follows whichever consumer this process runs (they share one Redis),
+// so a content-generation-only pool still reports ready without the system queue.
+const healthWorker = queueWorker ?? normalizationWorker ?? contentGenerationWorker;
+let queueStatus: QueueStatus = !config.redisUrl
+  ? 'not_configured'
+  : !database
+    ? 'dependency_missing'
+    : healthWorker
+      ? 'connecting'
+      : 'not_configured';
+
+logger.info(
+  {
+    enabledQueues: [...enabledQueues],
+    active: {
+      system: Boolean(queueWorker),
+      normalization: Boolean(normalizationWorker),
+      'content-generation': Boolean(contentGenerationWorker),
+    },
+  },
+  'worker queue consumers initialized',
+);
 
 queueWorker?.on('failed', (job, error) => {
   if (!database || !job || !job.data.jobId) {
@@ -195,33 +213,33 @@ queueWorker?.on('failed', (job, error) => {
 
 const markQueueConnected = () => {
   if (queueStatus !== 'connected') {
-    logger.info('system queue connected');
+    logger.info('queue consumer connected');
   }
   queueStatus = 'connected';
 };
 
-queueWorker?.on('ready', () => {
+healthWorker?.on('ready', () => {
   markQueueConnected();
 });
 
-queueWorker?.on('ioredis:close', () => {
+healthWorker?.on('ioredis:close', () => {
   if (queueStatus !== 'disconnected') {
-    logger.warn('system queue connection closed');
+    logger.warn('queue consumer connection closed');
   }
   queueStatus = 'disconnected';
 });
 
-queueWorker?.on('error', (error) => {
+healthWorker?.on('error', (error) => {
   // 阻塞连接（取任务用）故障只会以 error 形式上抛，不会触发 ioredis:close；
   // 任一连接恢复后会重新收到 ready，届时状态会被拨回 connected。
   if (queueStatus !== 'disconnected') {
-    logger.error({ err: error }, 'system queue error');
+    logger.error({ err: error }, 'queue consumer error');
   }
   queueStatus = 'disconnected';
 });
 
-if (queueWorker) {
-  void queueWorker.client
+if (healthWorker) {
+  void healthWorker.client
     .then((client) => {
       if (client.status === 'ready') {
         markQueueConnected();
@@ -229,7 +247,7 @@ if (queueWorker) {
       client.on('ready', markQueueConnected);
     })
     .catch((error: unknown) => {
-      logger.error({ err: error }, 'failed to observe system queue connection');
+      logger.error({ err: error }, 'failed to observe queue consumer connection');
     });
 }
 

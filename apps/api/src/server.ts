@@ -1,5 +1,6 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { requireCompleteModelEndpoint } from '@readtailor/config';
 import { createDatabase } from '@readtailor/database';
 import { createFakeModelEngine, createOpenAiCompatibleEngine } from '@readtailor/model';
 import {
@@ -69,23 +70,15 @@ const systemJobs =
     ? createSystemJobService({ db: database.db, queue: systemQueue })
     : undefined;
 
-const modelVars = [config.modelBaseUrl, config.modelApiKey, config.modelName];
-const modelConfigured = modelVars.every(Boolean);
-if (!modelConfigured && modelVars.some(Boolean)) {
-  // 配置残缺时静默落到假模型会把假回声当成功答复端给用户，必须启动即失败。
-  throw new Error(
-    'partial model configuration: MODEL_API_BASE_URL, MODEL_API_KEY and MODEL_NAME must all be set (or none, to use the fake engine)',
-  );
-}
-
-const modelEngine =
-  config.modelBaseUrl && config.modelApiKey && config.modelName
-    ? createOpenAiCompatibleEngine({
-        baseUrl: config.modelBaseUrl,
-        apiKey: config.modelApiKey,
-        model: config.modelName,
-      })
-    : createFakeModelEngine();
+// 配置残缺时静默落到假模型会把假回声当成功答复端给用户，requireCompleteModelEndpoint 会抛错。
+const systemChatEndpoint = requireCompleteModelEndpoint(config.systemChatModel, 'system-chat');
+const modelEngine = systemChatEndpoint
+  ? createOpenAiCompatibleEngine({
+      baseUrl: systemChatEndpoint.baseUrl,
+      apiKey: systemChatEndpoint.apiKey,
+      model: systemChatEndpoint.modelName,
+    })
+  : createFakeModelEngine();
 
 const systemChat = database
   ? createSystemChatService({ db: database.db, engine: modelEngine })
@@ -105,14 +98,17 @@ const bookImports =
         queue: normalizationQueue,
       })
     : undefined;
-const readingSetupEngine =
-  config.modelBaseUrl && config.modelApiKey && config.modelName
-    ? createAgentReadingSetupEngine({
-        apiBaseUrl: config.modelBaseUrl,
-        apiKey: config.modelApiKey,
-        modelName: config.modelName,
-      })
-    : createFakeReadingSetupEngine();
+const readingSetupEndpoint = requireCompleteModelEndpoint(
+  config.readingSetupModel,
+  'reading-setup',
+);
+const readingSetupEngine = readingSetupEndpoint
+  ? createAgentReadingSetupEngine({
+      apiBaseUrl: readingSetupEndpoint.baseUrl,
+      apiKey: readingSetupEndpoint.apiKey,
+      modelName: readingSetupEndpoint.modelName,
+    })
+  : createFakeReadingSetupEngine();
 const userBooks =
   database && books && contentGenerationQueue
     ? createUserBookService({
@@ -183,8 +179,8 @@ const app = await buildApp(config, {
 });
 
 app.log.info({ model: modelEngine.name }, 'model engine ready');
-if (!modelConfigured) {
-  app.log.warn('MODEL_* not configured: chat will use the fake echo engine');
+if (!systemChatEndpoint) {
+  app.log.warn('system chat model not configured: chat will use the fake echo engine');
 }
 if (!systemJobs) {
   app.log.warn('system job pipeline disabled: DATABASE_URL and REDIS_URL are both required');
