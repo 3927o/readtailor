@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
 import type { Briefing } from '@readtailor/contracts';
@@ -62,6 +63,7 @@ interface SelectionDraft {
   sectionId: string;
   segment: number;
   range: NodeRange;
+  text: string;
   placement: PopoverPlacement;
 }
 
@@ -70,6 +72,28 @@ interface SelectionDraft {
 type HighlightEditorState =
   | { mode: 'create'; sectionId: string; segment: number; range: NodeRange; placement: PopoverPlacement }
   | { mode: 'edit'; highlight: Highlight; placement: PopoverPlacement };
+
+interface SearchHit {
+  key: string;
+  label: string;
+  text: string;
+  pre: string;
+  hit: string;
+  post: string;
+  jump: () => void;
+  tone?: 'tailored' | 'mine' | 'original';
+}
+
+interface AskTurn {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+}
+
+interface AskContext {
+  label: string;
+  text: string;
+}
 
 const defaultSettings: ReaderSettings = defaultReadingSettings;
 
@@ -101,6 +125,21 @@ function formatRemaining(remaining: ReadingStatsPerBook['remaining'] | undefined
   if (!remaining || remaining.seconds === null) return '—';
   const body = formatReadingDuration(remaining.seconds);
   return remaining.approximate ? `约 ${body}` : body;
+}
+
+function textFromHtml(html: string): string {
+  const root = new DOMParser().parseFromString(html, 'text/html');
+  return root.body.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+}
+
+function excerptAround(text: string, index: number, length: number) {
+  const start = Math.max(0, index - 24);
+  const end = Math.min(text.length, index + length + 40);
+  return {
+    pre: `${start > 0 ? '…' : ''}${text.slice(start, index)}`,
+    hit: text.slice(index, index + length),
+    post: `${text.slice(index + length, end)}${end < text.length ? '…' : ''}`,
+  };
 }
 
 // The viewport-relative line the reader "reads from": position save probes for the character at
@@ -192,6 +231,15 @@ function nearestNodeByOrder(nodes: ReaderNode[], targetOrder: number): ReaderNod
   return best;
 }
 
+function defaultTocCollapsed(outline: ReaderOutlineItem[]): Set<string> {
+  const childParents = new Set(outline.map((item) => item.parent_section_id).filter((id): id is string => Boolean(id)));
+  return new Set(
+    outline
+      .filter((item) => childParents.has(item.section_id) && getOutlineDepth(item, outline) >= 2)
+      .map((item) => item.section_id),
+  );
+}
+
 function usePrefersDark() {
   const [prefersDark, setPrefersDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
   useEffect(() => {
@@ -253,8 +301,16 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   );
   const [tocOpen, setTocOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [bookInfoOpen, setBookInfoOpen] = useState(false);
+  const [briefOpen, setBriefOpen] = useState(false);
+  const [notebookOpen, setNotebookOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [askOpen, setAskOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  const [tocCollapsed, setTocCollapsed] = useState<Set<string>>(() => defaultTocCollapsed(document.manifest.outline));
+  const [searchQuery, setSearchQuery] = useState('');
+  const [askInput, setAskInput] = useState('');
+  const [askContext, setAskContext] = useState<AskContext>(() => ({ label: '当前屏幕', text: '关于当前这一页，我想问：' }));
+  const [askTurns, setAskTurns] = useState<AskTurn[]>([]);
   const [currentOrder, setCurrentOrder] = useState(document.manifest.nodes[0]?.order ?? 1);
   const [popover, setPopover] = useState<ActivePopover | null>(null);
   const [scrollProgress, setScrollProgress] = useState(0);
@@ -397,7 +453,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     };
   };
   const resolveActivityArea = (): ReadingActivityArea => {
-    if (tocOpen || settingsOpen || statsOpen || bookInfoOpen) return 'reader_chrome';
+    if (tocOpen || settingsOpen || statsOpen || briefOpen || notebookOpen || searchOpen || askOpen) return 'reader_chrome';
     if (popover) return 'assistance';
     const root = scrollRoot.current;
     if (!root) return 'reader_chrome';
@@ -868,7 +924,10 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       if (event.key !== 'Escape') return;
       setTocOpen(false);
       setSettingsOpen(false);
-      setBookInfoOpen(false);
+      setBriefOpen(false);
+      setNotebookOpen(false);
+      setSearchOpen(false);
+      setAskOpen(false);
       setStatsOpen(false);
       setPopover(null);
       setSelectionDraft(null);
@@ -911,7 +970,13 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
         setSelectionDraft(null);
         return;
       }
-      setSelectionDraft({ sectionId, segment, range: textRange, placement: popoverPlacement(range.getBoundingClientRect()) });
+      setSelectionDraft({
+        sectionId,
+        segment,
+        range: textRange,
+        text: selection.toString().trim(),
+        placement: popoverPlacement(range.getBoundingClientRect()),
+      });
     };
     const onFinish = () => window.setTimeout(evaluate, 0);
     root.addEventListener('mouseup', onFinish);
@@ -928,7 +993,8 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     const max = root.scrollHeight - root.clientHeight;
     setScrollProgress(max > 0 ? (root.scrollTop / max) * 100 : 0);
     const delta = root.scrollTop - lastScrollTop.current;
-    if (delta > 4 && root.scrollTop > 180 && !tocOpen && !settingsOpen && !bookInfoOpen && !popover) {
+    if (delta > 4 && root.scrollTop > 180
+      && !tocOpen && !settingsOpen && !briefOpen && !notebookOpen && !searchOpen && !askOpen && !popover) {
       setChromeHidden(true);
     } else if ((delta < -4 || root.scrollTop < 120) && chromeHidden) {
       setChromeHidden(false);
@@ -1034,7 +1100,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const jumpToHighlight = (highlightId: string) => {
     flushActivitySlice.current();
     jumpEndRef.current = Date.now() + JUMP_SETTLE_MS;
-    setBookInfoOpen(false);
+    setNotebookOpen(false);
     // A cross-block highlight renders one mark per block sharing the id; the first is its start.
     scrollRoot.current
       ?.querySelector<HTMLElement>(`[data-highlight-id="${highlightId}"]`)
@@ -1090,38 +1156,118 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const activeSectionId = [...document.manifest.outline]
     .filter((item) => item.first_node_order <= currentOrder)
     .at(-1)?.section_id;
-  const openToc = () => {
-    void flushActivitySlice.current(false, true);
+  const closeReaderSheets = () => {
+    setTocOpen(false);
     setSettingsOpen(false);
-    setBookInfoOpen(false);
+    setBriefOpen(false);
+    setNotebookOpen(false);
+    setSearchOpen(false);
+    setAskOpen(false);
     setStatsOpen(false);
+  };
+  const openReaderSheet = (sheet: 'toc' | 'settings' | 'brief' | 'notebook' | 'search' | 'ask' | 'stats') => {
+    void flushActivitySlice.current(false, true);
+    closeReaderSheets();
     setChromeHidden(false);
-    setTocOpen(true);
+    if (sheet === 'toc') setTocOpen(true);
+    if (sheet === 'settings') setSettingsOpen(true);
+    if (sheet === 'brief') setBriefOpen(true);
+    if (sheet === 'notebook') setNotebookOpen(true);
+    if (sheet === 'search') setSearchOpen(true);
+    if (sheet === 'ask') setAskOpen(true);
+    if (sheet === 'stats') setStatsOpen(true);
+  };
+  const openToc = () => {
+    openReaderSheet('toc');
   };
   const openSettings = () => {
-    void flushActivitySlice.current(false, true);
-    setTocOpen(false);
-    setBookInfoOpen(false);
-    setStatsOpen(false);
-    setChromeHidden(false);
-    setSettingsOpen(true);
+    openReaderSheet('settings');
   };
-  const openBookInfo = () => {
-    void flushActivitySlice.current(false, true);
-    setTocOpen(false);
-    setSettingsOpen(false);
-    setStatsOpen(false);
-    setChromeHidden(false);
-    setBookInfoOpen(true);
+  const openBrief = () => {
+    openReaderSheet('brief');
+  };
+  const openNotebook = () => {
+    openReaderSheet('notebook');
+  };
+  const openSearch = () => {
+    openReaderSheet('search');
+  };
+  const openAsk = (context?: AskContext) => {
+    if (context) setAskContext(context);
+    openReaderSheet('ask');
   };
   const openStats = () => {
-    void flushActivitySlice.current(false, true);
-    setTocOpen(false);
-    setSettingsOpen(false);
-    setBookInfoOpen(false);
-    setChromeHidden(false);
-    setStatsOpen(true);
+    openReaderSheet('stats');
   };
+  const askSelection = () => {
+    if (!selectionDraft?.text) return;
+    openAsk({ label: '选中文本', text: selectionDraft.text });
+    setSelectionDraft(null);
+    clearNativeSelection();
+  };
+  const submitAsk = () => {
+    const text = askInput.trim();
+    if (!text) return;
+    const stamp = Date.now();
+    setAskTurns((current) => [
+      ...current,
+      { id: `u-${stamp}`, role: 'user', text },
+      { id: `a-${stamp}`, role: 'assistant', text: '阅读器问 AI 正在接入正式服务。现在先把这个问题留在当前会话里。' },
+    ]);
+    setAskInput('');
+  };
+  const searchHits = useMemo<SearchHit[]>(() => {
+    const queryText = searchQuery.trim().toLowerCase();
+    if (!queryText) return [];
+    const hits: SearchHit[] = [];
+    const pushHit = (
+      key: string,
+      label: string,
+      source: string,
+      jump: () => void,
+      tone: SearchHit['tone'] = 'original',
+    ) => {
+      if (hits.length >= 24) return;
+      const haystack = source.replace(/\s+/g, ' ').trim();
+      const index = haystack.toLowerCase().indexOf(queryText);
+      if (index < 0) return;
+      hits.push({ key, label, text: haystack, ...excerptAround(haystack, index, searchQuery.trim().length), jump, tone });
+    };
+    for (const node of prepared.nodes) {
+      pushHit(`original-${node.order}`, node.headings.at(-1)?.title || node.title || `原文 · ${node.order}`, textFromHtml(node.html), () => {
+        jumpToOrder(node.order);
+        setSearchOpen(false);
+      });
+      const enhancement = enhancements.get(`${node.section_id}:${node.segment}`);
+      if (enhancement?.status === 'ready') {
+        if (enhancement.tailoredContent?.guide) {
+          pushHit(`guide-${node.order}`, `导读 · ${node.title || node.order}`, enhancement.tailoredContent.guide, () => {
+            jumpToOrder(node.order);
+            setSearchOpen(false);
+          }, 'tailored');
+        }
+        if (enhancement.tailoredContent?.afterReading) {
+          pushHit(`after-${node.order}`, `节后助读 · ${node.title || node.order}`, enhancement.tailoredContent.afterReading, () => {
+            jumpToOrder(node.order);
+            setSearchOpen(false);
+          }, 'tailored');
+        }
+        for (const annotation of enhancement.tailoredContent?.annotations ?? []) {
+          pushHit(`annotation-${node.order}-${annotation.id}`, `裁读注 · ${node.title || node.order}`, annotation.content, () => {
+            jumpToOrder(node.order);
+            setSearchOpen(false);
+          }, 'tailored');
+        }
+      }
+    }
+    for (const highlight of highlights) {
+      pushHit(`highlight-${highlight.id}`, highlight.note ? '我的想法' : '我的划线', `${highlight.quoteSnapshot} ${highlight.note ?? ''}`, () => {
+        jumpToHighlight(highlight.id);
+        setSearchOpen(false);
+      }, 'mine');
+    }
+    return hits;
+  }, [enhancements, highlights, jumpToHighlight, jumpToOrder, prepared.nodes, searchQuery]);
 
   return (
     <div
@@ -1135,24 +1281,33 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
         <header className="reader-toolbar">
           <Link className="reader-back-button" to="/" aria-label="返回书架" title="返回书架">‹</Link>
           <div className="reader-title" title={document.book.title}>{document.book.title}</div>
+          <div className="reader-mobile-top-actions">
+            <ReaderAction glyph={<SearchGlyph />} label="搜索" onClick={openSearch} compact />
+            <ReaderAction glyph={<BriefGlyph />} label="读前简报" onClick={openBrief} compact />
+          </div>
           <div className="reader-desktop-actions">
             <ReaderAction glyph="≡" label="目录" onClick={openToc} />
-            <ReaderAction glyph="···" label="本书" onClick={openBookInfo} />
-            <ReaderAction glyph="◔" label="统计" onClick={openStats} />
+            <ReaderAction glyph="▁" label="笔记" onClick={openNotebook} tint="green" />
+            <ReaderAction glyph={<SearchGlyph />} label="搜索" onClick={openSearch} />
+            <ReaderAction glyph={<BriefGlyph />} label="简报" onClick={openBrief} />
             <ReaderAction glyph="Aa" label="设置" onClick={openSettings} />
+            <ReaderAction glyph="✦" label="问 AI" onClick={() => openAsk({ label: '当前屏幕', text: '关于当前这一页，我想问：' })} tint="green" />
           </div>
         </header>
       </div>
 
       <nav className="reader-mobile-bar" data-hidden={chromeHidden} aria-label="阅读工具">
         <ReaderAction glyph="≡" label="目录" onClick={openToc} />
-        <ReaderAction glyph="···" label="本书" onClick={openBookInfo} />
-        <ReaderAction glyph="◔" label="统计" onClick={openStats} />
+        <ReaderAction glyph="▁" label="笔记" onClick={openNotebook} tint="green" />
         <ReaderAction glyph="Aa" label="设置" onClick={openSettings} />
+        <ReaderAction glyph="✦" label="问 AI" onClick={() => openAsk({ label: '当前屏幕', text: '关于当前这一页，我想问：' })} tint="green" />
       </nav>
 
       {settingsOpen && <button className="reader-modal-scrim" type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭阅读设置" />}
-      {bookInfoOpen && <button className="reader-modal-scrim" type="button" onClick={() => setBookInfoOpen(false)} aria-label="关闭本书说明" />}
+      {briefOpen && <button className="reader-modal-scrim" type="button" onClick={() => setBriefOpen(false)} aria-label="关闭读前简报" />}
+      {notebookOpen && <button className="reader-modal-scrim" type="button" onClick={() => setNotebookOpen(false)} aria-label="关闭笔记本" />}
+      {searchOpen && <button className="reader-modal-scrim" type="button" onClick={() => setSearchOpen(false)} aria-label="关闭搜索" />}
+      {askOpen && <button className="reader-modal-scrim" type="button" onClick={() => setAskOpen(false)} aria-label="关闭问 AI" />}
       {statsOpen && <button className="reader-modal-scrim" type="button" onClick={() => setStatsOpen(false)} aria-label="关闭阅读统计" />}
       {settingsOpen && (
         <SettingsPanel
@@ -1161,14 +1316,36 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
           close={() => setSettingsOpen(false)}
         />
       )}
-      {bookInfoOpen && (
-        <BookInfoPanel
-          title={document.book.title}
+      {briefOpen && (
+        <BriefPanel
           briefing={document.bootstrap.briefing}
-          strategySummary={document.bootstrap.strategySummary}
+          close={() => setBriefOpen(false)}
+        />
+      )}
+      {notebookOpen && (
+        <NotebookPanel
           highlights={highlights}
           jumpToHighlight={jumpToHighlight}
-          close={() => setBookInfoOpen(false)}
+          removeHighlight={(highlightId) => void removeHighlight(highlightId)}
+          close={() => setNotebookOpen(false)}
+        />
+      )}
+      {searchOpen && (
+        <SearchPanel
+          query={searchQuery}
+          setQuery={setSearchQuery}
+          hits={searchHits}
+          close={() => setSearchOpen(false)}
+        />
+      )}
+      {askOpen && (
+        <AskPanel
+          context={askContext}
+          turns={askTurns}
+          value={askInput}
+          setValue={setAskInput}
+          submit={submitAsk}
+          close={() => setAskOpen(false)}
         />
       )}
       {statsOpen && (
@@ -1223,6 +1400,13 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
         title={document.book.title}
         outline={document.manifest.outline}
         activeSectionId={activeSectionId}
+        collapsed={tocCollapsed}
+        toggleCollapse={(sectionId) => setTocCollapsed((current) => {
+          const next = new Set(current);
+          if (next.has(sectionId)) next.delete(sectionId);
+          else next.add(sectionId);
+          return next;
+        })}
         close={() => setTocOpen(false)}
         jump={jumpToOrder}
       />
@@ -1230,6 +1414,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       {selectionDraft && !highlightEditor ? (
         <SelectionToolbar
           placement={selectionDraft.placement}
+          onAsk={askSelection}
           onHighlight={highlightSelection}
           onHighlightWithNote={composeHighlightNote}
           onDismiss={() => {
@@ -1269,9 +1454,33 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   );
 }
 
-function ReaderAction({ glyph, label, onClick }: { glyph: string; label: string; onClick: () => void }) {
+function SearchGlyph() {
   return (
-    <button className="reader-action" type="button" onClick={onClick} aria-label={label} title={label}>
+    <svg width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <circle cx="9" cy="9" r="5.5" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M13.2 13.2 17 17" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function BriefGlyph() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+      <path d="M3 5.2 8 3.4 12 5 17 3.4v11.4l-5 1.8-4-1.6-5 1.6V5.2Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      <path d="M8 3.4V15M12 5v11.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ReaderAction({ glyph, label, onClick, tint, compact }: {
+  glyph: ReactNode;
+  label: string;
+  onClick: () => void;
+  tint?: 'green';
+  compact?: boolean;
+}) {
+  return (
+    <button className="reader-action" type="button" onClick={onClick} aria-label={label} title={label} data-tint={tint} data-compact={compact ? 'true' : undefined}>
       <span aria-hidden="true">{glyph}</span>
       <span>{label}</span>
     </button>
@@ -1341,14 +1550,33 @@ function OutlineHeading({ heading }: { heading: RenderedHeading }) {
   return <h2 {...props} dangerouslySetInnerHTML={{ __html: heading.html }} />;
 }
 
-function TocDrawer({ open, title, outline, activeSectionId, close, jump }: {
+function TocDrawer({ open, title, outline, activeSectionId, collapsed, toggleCollapse, close, jump }: {
   open: boolean;
   title: string;
   outline: ReaderOutlineItem[];
   activeSectionId: string | undefined;
+  collapsed: Set<string>;
+  toggleCollapse: (sectionId: string) => void;
   close: () => void;
   jump: (order: number) => void;
 }) {
+  const childCount = useMemo(() => {
+    const count = new Map<string, number>();
+    for (const item of outline) {
+      if (!item.parent_section_id) continue;
+      count.set(item.parent_section_id, (count.get(item.parent_section_id) ?? 0) + 1);
+    }
+    return count;
+  }, [outline]);
+  const byId = useMemo(() => new Map(outline.map((item) => [item.section_id, item])), [outline]);
+  const visibleItems = outline.filter((item) => {
+    let parent = item.parent_section_id ? byId.get(item.parent_section_id) : undefined;
+    while (parent) {
+      if (collapsed.has(parent.section_id)) return false;
+      parent = parent.parent_section_id ? byId.get(parent.parent_section_id) : undefined;
+    }
+    return true;
+  });
   return (
     <>
       <button className="reader-scrim" data-open={open} onClick={close} aria-label="关闭目录" tabIndex={open ? 0 : -1} />
@@ -1360,20 +1588,34 @@ function TocDrawer({ open, title, outline, activeSectionId, close, jump }: {
         </header>
         <p className="toc-description">进度只算原文位置，原书注释不计入。</p>
         <nav>
-          {outline.map((item) => {
+          {visibleItems.map((item) => {
             const active = item.section_id === activeSectionId;
+            const hasChildren = (childCount.get(item.section_id) ?? 0) > 0;
+            const isCollapsed = collapsed.has(item.section_id);
             return (
-              <button
+              <div
                 key={item.section_id}
-                type="button"
                 className="toc-item"
                 data-active={active}
+                data-collapsible={hasChildren ? 'true' : undefined}
                 style={{ '--toc-depth': getOutlineDepth(item, outline) } as React.CSSProperties}
-                onClick={() => jump(item.first_node_order)}
               >
-                <span>{item.title || '未命名部分'}</span>
-                {active && <i aria-label="当前位置">·</i>}
-              </button>
+                <button type="button" onClick={() => jump(item.first_node_order)}>
+                  <span>{item.title || '未命名部分'}</span>
+                  {active && <i aria-label="当前位置">·</i>}
+                </button>
+                {hasChildren ? (
+                  <button
+                    className="toc-collapse"
+                    type="button"
+                    onClick={() => toggleCollapse(item.section_id)}
+                    aria-label={isCollapsed ? '展开目录项' : '收起目录项'}
+                    title={isCollapsed ? '展开' : '收起'}
+                  >
+                    {isCollapsed ? '+' : '−'}
+                  </button>
+                ) : null}
+              </div>
             );
           })}
         </nav>
@@ -1421,46 +1663,121 @@ function SettingsPanel({ settings, update, close }: {
   );
 }
 
-function BookInfoPanel({ title, briefing, strategySummary, highlights, jumpToHighlight, close }: {
-  title: string;
+function BriefPanel({ briefing, close }: {
   briefing: Briefing;
-  strategySummary: string;
-  highlights: Highlight[];
-  jumpToHighlight: (highlightId: string) => void;
   close: () => void;
 }) {
   const hasBriefing = Object.values(briefing).some((section) => section.trim().length > 0);
-  const hasStrategy = strategySummary.trim().length > 0;
   return (
-    <aside className="reader-book-info" aria-label="本书说明">
+    <aside className="reader-brief-sheet" aria-label="读前简报">
       <div className="reader-sheet-handle" aria-hidden="true" />
-      <header><strong>本书说明 · {title}</strong><button type="button" onClick={close} aria-label="关闭本书说明">×</button></header>
+      <header><strong>读前简报 · 地图随时在</strong><button type="button" onClick={close} aria-label="关闭读前简报">×</button></header>
       {hasBriefing ? <BriefCard briefing={briefing} /> : null}
-      {hasStrategy ? (
-        <section className="reader-current-strategy">
-          <span>当前处理方式</span>
-          <AssistanceContent content={strategySummary} />
-        </section>
-      ) : null}
-      {/* §11.7 highlight list: quote snapshot + note, click to jump back to the original range. */}
-      <section className="reader-highlight-list">
-        <span>我的划线 · {highlights.length}</span>
+      {!hasBriefing ? <p className="reader-book-info-empty">当前没有可展示的读前简报。</p> : null}
+    </aside>
+  );
+}
+
+function NotebookPanel({ highlights, jumpToHighlight, removeHighlight, close }: {
+  highlights: Highlight[];
+  jumpToHighlight: (highlightId: string) => void;
+  removeHighlight: (highlightId: string) => void;
+  close: () => void;
+}) {
+  return (
+    <aside className="reader-notebook" aria-label="笔记本">
+      <header>
+        <div><strong>笔记本</strong><span>{highlights.length} 条</span></div>
+        <button type="button" onClick={close} aria-label="关闭笔记本">×</button>
+      </header>
+      <div className="reader-notebook-body">
         {highlights.length === 0 ? (
-          <p className="reader-highlight-empty">在原文中选中文字即可划线，可附一条笔记。</p>
-        ) : (
-          <ul>
-            {highlights.map((highlight) => (
-              <li key={highlight.id}>
-                <button type="button" onClick={() => jumpToHighlight(highlight.id)}>
-                  <span className="reader-highlight-quote">{highlight.quoteSnapshot || '（无文字）'}</span>
-                  {highlight.note ? <span className="reader-highlight-note">{highlight.note}</span> : null}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+          <p className="reader-notebook-empty">选中正文里的句子，就能划线或写下想法。它们会安静地留在这里。</p>
+        ) : highlights.map((highlight) => {
+          const hasNote = Boolean(highlight.note);
+          return (
+            <article className="reader-note-item" key={highlight.id} data-note={hasNote ? 'true' : undefined}>
+              <div>
+                <span>{hasNote ? '想法' : '划线'} · {highlight.sectionId}</span>
+                <button type="button" onClick={() => removeHighlight(highlight.id)} aria-label="删除">×</button>
+              </div>
+              <button type="button" onClick={() => jumpToHighlight(highlight.id)}>{highlight.quoteSnapshot || '（无文字）'}</button>
+              {hasNote ? <p>— {highlight.note}</p> : null}
+            </article>
+          );
+        })}
+      </div>
+    </aside>
+  );
+}
+
+function SearchPanel({ query, setQuery, hits, close }: {
+  query: string;
+  setQuery: (value: string) => void;
+  hits: SearchHit[];
+  close: () => void;
+}) {
+  const hasQuery = query.trim().length > 0;
+  return (
+    <aside className="reader-search-panel" aria-label="全文搜索">
+      <header>
+        <label>
+          <SearchGlyph />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜正文、注释、想法…" autoFocus />
+        </label>
+        <button type="button" onClick={close} aria-label="关闭搜索">×</button>
+      </header>
+      <div>
+        {hasQuery && hits.length > 0 ? <span className="reader-search-count">{hits.length} 个结果</span> : null}
+        {hasQuery && hits.length === 0 ? (
+          <p className="reader-search-empty">没有找到“{query}”<br />换个词，或试试书名里的关键概念。</p>
+        ) : null}
+        {!hasQuery ? (
+          <p className="reader-search-hint">搜索会同时检索正文、裁读注释和你的想法。</p>
+        ) : null}
+        {hits.map((hit) => (
+          <button className="reader-search-hit" type="button" key={hit.key} data-tone={hit.tone} onClick={hit.jump}>
+            <span>{hit.label}</span>
+            <p>{hit.pre}<mark>{hit.hit}</mark>{hit.post}</p>
+          </button>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
+function AskPanel({ context, turns, value, setValue, submit, close }: {
+  context: AskContext;
+  turns: AskTurn[];
+  value: string;
+  setValue: (value: string) => void;
+  submit: () => void;
+  close: () => void;
+}) {
+  return (
+    <aside className="reader-ask-panel" aria-label="问 AI">
+      <header>
+        <div><span aria-hidden="true">✦</span><strong>问 AI</strong><em>独立会话</em></div>
+        <button type="button" onClick={close} aria-label="关闭问 AI">×</button>
+      </header>
+      <section className="reader-ask-context">
+        <span>{context.label}</span>
+        <p>{context.text}</p>
       </section>
-      {!hasBriefing && !hasStrategy ? <p className="reader-book-info-empty">当前没有可展示的读前简报或处理方式。</p> : null}
+      <div className="reader-ask-turns">
+        {turns.length === 0 ? (
+          <p className="reader-ask-empty">关于当前这一页，我想问：</p>
+        ) : turns.map((turn) => (
+          <div key={turn.id} data-role={turn.role}>
+            <span>{turn.role === 'user' ? '你' : '✦ 裁读'}</span>
+            <p>{turn.text}</p>
+          </div>
+        ))}
+      </div>
+      <footer>
+        <textarea value={value} onChange={(event) => setValue(event.target.value)} placeholder="继续追问…" rows={1} />
+        <button type="button" onClick={submit} aria-label="发送" disabled={!value.trim()}>↑</button>
+      </footer>
     </aside>
   );
 }
@@ -1521,8 +1838,9 @@ function StatItem({ label, value }: { label: string; value: string }) {
 // §11.7 the floating action toolbar over a fresh text selection. 问 AI is a disabled placeholder for
 // phase 6; 划线 saves a plain highlight, 划线+笔记 opens the note composer. Reuses the note-dialog
 // overlay/placement so it sits over the selection and dismisses on an outside click.
-function SelectionToolbar({ placement, onHighlight, onHighlightWithNote, onDismiss }: {
+function SelectionToolbar({ placement, onAsk, onHighlight, onHighlightWithNote, onDismiss }: {
   placement: PopoverPlacement;
+  onAsk: () => void;
   onHighlight: () => void;
   onHighlightWithNote: () => void;
   onDismiss: () => void;
@@ -1541,9 +1859,9 @@ function SelectionToolbar({ placement, onHighlight, onHighlightWithNote, onDismi
         } as React.CSSProperties & { '--note-caret-left': string }}
         onClick={(event) => event.stopPropagation()}
       >
-        <button type="button" disabled title="即将上线">问 AI</button>
-        <button type="button" onClick={onHighlight}>划线</button>
-        <button type="button" onClick={onHighlightWithNote}>划线 + 笔记</button>
+        <button type="button" onClick={onHighlight}><span aria-hidden="true">▁</span>划线</button>
+        <button type="button" onClick={onHighlightWithNote}>写想法</button>
+        <button type="button" onClick={onAsk}><span aria-hidden="true">✦</span>问 AI</button>
       </div>
     </div>
   );
