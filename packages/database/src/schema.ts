@@ -6,6 +6,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -24,6 +25,7 @@ import type {
   NormalizationValidationOutcome,
   NormalizationValidationPhase,
   ReaderProfile,
+  ReadingSettings,
   SharedBookStatus,
   SourceUploadStatus,
   Strategy,
@@ -933,5 +935,64 @@ export const nodeGenerations = pgTable(
       'node_generations_config_nonempty',
       sql`length(btrim(${table.modelConfigId})) > 0 and length(btrim(${table.promptVersion})) > 0 and length(btrim(${table.cacheKey})) > 0`,
     ),
+  ],
+);
+
+// §11.5 — last reading position, one row per user-book, precise to block_index + UTF-16 offset
+// (reading_contract §2.5). Overwritten on each focus report; `updatedAt` drives cross-device
+// last-write-wins (PRD :1399). `nodeOrder` is a manifest redundancy for fast window/progress
+// checks, not the authority. `manifestVersion` binds the anchor to the Block/manifest algorithm
+// version it was computed against, so a future algorithm change migrates anchors explicitly
+// rather than silently reinterpreting them (reading_contract 冻结约束 :29-30).
+export const readerStates = pgTable(
+  'reader_states',
+  {
+    userBookId: uuid('user_book_id')
+      .primaryKey()
+      .references(() => userBooks.id),
+    sectionId: text('section_id').notNull(),
+    segment: integer('segment').notNull(),
+    blockIndex: integer('block_index').notNull(),
+    offset: integer('offset').notNull(),
+    nodeOrder: integer('node_order').notNull(),
+    manifestVersion: text('manifest_version'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check('reader_states_segment_positive', sql`${table.segment} > 0`),
+    check('reader_states_block_index_positive', sql`${table.blockIndex} > 0`),
+    check('reader_states_offset_nonneg', sql`${table.offset} >= 0`),
+    check('reader_states_node_order_positive', sql`${table.nodeOrder} > 0`),
+    check('reader_states_section_nonempty', sql`length(btrim(${table.sectionId})) > 0`),
+  ],
+);
+
+// §11.6 — per-user (global) reader presentation settings: shared across books and devices. Not
+// merged into reader_profiles (that is the long-term knowledge/explanation profile — different
+// semantics). Presentation only; never feeds block/offset/progress.
+export const userReadingSettings = pgTable('user_reading_settings', {
+  userId: uuid('user_id')
+    .primaryKey()
+    .references(() => users.id),
+  settings: jsonb('settings').$type<ReadingSettings>().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// §11.4 — monotonic set of nodes the reader has marked read. Once present a node stays read; the
+// insert is idempotent on (user_book_id, section_id, segment).
+export const readerReadNodes = pgTable(
+  'reader_read_nodes',
+  {
+    userBookId: uuid('user_book_id')
+      .notNull()
+      .references(() => userBooks.id),
+    sectionId: text('section_id').notNull(),
+    segment: integer('segment').notNull(),
+    markedAt: timestamp('marked_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userBookId, table.sectionId, table.segment] }),
+    check('reader_read_nodes_segment_positive', sql`${table.segment} > 0`),
+    check('reader_read_nodes_section_nonempty', sql`length(btrim(${table.sectionId})) > 0`),
   ],
 );

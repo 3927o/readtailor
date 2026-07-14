@@ -62,6 +62,36 @@ export interface ReaderNodeEnhancement {
   errorSummary: string | null;
 }
 
+export type ThemeSetting = 'system' | 'paper' | 'night';
+export type ContentWidthSetting = 'narrow' | 'medium' | 'wide';
+
+export interface ReadingSettings {
+  fontSize: number;
+  lineHeight: number;
+  contentWidth: ContentWidthSetting;
+  theme: ThemeSetting;
+}
+
+// §11.5 — a saved reading anchor: block + UTF-16 offset within one node.
+export interface ReaderPosition {
+  sectionId: string;
+  segment: number;
+  blockIndex: number;
+  offset: number;
+}
+
+export interface ReadNode {
+  sectionId: string;
+  segment: number;
+}
+
+export const defaultReadingSettings: ReadingSettings = {
+  fontSize: 18,
+  lineHeight: 1.95,
+  contentWidth: 'medium',
+  theme: 'system',
+};
+
 export interface ReaderBootstrap {
   userBookId: string;
   sharedBookId: string;
@@ -70,6 +100,12 @@ export interface ReaderBootstrap {
   // Raw backend strings — rendered directly, no fabricated briefing structure (§5).
   briefing: string;
   strategySummary: string;
+  // §11.5 last reading position to resume to (null → start from the first node).
+  resumePosition: ReaderPosition | null;
+  // §11.6 the user's global reader settings.
+  settings: ReadingSettings;
+  // §11.4 nodes already marked read.
+  readNodes: ReadNode[];
 }
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001').replace(/\/$/, '');
@@ -147,6 +183,9 @@ interface RawReaderBootstrap {
   workflowStatus: 'active_reading';
   briefing: string;
   strategySummary: string;
+  resumePosition: ReaderPosition | null;
+  settings: ReadingSettings;
+  readNodes: ReadNode[];
   enhancements: Array<{
     sectionId: string;
     segment: number;
@@ -162,6 +201,9 @@ function mapReaderBootstrap(raw: RawReaderBootstrap): ReaderBootstrap {
     workflowStatus: raw.workflowStatus,
     briefing: raw.briefing,
     strategySummary: raw.strategySummary,
+    resumePosition: raw.resumePosition ?? null,
+    settings: raw.settings ?? defaultReadingSettings,
+    readNodes: raw.readNodes ?? [],
     enhancements: raw.enhancements.map((enhancement) => ({
       sectionId: enhancement.sectionId,
       segment: enhancement.segment,
@@ -184,16 +226,65 @@ export async function getReaderBootstrap(userBookId: string): Promise<ReaderBoot
 }
 
 // Reports the reader's current (or jumped-to) node so the host grows the lazy-loading window
-// and raises the target's generation priority (§6.2 / PRD §11.3). Returns the fresh bootstrap
-// so newly-queued enhancements surface immediately.
-export async function reportReaderFocus(userBookId: string, order: number): Promise<ReaderBootstrap> {
+// and raises the target's generation priority (§6.2 / PRD §11.3). The optional `position` rides
+// the same signal to persist the last reading position (§11.5). Returns the fresh bootstrap so
+// newly-queued enhancements surface immediately.
+export async function reportReaderFocus(
+  userBookId: string,
+  order: number,
+  position?: ReaderPosition,
+): Promise<ReaderBootstrap> {
   return mapReaderBootstrap(await readJson<RawReaderBootstrap>(await fetch(
     `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reader/focus`,
     {
       method: 'POST',
       credentials: 'include',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ order }),
+      body: JSON.stringify(position ? { order, position } : { order }),
     },
   )));
+}
+
+// §11.5 — best-effort position save on page-hide / navigate-away. `keepalive` lets the request
+// outlive the unload; failures are swallowed (the debounced focus report is the primary path).
+export function saveReaderPositionBeacon(userBookId: string, order: number, position: ReaderPosition): void {
+  try {
+    void fetch(`${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reader/focus`, {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ order, position }),
+    }).catch(() => {});
+  } catch {
+    // never throw during unload
+  }
+}
+
+// §11.6 — persist the user's global reader settings (cross-device).
+export async function putReadingSettings(settings: ReadingSettings): Promise<ReadingSettings> {
+  const body = await readJson<{ settings: ReadingSettings }>(await fetch(
+    `${apiBaseUrl}/v1/me/reading-settings`,
+    {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(settings),
+    },
+  ));
+  return body.settings;
+}
+
+// §11.4 — mark a reading node read (monotonic, idempotent). Returns the full read set.
+export async function markReadNode(userBookId: string, node: ReadNode): Promise<ReadNode[]> {
+  const body = await readJson<{ readNodes: ReadNode[] }>(await fetch(
+    `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reader/read-nodes`,
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(node),
+    },
+  ));
+  return body.readNodes;
 }

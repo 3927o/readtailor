@@ -315,6 +315,80 @@ function projectionLength(root: HTMLElement): number {
   return count;
 }
 
+// The ordered block elements of a live reading-node content root, using the same v1 enumeration
+// as annotation anchoring (reading_contract §2.4). Block N is `readingBlocks(root)[N - 1]` — the
+// reader renders each node from prepareFragment without data-block-index, so index is positional,
+// matching applyAnnotationMarks' `blocks[blockIndex - 1]` fallback. Used by position save/restore
+// (§11.5) and, later, selection→range for highlights (§11.7).
+export function readingBlocks(root: HTMLElement): HTMLElement[] {
+  return annotationBlocks(root);
+}
+
+// Projection length (in the boundaryAt coordinate system) of a descendant subtree — used to skip
+// over children that sit before a DOM position when folding it back to a block offset. Mirrors
+// projectionLength / boundaryAt: <br> = 1, a nested list inside an <li> is its own block (skipped).
+function subtreeProjection(node: Node, skipNestedLists: boolean): number {
+  if (node.nodeType === Node.TEXT_NODE) return (node as Text).data.length;
+  if (skipNestedLists && node instanceof HTMLElement && (node.tagName === 'UL' || node.tagName === 'OL')) return 0;
+  if (node instanceof HTMLBRElement) return 1;
+  let total = 0;
+  for (const child of node.childNodes) total += subtreeProjection(child, skipNestedLists);
+  return total;
+}
+
+// Inverse of boundaryAt: fold a DOM position (container + domOffset) inside `block` back to its
+// UTF-16 offset in the block's standard text (reading_contract §2.5). MUST mirror boundaryAt /
+// projectionLength exactly (<br> = one char, nested list inside an <li> skipped) so a saved anchor
+// round-trips to the same character it was read at. Returns a clamped offset; never throws.
+export function offsetWithinBlock(block: HTMLElement, container: Node, domOffset: number): number {
+  const skipNestedLists = block.tagName === 'LI';
+  let count = 0;
+  let result: number | null = null;
+  const walk = (node: Node, isRoot: boolean): boolean => {
+    if (result !== null) return true;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node as Text;
+      if (node === container) {
+        result = count + Math.min(Math.max(domOffset, 0), text.data.length);
+        return true;
+      }
+      count += text.data.length;
+      return false;
+    }
+    if (skipNestedLists && !isRoot && node instanceof HTMLElement && (node.tagName === 'UL' || node.tagName === 'OL')) {
+      if (node === container) { result = count; return true; }
+      return false;
+    }
+    if (node instanceof HTMLBRElement) {
+      if (node === container) { result = count + (domOffset > 0 ? 1 : 0); return true; }
+      count += 1;
+      return false;
+    }
+    // Element container: the position sits between its children at index domOffset.
+    if (node === container) {
+      const children = [...node.childNodes];
+      for (let index = 0; index < Math.min(Math.max(domOffset, 0), children.length); index += 1) {
+        count += subtreeProjection(children[index]!, skipNestedLists);
+      }
+      result = count;
+      return true;
+    }
+    for (const child of [...node.childNodes]) {
+      if (walk(child, false)) return true;
+    }
+    return false;
+  };
+  walk(block, true);
+  return result ?? count;
+}
+
+// Forward map for restore: the DOM boundary (container + offset) of a block-relative offset, so
+// the reader can build a Range and scroll it into view. Thin re-export of boundaryAt with the
+// 'start' bias used for a single-point anchor.
+export function domBoundaryForOffset(block: HTMLElement, offset: number): { container: Node; offset: number } | null {
+  return boundaryAt(block, offset, 'start');
+}
+
 export function applyAnnotationMarks(rawHtml: string, annotations: TailoredAnnotation[]): string {
   if (annotations.length === 0) return rawHtml;
   const container = document.createElement('div');

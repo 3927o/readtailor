@@ -589,6 +589,48 @@ export const AdoptTrialResponseSchema = Type.Object({
 });
 export type AdoptTrialResponse = Static<typeof AdoptTrialResponseSchema>;
 
+// §11.6 — per-user global reader presentation settings. Presentation ONLY: these must never
+// feed block enumeration / offset / progress. Persisted server-side (user_reading_settings) and
+// cached in localStorage on the client purely for first-paint.
+export const ReadingSettingsSchema = Type.Object({
+  fontSize: Type.Integer({ minimum: 12, maximum: 40 }),
+  lineHeight: Type.Number({ minimum: 1, maximum: 3 }),
+  contentWidth: Type.Union([Type.Literal('narrow'), Type.Literal('medium'), Type.Literal('wide')]),
+  theme: Type.Union([Type.Literal('system'), Type.Literal('paper'), Type.Literal('night')]),
+});
+export type ReadingSettings = Static<typeof ReadingSettingsSchema>;
+
+// Shared default so the API (bootstrap fallback when no row exists) and the web client
+// (first-paint before bootstrap resolves) never drift.
+export const DEFAULT_READING_SETTINGS: ReadingSettings = {
+  fontSize: 18,
+  lineHeight: 1.95,
+  contentWidth: 'medium',
+  theme: 'system',
+};
+
+export const ReadingSettingsResponseSchema = Type.Object({
+  settings: ReadingSettingsSchema,
+});
+export type ReadingSettingsResponse = Static<typeof ReadingSettingsResponseSchema>;
+
+// §11.5 / §2.5 — a saved reading anchor: block + UTF-16 offset within one reading node. `offset`
+// is a single point (the range [start]); highlights carry a full [start,end) range instead.
+export const ReaderPositionSchema = Type.Object({
+  sectionId: Type.String({ minLength: 1 }),
+  segment: Type.Integer({ minimum: 1 }),
+  blockIndex: Type.Integer({ minimum: 1 }),
+  offset: Type.Integer({ minimum: 0 }),
+});
+export type ReaderPosition = Static<typeof ReaderPositionSchema>;
+
+// §11.4 — a node the reader has marked read (monotonic set; once read never回退).
+export const ReadNodeSchema = Type.Object({
+  sectionId: Type.String({ minLength: 1 }),
+  segment: Type.Integer({ minimum: 1 }),
+});
+export type ReadNode = Static<typeof ReadNodeSchema>;
+
 // The reader bootstrap the active-reading page loads (§5): the formal shape for what was
 // previously served as Type.Unknown(). `briefing` / `strategySummary` are plain strings —
 // the frontend renders them directly instead of fabricating a structured briefing.
@@ -608,16 +650,34 @@ export const ReaderBootstrapSchema = Type.Object({
   briefing: Type.String(),
   strategySummary: Type.String(),
   enhancements: Type.Array(ReaderBootstrapEnhancementSchema),
+  // §11.5 last reading position to resume to (null → start from the first node).
+  resumePosition: Type.Union([ReaderPositionSchema, Type.Null()]),
+  // §11.6 the user's global reader settings, delivered with bootstrap to avoid a first-paint round trip.
+  settings: ReadingSettingsSchema,
+  // §11.4 nodes already marked read (monotonic set).
+  readNodes: Type.Array(ReadNodeSchema),
 });
 export type ReaderBootstrap = Static<typeof ReaderBootstrapSchema>;
 
 // The reader reports its current (or jumped-to) node so the host can keep the
 // lazy-loading window (current node + next 3 tailoring-eligible nodes) generating
 // and raise priority on the target (§6.2 / PRD §11.3). `order` is a manifest node order.
+// The optional `position` carries the full anchor so this same signal also persists the last
+// reading position (§11.5); the host grows the window on order change and always saves position.
 export const ReaderFocusRequestSchema = Type.Object({
   order: Type.Integer({ minimum: 1 }),
+  position: Type.Optional(ReaderPositionSchema),
 });
 export type ReaderFocusRequest = Static<typeof ReaderFocusRequestSchema>;
+
+// §11.4 — mark a node read. Idempotent, monotonic (server ignores a re-mark).
+export const MarkReadNodeRequestSchema = ReadNodeSchema;
+export type MarkReadNodeRequest = Static<typeof MarkReadNodeRequestSchema>;
+
+export const MarkReadNodeResponseSchema = Type.Object({
+  readNodes: Type.Array(ReadNodeSchema),
+});
+export type MarkReadNodeResponse = Static<typeof MarkReadNodeResponseSchema>;
 
 export const ContentGenerationJobPayloadSchema = Type.Object({
   kind: Type.Literal('content.generate'),

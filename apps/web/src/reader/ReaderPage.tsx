@@ -5,29 +5,73 @@ import { ProgressBar } from '../components/chrome/ProgressBar';
 import { Segmented } from '../components/core/Segmented';
 import { Slider } from '../components/core/Slider';
 import { AssistanceContent, BriefCard } from '../user-books/components';
-import { getReaderBootstrap, getReaderDocument, reportReaderFocus } from './api';
-import type { ReaderNodeEnhancement, ReaderOutlineItem } from './api';
-import { getFragmentTargetId, getOutlineDepth, prepareBookContent } from './content';
+import {
+  defaultReadingSettings,
+  getReaderBootstrap,
+  getReaderDocument,
+  markReadNode,
+  putReadingSettings,
+  reportReaderFocus,
+  saveReaderPositionBeacon,
+} from './api';
+import type {
+  ContentWidthSetting,
+  ReaderNodeEnhancement,
+  ReaderOutlineItem,
+  ReaderPosition,
+  ReadingSettings,
+  ThemeSetting,
+} from './api';
+import {
+  domBoundaryForOffset,
+  getFragmentTargetId,
+  getOutlineDepth,
+  offsetWithinBlock,
+  prepareBookContent,
+  readingBlocks,
+} from './content';
 import type { RenderedHeading, RenderedNode } from './content';
 import { NotePopover, popoverPlacement } from './NotePopover';
 import type { ActivePopover } from './NotePopover';
 
-type ThemeSetting = 'system' | 'paper' | 'night';
-type ContentWidthSetting = 'narrow' | 'medium' | 'wide';
+type ReaderSettings = ReadingSettings;
 
-interface ReaderSettings {
-  fontSize: number;
-  lineHeight: number;
-  contentWidth: ContentWidthSetting;
-  theme: ThemeSetting;
+const defaultSettings: ReaderSettings = defaultReadingSettings;
+
+// The reading-settings localStorage cache key (§11.6): server is authoritative; this only avoids
+// a first-paint flash on next open.
+const SETTINGS_CACHE_KEY = 'readtailor:reading-settings';
+
+// The viewport-relative line the reader "reads from": position save probes for the character at
+// this offset below the scroll top, and restore scrolls that character back to it. Save and restore
+// MUST share this constant, or the anchor lands a fixed distance off on every reopen (§11.5).
+const READING_ANCHOR_TOP = 96;
+
+function readCachedSettings(): ReaderSettings | null {
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ReaderSettings>;
+    if (typeof parsed.fontSize !== 'number' || typeof parsed.lineHeight !== 'number') return null;
+    return { ...defaultSettings, ...parsed };
+  } catch {
+    return null;
+  }
 }
 
-const defaultSettings: ReaderSettings = {
-  fontSize: 18,
-  lineHeight: 1.95,
-  contentWidth: 'medium',
-  theme: 'system',
-};
+// Fold a DOM point (from the caret APIs) back to a block-relative UTF-16 offset. Returns
+// { offsetNode, offset } across the standard (Firefox) and WebKit variants.
+function caretAtPoint(x: number, y: number): { node: Node; offset: number } | null {
+  const doc = window.document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  const position = doc.caretPositionFromPoint?.(x, y);
+  if (position) return { node: position.offsetNode, offset: position.offset };
+  const range = doc.caretRangeFromPoint?.(x, y);
+  if (range) return { node: range.startContainer, offset: range.startOffset };
+  return null;
+}
 
 const themeOptions: ReadonlyArray<{ value: ThemeSetting; label: string }> = [
   { value: 'system', label: '跟随系统' },
@@ -93,7 +137,11 @@ function LiveReader({ document }: { document: Awaited<ReturnType<typeof getReade
 }
 
 function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDocument>> }) {
-  const [settings, setSettings] = useState(defaultSettings);
+  // §11.6: server (bootstrap) is authoritative; the localStorage cache is only a pre-bootstrap
+  // fallback. Presentation only — never feeds block enumeration / offset / progress.
+  const [settings, setSettings] = useState<ReaderSettings>(
+    () => document.bootstrap.settings ?? readCachedSettings() ?? defaultSettings,
+  );
   const [tocOpen, setTocOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [bookInfoOpen, setBookInfoOpen] = useState(false);
@@ -111,19 +159,68 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const prefersDark = usePrefersDark();
   const theme = resolvedTheme(settings.theme, prefersDark);
   const queryClient = useQueryClient();
-  // Report the reading position so the host keeps the lazy-loading window generating and raises
-  // the target's priority on a jump (§6.2 / PRD §11.3). The returned bootstrap surfaces newly
-  // queued enhancements; the layout-anchor effect below keeps the scroll position stable.
+  // Report the reading position so the host keeps the lazy-loading window generating (§6.2 /
+  // PRD §11.3) and, via the optional anchor, persists the last reading position (§11.5). The host
+  // grows the window only on order change and always saves the anchor, so intra-node scroll refines
+  // the saved position without re-touching the window. The returned bootstrap surfaces newly queued
+  // enhancements; the layout-anchor effect below keeps the scroll position stable.
   const focus = useMutation({
-    mutationFn: (order: number) => reportReaderFocus(document.userBookId, order),
+    mutationFn: (payload: { order: number; position?: ReaderPosition }) =>
+      reportReaderFocus(document.userBookId, payload.order, payload.position),
     onSuccess: (bootstrap) => queryClient.setQueryData(['reader-bootstrap', document.userBookId], bootstrap),
   });
-  const reportedOrder = useRef<number | null>(null);
-  const reportFocus = useRef<(order: number) => void>(() => {});
-  reportFocus.current = (order: number) => {
-    if (!Number.isFinite(order) || reportedOrder.current === order) return;
-    reportedOrder.current = order;
-    focus.mutate(order);
+  const currentOrderRef = useRef(currentOrder);
+  currentOrderRef.current = currentOrder;
+  const reportFocus = useRef<(order: number, position?: ReaderPosition) => void>(() => {});
+  reportFocus.current = (order, position) => {
+    if (!Number.isFinite(order)) return;
+    focus.mutate(position ? { order, position } : { order });
+  };
+  // Fold the reading-anchor line (READING_ANCHOR_TOP below the scroll top) into a
+  // { blockIndex, offset } anchor (§11.5). Locate the node/block/offset DIRECTLY from the character
+  // under the probe point — not from `currentOrder`, whose IntersectionObserver threshold is a
+  // different reference line and drifts against a fixed pixel offset as the viewport height changes.
+  // This makes save self-consistent with restore, which scrolls the same character back to the same
+  // line. Falls back to the current node's top when the probe misses the text column (heading/gap).
+  // Held in a ref so scroll/unload handlers always see live DOM, never a stale closure.
+  const computeAnchorRef = useRef<() => ReaderPosition | null>(() => null);
+  computeAnchorRef.current = () => {
+    const root = scrollRoot.current;
+    if (!root) return null;
+    const rootRect = root.getBoundingClientRect();
+    const probeY = rootRect.top + READING_ANCHOR_TOP;
+    const probeX = rootRect.left + rootRect.width / 2;
+    const currentNode = document.manifest.nodes.find((item) => item.order === currentOrderRef.current);
+    const fallback = currentNode
+      ? { sectionId: currentNode.section_id, segment: currentNode.segment, blockIndex: 1, offset: 0 }
+      : null;
+    const caret = caretAtPoint(probeX, probeY);
+    if (!caret) return fallback;
+    const anchorElement = caret.node instanceof Element ? caret.node : caret.node.parentElement;
+    const nodeEl = anchorElement?.closest<HTMLElement>('[data-node-order]');
+    const contentRoot = nodeEl?.querySelector<HTMLElement>('.reader-original');
+    const sectionId = nodeEl?.dataset.sectionId;
+    const segment = Number(nodeEl?.dataset.segment ?? Number.NaN);
+    if (!nodeEl || !contentRoot || !sectionId || !Number.isFinite(segment) || !contentRoot.contains(caret.node)) {
+      return fallback;
+    }
+    const blocks = readingBlocks(contentRoot);
+    const block = blocks.find((candidate) => candidate.contains(caret.node));
+    if (!block) return { sectionId, segment, blockIndex: 1, offset: 0 };
+    return {
+      sectionId,
+      segment,
+      blockIndex: blocks.indexOf(block) + 1,
+      offset: offsetWithinBlock(block, caret.node, caret.offset),
+    };
+  };
+  const positionTimer = useRef<number | null>(null);
+  const schedulePositionReport = () => {
+    if (positionTimer.current !== null) window.clearTimeout(positionTimer.current);
+    positionTimer.current = window.setTimeout(() => {
+      positionTimer.current = null;
+      reportFocus.current(currentOrderRef.current, computeAnchorRef.current() ?? undefined);
+    }, 800);
   };
   const enhancements = useMemo(() => new Map(
     document.bootstrap.enhancements.map((item) => [`${item.sectionId}:${item.segment}`, item]),
@@ -182,6 +279,50 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     // paragraph the reader is on stays visually put across the re-render.
     root.scrollTop += node.getBoundingClientRect().top - snapshot.top;
   }, [enhancementVersion]);
+
+  // §11.5 position restore: on first content commit, scroll to the saved anchor (block + offset).
+  // Runs once (restoredRef). Fallback chain per PRD §11.5: exact block → the node's first block →
+  // (node missing) start of book. Deliberately runs before the layout-anchor takes over, then hands
+  // stability to it as enhancements stream in. On first mount the layout-anchor is a no-op (the
+  // scroll ref is null during that render), so there is no scroll fight.
+  const restoredRef = useRef(false);
+  useLayoutEffect(() => {
+    if (restoredRef.current) return;
+    const root = scrollRoot.current;
+    if (!root) return;
+    restoredRef.current = true;
+    const pos = document.bootstrap.resumePosition;
+    if (!pos) return;
+    const node = document.manifest.nodes.find((item) => item.section_id === pos.sectionId && item.segment === pos.segment);
+    if (!node) return;
+    const nodeEl = root.querySelector<HTMLElement>(`[data-node-order="${node.order}"]`);
+    const contentRoot = nodeEl?.querySelector<HTMLElement>('.reader-original');
+    if (!nodeEl || !contentRoot) return;
+    const blocks = readingBlocks(contentRoot);
+    const exact = blocks[pos.blockIndex - 1];
+    const block = exact ?? blocks[0];
+    const rootTop = root.getBoundingClientRect().top;
+    const headroom = READING_ANCHOR_TOP;
+    let targetTop = (block ?? nodeEl).getBoundingClientRect().top;
+    if (exact) {
+      const boundary = domBoundaryForOffset(exact, pos.offset);
+      if (boundary) {
+        try {
+          const range = window.document.createRange();
+          range.setStart(boundary.container, boundary.offset);
+          range.collapse(true);
+          const rect = range.getBoundingClientRect();
+          if (rect.top || rect.bottom) targetTop = rect.top || rect.bottom;
+        } catch {
+          // fall through to the block/node top already in targetTop
+        }
+      }
+    }
+    root.scrollTop += targetTop - rootTop - headroom;
+    setCurrentOrder(node.order);
+    currentOrderRef.current = node.order;
+  }, [prepared]);
+
   useEffect(() => {
     const root = scrollRoot.current;
     if (!root) return;
@@ -196,12 +337,81 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     return () => observer.disconnect();
   }, [prepared]);
 
-  // Debounce scroll-driven position reports so the window follows the reader without spamming
-  // the host; jumps report immediately (below) for an instant 提权.
+  // Warm the window for the opening/resumed node even if the reader never scrolls; scroll-driven
+  // reports (schedulePositionReport) and jumps take over from here.
   useEffect(() => {
-    const handle = window.setTimeout(() => reportFocus.current(currentOrder), 700);
+    const handle = window.setTimeout(() => {
+      reportFocus.current(currentOrderRef.current, computeAnchorRef.current() ?? undefined);
+    }, 300);
     return () => window.clearTimeout(handle);
-  }, [currentOrder]);
+  }, []);
+
+  // §11.5: save position immediately when the tab is hidden or the page is being unloaded — the
+  // debounced scroll report may not have fired yet. keepalive lets the request outlive unload.
+  useEffect(() => {
+    const flush = () => {
+      const anchor = computeAnchorRef.current();
+      if (anchor) saveReaderPositionBeacon(document.userBookId, currentOrderRef.current, anchor);
+    };
+    const onVisibility = () => {
+      if (window.document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, [document.userBookId]);
+
+  // §11.6: mirror settings to the localStorage cache immediately and debounce the cross-device PUT.
+  // Skip the first run so opening the reader does not re-PUT unchanged settings.
+  const settingsInitRef = useRef(true);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify(settings));
+    } catch {
+      // a full/blocked localStorage must not break reading
+    }
+    if (settingsInitRef.current) {
+      settingsInitRef.current = false;
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      void putReadingSettings(settings).catch(() => {});
+    }, 600);
+    return () => window.clearTimeout(handle);
+  }, [settings]);
+
+  // §11.4: mark a node read once any part enters the viewport while the page is visible. Monotonic
+  // and idempotent — a local set (seeded from bootstrap) prevents duplicate POSTs; a failed POST is
+  // rolled back locally so it retries on the next intersection.
+  const markedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const item of document.bootstrap.readNodes) markedRef.current.add(`${item.sectionId}:${item.segment}`);
+  }, [document.bootstrap.readNodes]);
+  useEffect(() => {
+    const root = scrollRoot.current;
+    if (!root) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (window.document.visibilityState !== 'visible') return;
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const element = entry.target as HTMLElement;
+        const sectionId = element.dataset.sectionId;
+        const segment = Number(element.dataset.segment);
+        if (!sectionId || !Number.isFinite(segment)) continue;
+        const key = `${sectionId}:${segment}`;
+        if (markedRef.current.has(key)) continue;
+        markedRef.current.add(key);
+        void markReadNode(document.userBookId, { sectionId, segment }).catch(() => {
+          markedRef.current.delete(key);
+        });
+      }
+    }, { root, threshold: 0 });
+    root.querySelectorAll<HTMLElement>('[data-node-order]').forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [prepared, document.userBookId]);
 
   useEffect(() => {
     const closeOverlays = (event: KeyboardEvent) => {
@@ -234,14 +444,21 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     }
     lastScrollTop.current = root.scrollTop;
     setPopover(null);
+    // Debounced position report (§11.5): saves intra-node scroll position and grows the window
+    // when the settled node changes.
+    schedulePositionReport();
   };
 
   const jumpToOrder = (order: number) => {
     scrollRoot.current?.querySelector<HTMLElement>(`[data-node-order="${order}"]`)
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     setTocOpen(false);
-    // Explicit jump: report the target now so its window is prioritized before the scroll settles.
-    reportFocus.current(order);
+    // Explicit jump: report the target now (with the top-of-node anchor) so its window is
+    // prioritized and the saved position matches the jump before the scroll settles.
+    const target = document.manifest.nodes.find((item) => item.order === order);
+    reportFocus.current(order, target
+      ? { sectionId: target.section_id, segment: target.segment, blockIndex: 1, offset: 0 }
+      : undefined);
   };
 
   const handleContentClick = (event: React.MouseEvent<HTMLElement>) => {
@@ -411,6 +628,8 @@ function ReadingNode({ node, bookTitle, enhancement }: {
       className="reader-node"
       data-has-heading={headings.length > 0}
       data-node-order={node.order}
+      data-section-id={node.section_id}
+      data-segment={node.segment}
       id={`reader-node-${node.order}`}
     >
       {headings.map((heading) => (

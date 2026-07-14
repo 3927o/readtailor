@@ -6,6 +6,7 @@ import { UserBookError, type UserBookService, type UserBookUserService } from '.
 
 const USER_BOOK_ID = 'a3bb189e-8bf9-3888-9912-ace4e6543002';
 const SHARED_BOOK_ID = 'd08c8fca-8c88-485f-b674-9a332c00abf8';
+const READER_SETTINGS = { fontSize: 18, lineHeight: 1.95, contentWidth: 'medium', theme: 'system' } as const;
 const fakeAuth: AuthService = {
   async authenticateSession() {
     return {
@@ -56,6 +57,9 @@ function fakeService(overrides: Partial<UserBookUserService> = {}): UserBookServ
         briefing: 'Briefing',
         strategySummary: 'Strategy',
         enhancements: [],
+        resumePosition: null,
+        settings: READER_SETTINGS,
+        readNodes: [],
       };
     },
     async reportReaderFocus() {
@@ -66,6 +70,9 @@ function fakeService(overrides: Partial<UserBookUserService> = {}): UserBookServ
         briefing: 'Briefing',
         strategySummary: 'Strategy',
         enhancements: [],
+        resumePosition: null,
+        settings: READER_SETTINGS,
+        readNodes: [],
       };
     },
     ...overrides,
@@ -112,6 +119,9 @@ describe('user book workflow routes', () => {
             enhancements: [
               { generationId: 'g1', sectionId: 'chapter-3', segment: 1, status: 'queued', result: null },
             ],
+            resumePosition: null,
+            settings: READER_SETTINGS,
+            readNodes: [],
           };
         },
       }),

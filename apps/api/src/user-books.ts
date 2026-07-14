@@ -9,10 +9,15 @@ import type {
   InterviewQuestion,
   InterviewStateResponse,
   InterviewStreamEvent,
+  MarkReadNodeRequest,
+  MarkReadNodeResponse,
   MarkTrialSegmentViewedRequest,
   ReaderBootstrap,
   ReaderFocusRequest,
+  ReaderPosition,
   ReaderProfile,
+  ReadingSettings,
+  ReadingSettingsResponse,
   Strategy,
   StrategyReviewResponse,
   TextRange,
@@ -25,6 +30,7 @@ import type {
   UserBookShelfResponse,
   UserBookWorkflowResponse,
 } from '@readtailor/contracts';
+import { DEFAULT_READING_SETTINGS } from '@readtailor/contracts';
 import {
   bookPackages,
   bookReaderProfileVersions,
@@ -34,12 +40,15 @@ import {
   nodeGenerations,
   readerProfiles,
   readerProfileVersions,
+  readerReadNodes,
+  readerStates,
   sharedBooks,
   strategyDraftVersions,
   strategyVersions,
   trialRevisions,
   trialSegments,
   userBooks,
+  userReadingSettings,
   type Database,
 } from '@readtailor/database';
 import { extractNodeSourceFromHtml, sliceNodeSource } from '@readtailor/tailoring';
@@ -80,6 +89,7 @@ type ManifestOutline = {
 };
 
 type ReadingManifest = {
+  version?: string;
   nodes: ManifestNode[];
   outline: ManifestOutline[];
 };
@@ -124,6 +134,24 @@ function asManifest(value: unknown): ReadingManifest {
     throw new UserBookError('书籍阅读索引不可用', 409);
   }
   return manifest as ReadingManifest;
+}
+
+// The manifest algorithm version is immutable per (immutable) book package, so memoize it per
+// process. The position-save path (§11.5) stamps it onto every reader_states row for future
+// migration识别 but runs on each scroll settle — it must not re-read the manifest artifact each time.
+const manifestVersionCache = new Map<string, string | null>();
+async function getManifestVersion(books: BookService, sharedBookId: string): Promise<string | null> {
+  const cached = manifestVersionCache.get(sharedBookId);
+  if (cached !== undefined) return cached;
+  let version: string | null = null;
+  try {
+    const raw = (await books.getManifest(sharedBookId)) as { version?: unknown } | null;
+    version = typeof raw?.version === 'string' ? raw.version : null;
+  } catch {
+    version = null;
+  }
+  manifestVersionCache.set(sharedBookId, version);
+  return version;
 }
 
 function mapQuestion(value: {
@@ -1211,16 +1239,58 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
     }
   };
 
+  // §11.5 — persist the reader's anchor. The anchor's node is the focus node (`order`), and the
+  // client computes { blockIndex, offset } from the same immutable manifest it rendered, so the
+  // schema's own bounds (blockIndex ≥ 1, offset ≥ 0) are the validation; nodeOrder is redundant
+  // metadata taken straight from `order`. The caller wraps this best-effort: a failed save must
+  // never block the read (§14.3).
+  const persistReaderPosition = async (
+    userBookId: string,
+    sharedBookId: string,
+    order: number,
+    position: ReaderPosition,
+  ): Promise<void> => {
+    const values = {
+      sectionId: position.sectionId,
+      segment: position.segment,
+      blockIndex: position.blockIndex,
+      offset: position.offset,
+      nodeOrder: order,
+      manifestVersion: await getManifestVersion(options.books, sharedBookId),
+      updatedAt: new Date(),
+    };
+    await db
+      .insert(readerStates)
+      .values({ userBookId, ...values })
+      .onConflictDoUpdate({ target: readerStates.userBookId, set: values });
+  };
+
+  // §11.6 — the user's global reader settings, falling back to the shared default when no row
+  // exists yet. Read with each bootstrap so a change on another device shows up on refetch.
+  const loadReadingSettings = async (): Promise<ReadingSettings> => {
+    const [row] = await db
+      .select({ settings: userReadingSettings.settings })
+      .from(userReadingSettings)
+      .where(eq(userReadingSettings.userId, userId))
+      .limit(1);
+    return row?.settings ?? DEFAULT_READING_SETTINGS;
+  };
+
   const buildReaderBootstrap = async (
     userBookId: string,
     sharedBookId: string,
     strategyVersionId: string,
     strategyDraftVersionId: string,
   ): Promise<ReaderBootstrap> => {
-    const [strategy, draft, generations] = await Promise.all([
+    const [strategy, draft, generations, resume, settings, readRows] = await Promise.all([
       db.select().from(strategyVersions).where(eq(strategyVersions.id, strategyVersionId)).limit(1).then((rows) => rows[0]),
       db.select().from(strategyDraftVersions).where(eq(strategyDraftVersions.id, strategyDraftVersionId)).limit(1).then((rows) => rows[0]),
       db.select().from(nodeGenerations).where(and(eq(nodeGenerations.userBookId, userBookId), eq(nodeGenerations.generationScope, 'formal'))).orderBy(asc(nodeGenerations.createdAt)),
+      db.select().from(readerStates).where(eq(readerStates.userBookId, userBookId)).limit(1).then((rows) => rows[0]),
+      loadReadingSettings(),
+      db.select({ sectionId: readerReadNodes.sectionId, segment: readerReadNodes.segment })
+        .from(readerReadNodes)
+        .where(eq(readerReadNodes.userBookId, userBookId)),
     ]);
     if (!strategy || !draft) throw new UserBookError('正式处理方式不存在', 409);
     return {
@@ -1236,6 +1306,11 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
         status: generation.status,
         result: generation.result,
       })),
+      resumePosition: resume
+        ? { sectionId: resume.sectionId, segment: resume.segment, blockIndex: resume.blockIndex, offset: resume.offset }
+        : null,
+      settings,
+      readNodes: readRows.map((row) => ({ sectionId: row.sectionId, segment: row.segment })),
     };
   };
 
@@ -1584,6 +1659,25 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       } catch {
         // Enhancement recovery must not block access to the original book.
       }
+      try {
+        // §6.2 / §11.5: continue the lazy-loading window from the resumed position (not only node
+        // 1), so a reopened book keeps generating where the reader left off. Focus-report window
+        // growth is gated on order change, so this on-load ensure covers a same-order reopen.
+        // Best-effort — the original text is always available (§14.3).
+        const [resume] = await db
+          .select({ nodeOrder: readerStates.nodeOrder })
+          .from(readerStates)
+          .where(eq(readerStates.userBookId, userBookId))
+          .limit(1);
+        await ensureFormalWindow(
+          userBookId,
+          owned.userBook.currentStrategyVersionId,
+          owned.sharedBook.id,
+          resume?.nodeOrder ?? 1,
+        );
+      } catch {
+        // Window maintenance is best-effort; a failed enqueue must not fail the read.
+      }
       return buildReaderBootstrap(
         userBookId,
         owned.sharedBook.id,
@@ -1597,17 +1691,34 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       if (owned.userBook.workflowStatus !== 'active_reading' || !owned.userBook.currentStrategyVersionId || !owned.userBook.currentStrategyDraftVersionId) {
         throw new UserBookError('尚未完成试读确认', 409);
       }
-      try {
-        // Grow/prioritize the lazy-loading window around the reader's position. Never let this
-        // block the reader — the original text is always available regardless (§14.3).
-        await ensureFormalWindow(
-          userBookId,
-          owned.userBook.currentStrategyVersionId,
-          owned.sharedBook.id,
-          input.order,
-        );
-      } catch {
-        // Window maintenance is best-effort; a failed enqueue must not fail the read.
+      // The dedup 坑 (§4A/§2): the same focus signal now carries the finer reading position. So we
+      // read the prior node order (to gate window growth) and always save the position — «order 变
+      // 了才动窗口、位置总是存». Intra-node scroll updates the anchor without re-touching the window.
+      const [prior] = await db
+        .select({ nodeOrder: readerStates.nodeOrder })
+        .from(readerStates)
+        .where(eq(readerStates.userBookId, userBookId))
+        .limit(1);
+      if (input.position) {
+        try {
+          await persistReaderPosition(userBookId, owned.sharedBook.id, input.order, input.position);
+        } catch {
+          // Position save is best-effort; it must not block the read (§14.3).
+        }
+      }
+      if (!prior || prior.nodeOrder !== input.order) {
+        try {
+          // Grow/prioritize the lazy-loading window around the reader's position. Never let this
+          // block the reader — the original text is always available regardless (§14.3).
+          await ensureFormalWindow(
+            userBookId,
+            owned.userBook.currentStrategyVersionId,
+            owned.sharedBook.id,
+            input.order,
+          );
+        } catch {
+          // Window maintenance is best-effort; a failed enqueue must not fail the read.
+        }
       }
       return buildReaderBootstrap(
         userBookId,
@@ -1615,6 +1726,39 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
         owned.userBook.currentStrategyVersionId,
         owned.userBook.currentStrategyDraftVersionId,
       );
+    },
+
+    // §11.6 — the user's global reader settings. Read alongside bootstrap; this standalone getter
+    // exists for symmetry with the PUT and is not required by the reader's happy path.
+    async getReadingSettings(): Promise<ReadingSettingsResponse> {
+      return { settings: await loadReadingSettings() };
+    },
+
+    async updateReadingSettings(settings: ReadingSettings): Promise<ReadingSettingsResponse> {
+      await db
+        .insert(userReadingSettings)
+        .values({ userId, settings, updatedAt: new Date() })
+        .onConflictDoUpdate({ target: userReadingSettings.userId, set: { settings, updatedAt: new Date() } });
+      return { settings };
+    },
+
+    // §11.4 — mark a reading node read. Monotonic and idempotent: a re-mark (or a node that later
+    // loses eligibility) never removes an existing entry. Returns the full set so the client can
+    // reconcile its local view without a second round trip.
+    async markReadNode(userBookId: string, input: MarkReadNodeRequest): Promise<MarkReadNodeResponse> {
+      const owned = await getOwnedBook(userBookId);
+      if (owned.userBook.workflowStatus !== 'active_reading') {
+        throw new UserBookError('尚未完成试读确认', 409);
+      }
+      await db
+        .insert(readerReadNodes)
+        .values({ userBookId, sectionId: input.sectionId, segment: input.segment })
+        .onConflictDoNothing();
+      const rows = await db
+        .select({ sectionId: readerReadNodes.sectionId, segment: readerReadNodes.segment })
+        .from(readerReadNodes)
+        .where(eq(readerReadNodes.userBookId, userBookId));
+      return { readNodes: rows.map((row) => ({ sectionId: row.sectionId, segment: row.segment })) };
     },
   };
 }

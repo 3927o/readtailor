@@ -22,6 +22,8 @@ import {
   ImportBookResponseSchema,
   type InterviewStreamEvent,
   InterviewStateResponseSchema,
+  MarkReadNodeRequestSchema,
+  MarkReadNodeResponseSchema,
   MarkTrialSegmentViewedRequestSchema,
   PasswordLoginRequestSchema,
   PasswordRegisterRequestSchema,
@@ -29,6 +31,8 @@ import {
   ReaderFocusRequestSchema,
   ReaderProfileOnboardingRequestSchema,
   ReaderProfileResponseSchema,
+  ReadingSettingsResponseSchema,
+  ReadingSettingsSchema,
   SharedBookSchema,
   StrategyReviewResponseSchema,
   SubmitInterviewAnswerRequestSchema,
@@ -157,6 +161,10 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
   await app.register(cors, {
     origin: config.webOrigins,
     credentials: true,
+    // The API historically served only GET/POST, so the default preflight advertised just those.
+    // §11.6 reading-settings (PUT) and §11.7 highlights (PATCH/DELETE) are cross-origin credentialed
+    // requests whose preflight must permit these methods, or the browser blocks them before sending.
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'],
   });
   await app.register(cookie);
   await app.register(rateLimit, { global: false });
@@ -833,6 +841,54 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
         return await deps.userBooks.forUser(request.authUser!.id).reportReaderFocus(request.params.id, request.body);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  // §11.4: mark a reading node read (monotonic, idempotent). Returns the full read set.
+  app.post(
+    '/v1/user-books/:id/reader/read-nodes',
+    {
+      schema: {
+        params: userBookIdParams,
+        body: MarkReadNodeRequestSchema,
+        response: { 200: MarkReadNodeResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).markReadNode(request.params.id, request.body);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  // §11.6: per-user (global) reader presentation settings — synced across books and devices.
+  app.get(
+    '/v1/me/reading-settings',
+    { schema: { response: { 200: ReadingSettingsResponseSchema, 503: ErrorResponseSchema } } },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      return deps.userBooks.forUser(request.authUser!.id).getReadingSettings();
+    },
+  );
+
+  app.put(
+    '/v1/me/reading-settings',
+    {
+      schema: {
+        body: ReadingSettingsSchema,
+        response: { 200: ReadingSettingsResponseSchema, 400: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).updateReadingSettings(request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
