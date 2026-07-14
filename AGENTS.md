@@ -1,5 +1,8 @@
 # ReadTailor Project Instructions
 
+## Language
+请说中文
+
 ## Communication
 
 - Be concise and lead with the result. Avoid filler, repetition, and unnecessary process narration.
