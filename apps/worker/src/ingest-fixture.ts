@@ -15,6 +15,7 @@ import {
 } from '@readtailor/database';
 import {
   publishImmutablePackage,
+  readBookMetadata,
   validateNormalizedCandidate,
 } from '@readtailor/normalized-book';
 import {
@@ -27,20 +28,6 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const PACKAGE_VERSION = 'nb-1.0-v2';
 const CONTRACT_VERSION = 'nb-1.0';
 const MANIFEST_VERSION = 'reading-nodes-1.0';
-
-type NormalizationReport = {
-  metadata: {
-    title: string;
-    authors: string[];
-    language: string;
-    cover_path: string | null;
-    identifiers: Record<string, string>;
-    publisher: string | null;
-    published_date: string | null;
-    source_filename: string;
-  };
-  [key: string]: unknown;
-};
 
 type ManifestNode = {
   section_id: string;
@@ -193,6 +180,7 @@ async function packageInventoryIsComplete(
     'reading_manifest.json',
     'book_profile.json',
     'normalization_report.json',
+    'metadata.json',
     'validation_report.txt',
   ];
   if (required.some((path) => !fileHashes[path])) {
@@ -439,9 +427,7 @@ async function main(): Promise<void> {
       hostValidation.reportBytes,
     );
 
-    const normalizationReport = JSON.parse(
-      await readFile(join(packageDir, 'normalization_report.json'), 'utf8'),
-    ) as NormalizationReport;
+    const metadata = await readBookMetadata(packageDir);
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as ReadingManifest;
     if (manifest.version !== MANIFEST_VERSION) {
       throw new Error(`unexpected manifest version: ${manifest.version}`);
@@ -459,6 +445,7 @@ async function main(): Promise<void> {
       'reading_manifest.json',
       'book_profile.json',
       'normalization_report.json',
+      'metadata.json',
       'validation_report.txt',
     ];
     for (const name of required) {
@@ -477,6 +464,7 @@ async function main(): Promise<void> {
         'reading_manifest.json',
         'book_profile.json',
         'normalization_report.json',
+        'metadata.json',
         'validation_report.txt',
         'validation_report.json',
       ],
@@ -485,7 +473,6 @@ async function main(): Promise<void> {
 
     const proposedPackageId = randomUUID();
     const profileBytes = await readFile(join(packageDir, 'book_profile.json'));
-    const metadata = normalizationReport.metadata;
     let publishedPackageId: string = proposedPackageId;
     await database.db.transaction(async (tx) => {
       await tx

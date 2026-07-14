@@ -17,6 +17,7 @@ import {
   assertSafeRelativePath,
   hashArtifactInventory,
   publishImmutablePackage,
+  readBookMetadata,
   runCommand,
   sha256,
 } from '@readtailor/normalized-book';
@@ -33,60 +34,6 @@ import {
 
 const CONTRACT_VERSION = 'nb-1.0';
 const MANIFEST_VERSION = 'reading-nodes-1.0';
-
-type NormalizationMetadata = {
-  title: string;
-  authors: string[];
-  language: string;
-  cover_path: string | null;
-  identifiers: Record<string, string>;
-  publisher: string | null;
-  published_date: string | null;
-  source_filename: string;
-};
-
-function parseNormalizationMetadata(value: unknown): NormalizationMetadata {
-  if (!value || typeof value !== 'object') throw new Error('normalization metadata is missing');
-  const metadata = value as Record<string, unknown>;
-  const nullableString = (name: string): string | null => {
-    const field = metadata[name];
-    if (field === null) return null;
-    if (typeof field !== 'string') throw new Error(`normalization metadata ${name} is invalid`);
-    return field;
-  };
-  if (typeof metadata.title !== 'string' || !metadata.title.trim()) {
-    throw new Error('normalization metadata title is invalid');
-  }
-  if (
-    !Array.isArray(metadata.authors) ||
-    !metadata.authors.every((author) => typeof author === 'string')
-  ) {
-    throw new Error('normalization metadata authors are invalid');
-  }
-  if (typeof metadata.language !== 'string' || !metadata.language.trim()) {
-    throw new Error('normalization metadata language is invalid');
-  }
-  if (!metadata.identifiers || typeof metadata.identifiers !== 'object') {
-    throw new Error('normalization metadata identifiers are invalid');
-  }
-  const identifiers = metadata.identifiers as Record<string, unknown>;
-  if (!Object.values(identifiers).every((identifier) => typeof identifier === 'string')) {
-    throw new Error('normalization metadata identifiers must contain only strings');
-  }
-  if (typeof metadata.source_filename !== 'string' || !metadata.source_filename) {
-    throw new Error('normalization metadata source_filename is invalid');
-  }
-  return {
-    title: metadata.title,
-    authors: metadata.authors as string[],
-    language: metadata.language,
-    cover_path: nullableString('cover_path'),
-    identifiers: identifiers as Record<string, string>,
-    publisher: nullableString('publisher'),
-    published_date: nullableString('published_date'),
-    source_filename: metadata.source_filename,
-  };
-}
 
 function sameInventory(left: Record<string, string>, right: Record<string, string>): boolean {
   const keys = Object.keys(left);
@@ -177,10 +124,7 @@ export async function publishValidatedNormalization(options: {
       },
     });
 
-    const normalizationReport = JSON.parse(
-      await readFile(join(packageDirectory, 'normalization_report.json'), 'utf8'),
-    ) as { metadata?: unknown };
-    const metadata = parseNormalizationMetadata(normalizationReport.metadata);
+    const metadata = await readBookMetadata(packageDirectory);
 
     const derivedInventory = await buildArtifactInventory(packageDirectory);
     const derivedByPath = new Map(
@@ -235,6 +179,7 @@ export async function publishValidatedNormalization(options: {
         'reading_manifest.json',
         'book_profile.json',
         'normalization_report.json',
+        'metadata.json',
         'validation_report.txt',
         'validation_report.json',
         'package_manifest.json',
@@ -278,6 +223,7 @@ export async function publishValidatedNormalization(options: {
         'reading_manifest.json',
         'book_profile.json',
         'normalization_report.json',
+        'metadata.json',
         'validation_report.txt',
         'validation_report.json',
         'package_manifest.json',

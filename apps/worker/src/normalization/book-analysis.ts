@@ -8,7 +8,7 @@ import {
   type BookProfile,
   type ToolTextResult,
 } from '@readtailor/agent-kit';
-import { runCommand } from '@readtailor/normalized-book';
+import { readBookMetadata, runCommand, type BookMetadata } from '@readtailor/normalized-book';
 
 type ManifestNode = {
   section_id: string;
@@ -29,19 +29,6 @@ type ReadingManifest = {
   book_total_characters: number;
   node_count: number;
   nodes: ManifestNode[];
-};
-
-type NormalizationReport = {
-  metadata: {
-    title: string;
-    authors: string[];
-    language: string;
-    cover_path: string | null;
-    identifiers: Record<string, string>;
-    publisher: string | null;
-    published_date: string | null;
-    source_filename: string;
-  };
 };
 
 async function runAnalysisHelper(options: {
@@ -76,21 +63,16 @@ export async function createBookAnalysisToolbox(options: {
 }): Promise<{
   toolbox: BookAnalysisToolbox;
   manifest: ReadingManifest;
-  normalizationReport: NormalizationReport;
+  metadata: BookMetadata;
 }> {
-  const [manifest, normalizationReport] = await Promise.all([
+  const [manifest, metadata] = await Promise.all([
     readFile(join(options.packageDirectory, 'reading_manifest.json'), 'utf8').then(
       (value) => JSON.parse(value) as ReadingManifest,
     ),
-    readFile(join(options.packageDirectory, 'normalization_report.json'), 'utf8').then(
-      (value) => JSON.parse(value) as NormalizationReport,
-    ),
+    readBookMetadata(options.packageDirectory),
   ]);
   if (manifest.version !== 'reading-nodes-1.0' || !Array.isArray(manifest.nodes)) {
     throw new Error('book analysis requires a valid reading-nodes-1.0 manifest');
-  }
-  if (!normalizationReport.metadata?.title) {
-    throw new Error('book analysis requires normalization metadata');
   }
   const eligibleKeys = new Set(
     manifest.nodes
@@ -103,7 +85,7 @@ export async function createBookAnalysisToolbox(options: {
       return {
         text: JSON.stringify(
           {
-            ...normalizationReport.metadata,
+            ...metadata,
             node_count: manifest.node_count,
             tailoring_eligible_node_count: eligibleKeys.size,
             book_total_characters: manifest.book_total_characters,
@@ -190,7 +172,7 @@ export async function createBookAnalysisToolbox(options: {
     },
   };
 
-  return { toolbox, manifest, normalizationReport };
+  return { toolbox, manifest, metadata };
 }
 
 export async function analyzeBookPackage(options: {

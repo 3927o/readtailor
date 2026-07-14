@@ -15,6 +15,7 @@ const DEFAULT_REQUIRED_PACKAGE_FILES = [
   'reading_manifest.json',
   'book_profile.json',
   'normalization_report.json',
+  'metadata.json',
   'validation_report.txt',
 ] as const;
 

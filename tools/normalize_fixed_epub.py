@@ -862,20 +862,27 @@ class FixedEpubNormalizer:
         html_path = self.output_dir / "book.normalized.html"
         html_path.write_bytes(html_bytes)
 
+        # metadata.json is the single source of truth for bibliographic metadata
+        # (see packages/normalized-book/src/metadata.ts parseBookMetadata).
+        metadata: dict[str, object] = {
+            "title": self.title,
+            "authors": self.authors,
+            "language": self.language,
+            "cover_path": cover_path,
+            "identifiers": self.identifiers,
+            "publisher": self.publisher,
+            "published_date": self.published_date,
+            "source_filename": self.input_epub.name,
+        }
+        (self.output_dir / "metadata.json").write_text(
+            stable_json(metadata),
+            encoding="utf-8",
+        )
+
         output_soup = BeautifulSoup(html_bytes, "html.parser")
         report: dict[str, object] = {
             "normalizer": "normalize_fixed_epub.py",
             "normalized_spec": "nb-1.0",
-            "metadata": {
-                "title": self.title,
-                "authors": self.authors,
-                "language": self.language,
-                "cover_path": cover_path,
-                "identifiers": self.identifiers,
-                "publisher": self.publisher,
-                "published_date": self.published_date,
-                "source_filename": self.input_epub.name,
-            },
             "source": {
                 "filename": self.input_epub.name,
                 "sha256": sha256_bytes(self.input_epub.read_bytes()),

@@ -12,7 +12,9 @@ import type {
 } from '@readtailor/agent-kit';
 import {
   assertSafeRelativePath,
+  BOOK_METADATA_FILE,
   hashArtifactInventory,
+  parseBookMetadata,
   sha256,
   type ArtifactInventory,
 } from '@readtailor/normalized-book';
@@ -466,9 +468,10 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
       throw new Error('normalized output changed after the latest nb_check');
     }
     const required = new Set(inventory.files.map((entry) => entry.path));
-    for (const path of ['book.normalized.html', 'normalization_report.json']) {
+    for (const path of ['book.normalized.html', 'normalization_report.json', BOOK_METADATA_FILE]) {
       if (!required.has(path)) throw new Error(`normalized output is missing ${path}`);
     }
+    await this.assertValidMetadata(signal);
     if (validation.errors !== 0) {
       throw new Error(`latest nb_check still has ${validation.errors} blocking errors`);
     }
@@ -482,6 +485,25 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
       warningCount: validation.warnings,
     };
     return this.finishBinding;
+  }
+
+  private async assertValidMetadata(signal?: AbortSignal): Promise<void> {
+    let raw: string;
+    try {
+      raw = await this.sandbox.files.read(
+        `${OUTPUT_ROOT}/${BOOK_METADATA_FILE}`,
+        this.requestOptions(signal),
+      );
+    } catch {
+      throw new Error(`${BOOK_METADATA_FILE} could not be read from the normalized output`);
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`${BOOK_METADATA_FILE} is not valid JSON: ${(error as Error).message}`);
+    }
+    parseBookMetadata(parsed);
   }
 
   async readNormalizer(): Promise<Uint8Array> {

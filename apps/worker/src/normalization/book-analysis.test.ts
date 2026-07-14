@@ -48,18 +48,16 @@ async function packageFixture() {
     }),
   );
   await writeFile(
-    join(directory, 'normalization_report.json'),
+    join(directory, 'metadata.json'),
     JSON.stringify({
-      metadata: {
-        title: '测试书',
-        authors: ['作者'],
-        language: 'zh-CN',
-        cover_path: null,
-        identifiers: {},
-        publisher: null,
-        published_date: null,
-        source_filename: 'test.epub',
-      },
+      title: '测试书',
+      authors: ['作者'],
+      language: 'zh-CN',
+      cover_path: null,
+      identifiers: {},
+      publisher: null,
+      published_date: null,
+      source_filename: 'test.epub',
     }),
   );
   return directory;

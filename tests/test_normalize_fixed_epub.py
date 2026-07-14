@@ -39,6 +39,10 @@ class NormalizeFixedEpubTests(unittest.TestCase):
                 (first / "normalization_report.json").read_bytes(),
                 (second / "normalization_report.json").read_bytes(),
             )
+            self.assertEqual(
+                (first / "metadata.json").read_bytes(),
+                (second / "metadata.json").read_bytes(),
+            )
             self.assertEqual(first_report, second_report)
             self.assertEqual(
                 (first / "assets" / "image00335.jpeg").read_bytes(),
@@ -56,6 +60,7 @@ class NormalizeFixedEpubTests(unittest.TestCase):
             html = (output / "book.normalized.html").read_text(encoding="utf-8")
             soup = BeautifulSoup(html, "html.parser")
             report = json.loads((output / "normalization_report.json").read_text(encoding="utf-8"))
+            metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
 
             self.assertEqual(len(soup.select('[data-role="noteref"]')), 1377)
             self.assertEqual(len(soup.select('[data-role="backref"]')), 1377)
@@ -70,10 +75,13 @@ class NormalizeFixedEpubTests(unittest.TestCase):
             self.assertEqual(report["output"]["backrefs"], 1377)
             self.assertEqual(report["output"]["broken_internal_links"], 0)
             self.assertEqual(report["output"]["notes"], 1377)
-            self.assertEqual(report["metadata"]["title"], "查拉图斯特拉如是说")
-            self.assertEqual(report["metadata"]["authors"], ["弗里德里希·尼采"])
-            self.assertEqual(report["metadata"]["cover_path"], "assets/cover00336.jpeg")
-            self.assertEqual(report["metadata"]["identifiers"]["isbn"], "9787553518329")
+            self.assertNotIn("metadata", report)
+            self.assertEqual(metadata["title"], "查拉图斯特拉如是说")
+            self.assertEqual(metadata["authors"], ["弗里德里希·尼采"])
+            self.assertEqual(metadata["language"], "zh")
+            self.assertEqual(metadata["cover_path"], "assets/cover00336.jpeg")
+            self.assertEqual(metadata["identifiers"]["isbn"], "9787553518329")
+            self.assertEqual(metadata["source_filename"], self.fixture.name)
 
             ids = [node["id"] for node in soup.find_all(id=True)]
             self.assertEqual(len(ids), len(set(ids)))

@@ -84,6 +84,7 @@ describe('immutable publisher', () => {
       ['reading_manifest.json', '{}'],
       ['book_profile.json', '{}'],
       ['normalization_report.json', '{}'],
+      ['metadata.json', '{}'],
       ['validation_report.txt', '0 errors'],
     ];
     for (const [path, content] of files) {

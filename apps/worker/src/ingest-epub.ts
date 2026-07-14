@@ -89,6 +89,7 @@ async function main(): Promise<void> {
         'reading_manifest.json',
         'book_profile.json',
         'normalization_report.json',
+        'metadata.json',
         'validation_report.txt',
         'validation_report.json',
         'package_manifest.json',

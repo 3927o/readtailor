@@ -9,6 +9,7 @@ import {
   type ArtifactInventory,
 } from './artifacts';
 import { runCommand } from './command';
+import { BOOK_METADATA_FILE, readBookMetadata } from './metadata';
 
 export type StructuredValidationReport = {
   version: string;
@@ -46,7 +47,12 @@ export async function validateNormalizedCandidate(options: {
   const outputDirectory = resolve(options.outputDirectory);
   const sourceEpub = await readFile(resolve(options.sourceEpubPath));
   const inventory = await buildArtifactInventory(outputDirectory);
-  assertRequiredArtifacts(inventory, ['book.normalized.html', 'normalization_report.json']);
+  assertRequiredArtifacts(inventory, [
+    'book.normalized.html',
+    'normalization_report.json',
+    BOOK_METADATA_FILE,
+  ]);
+  await readBookMetadata(outputDirectory);
   if (inventory.files.length > 20_000) {
     throw new Error('normalized output contains more than 20000 files');
   }
