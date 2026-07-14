@@ -2,6 +2,16 @@
   box-sizing: border-box;
 }
 
+/* Reading-body face override. The design system leads --rt-read with the local Songti SC
+   on Apple platforms; we re-point the in-app reading surfaces to the tailored-output look
+   (zara.html et al.), which leads with Noto Serif SC (思源宋体) — a fuller, more even Ming
+   that renders consistently across machines. This wins over the design-system token because
+   apps/web imports this stylesheet last (see main.tsx). Only the reading voice moves; the
+   display voice (--rt-serif, LanternMingA-first) already matches the tailored output. */
+:root {
+  --rt-read: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', Georgia, serif;
+}
+
 html {
   min-width: 320px;
   background: var(--rt-bg);
