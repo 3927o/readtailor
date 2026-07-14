@@ -608,6 +608,14 @@ export const ReaderBootstrapSchema = Type.Object({
 });
 export type ReaderBootstrap = Static<typeof ReaderBootstrapSchema>;
 
+// The reader reports its current (or jumped-to) node so the host can keep the
+// lazy-loading window (current node + next 3 tailoring-eligible nodes) generating
+// and raise priority on the target (§6.2 / PRD §11.3). `order` is a manifest node order.
+export const ReaderFocusRequestSchema = Type.Object({
+  order: Type.Integer({ minimum: 1 }),
+});
+export type ReaderFocusRequest = Static<typeof ReaderFocusRequestSchema>;
+
 export const ContentGenerationJobPayloadSchema = Type.Object({
   kind: Type.Literal('content.generate'),
   generationId: Type.String(),

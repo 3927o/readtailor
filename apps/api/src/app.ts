@@ -26,6 +26,7 @@ import {
   PasswordLoginRequestSchema,
   PasswordRegisterRequestSchema,
   ReaderBootstrapSchema,
+  ReaderFocusRequestSchema,
   ReaderProfileOnboardingRequestSchema,
   ReaderProfileResponseSchema,
   SharedBookSchema,
@@ -810,6 +811,28 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
         return await deps.userBooks.forUser(request.authUser!.id).reader(request.params.id);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  // §6.2 / PRD §11.3: the reader reports its current (or jumped-to) node so the host keeps the
+  // lazy-loading window generating and raises the target's priority. Returns the fresh bootstrap
+  // so the client picks up newly-queued enhancements immediately.
+  app.post(
+    '/v1/user-books/:id/reader/focus',
+    {
+      schema: {
+        params: userBookIdParams,
+        body: ReaderFocusRequestSchema,
+        response: { 200: ReaderBootstrapSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).reportReaderFocus(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }

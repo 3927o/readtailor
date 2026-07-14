@@ -58,6 +58,16 @@ function fakeService(overrides: Partial<UserBookUserService> = {}): UserBookServ
         enhancements: [],
       };
     },
+    async reportReaderFocus() {
+      return {
+        userBookId: USER_BOOK_ID,
+        sharedBookId: SHARED_BOOK_ID,
+        workflowStatus: 'active_reading',
+        briefing: 'Briefing',
+        strategySummary: 'Strategy',
+        enhancements: [],
+      };
+    },
     ...overrides,
   } as UserBookUserService;
   return { forUser: () => bound };
@@ -84,6 +94,53 @@ describe('user book workflow routes', () => {
     const reader = await app.inject({ method: 'GET', url: `/v1/user-books/${USER_BOOK_ID}/reader` });
     expect(reader.statusCode).toBe(200);
     expect(reader.json()).toMatchObject({ sharedBookId: SHARED_BOOK_ID, enhancements: [] });
+  });
+
+  it('reports reader focus and returns a fresh bootstrap', async () => {
+    let reportedOrder: number | undefined;
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async reportReaderFocus(_userBookId, input) {
+          reportedOrder = input.order;
+          return {
+            userBookId: USER_BOOK_ID,
+            sharedBookId: SHARED_BOOK_ID,
+            workflowStatus: 'active_reading',
+            briefing: 'Briefing',
+            strategySummary: 'Strategy',
+            enhancements: [
+              { generationId: 'g1', sectionId: 'chapter-3', segment: 1, status: 'queued', result: null },
+            ],
+          };
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/reader/focus`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { order: 12 },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(reportedOrder).toBe(12);
+    expect(response.json()).toMatchObject({
+      sharedBookId: SHARED_BOOK_ID,
+      enhancements: [{ sectionId: 'chapter-3', status: 'queued' }],
+    });
+  });
+
+  it('rejects a reader focus report with a non-positive order', async () => {
+    const app = await buildApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/reader/focus`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { order: 0 },
+    });
+    expect(response.statusCode).toBe(400);
   });
 
   it('returns a conflict response for stale workflow commands', async () => {

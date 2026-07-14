@@ -121,6 +121,19 @@ const userBooks =
         setupEngine: readingSetupEngine,
         generations: {
           async enqueue(input) {
+            // Job id === generationId, so a repeat add for an already-known job is a no-op
+            // in BullMQ. To honor §6.2 jump提权 we bump the priority of a still-waiting job
+            // instead; a fresh job is added with the requested priority.
+            const existing = await contentGenerationQueue.getJob(input.generationId);
+            if (existing) {
+              if (typeof input.priority === 'number') {
+                const state = await existing.getState().catch(() => 'unknown');
+                if (state === 'waiting' || state === 'prioritized' || state === 'delayed') {
+                  await existing.changePriority({ priority: input.priority }).catch(() => {});
+                }
+              }
+              return;
+            }
             await contentGenerationQueue.add(
               'content.generate',
               {
@@ -130,7 +143,10 @@ const userBooks =
                 scope: input.scope,
                 requestedAt: new Date().toISOString(),
               },
-              { jobId: input.generationId },
+              {
+                jobId: input.generationId,
+                ...(typeof input.priority === 'number' ? { priority: input.priority } : {}),
+              },
             );
           },
         },

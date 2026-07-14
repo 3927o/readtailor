@@ -11,6 +11,7 @@ import type {
   InterviewStreamEvent,
   MarkTrialSegmentViewedRequest,
   ReaderBootstrap,
+  ReaderFocusRequest,
   ReaderProfile,
   Strategy,
   StrategyReviewResponse,
@@ -50,6 +51,13 @@ import type { ReadingSetupEngine } from './reading-setup-engine';
 // client so the frontend can show "还可以调整 N 次" without hardcoding it (§5).
 const ADJUSTMENT_LIMIT = 5;
 
+// §6.2 / PRD §11.3 reading window: the current tailoring-eligible node plus the next 3.
+const FORMAL_WINDOW_SIZE = 4;
+// Background BullMQ priority for formal generations without a reading focus. Well above the
+// window band (1..FORMAL_WINDOW_SIZE) so the reader's lookahead is always processed first.
+// (BullMQ: lower number = more urgent; 0 would jump ahead of everything, so we never use it.)
+const FORMAL_BACKGROUND_PRIORITY = 1000;
+
 type ManifestBlock = {
   block_index: number;
   block_utf16_length: number;
@@ -77,7 +85,9 @@ type ReadingManifest = {
 };
 
 export interface ContentGenerationEnqueuer {
-  enqueue(input: { generationId: string; userBookId: string; scope: 'trial' | 'formal' }): Promise<void>;
+  // `priority` maps to BullMQ job priority (lower = more urgent; omitted → background).
+  // Re-enqueuing an id that is still waiting bumps its priority (§6.2 jump提权).
+  enqueue(input: { generationId: string; userBookId: string; scope: 'trial' | 'formal'; priority?: number }): Promise<void>;
 }
 
 // ReaderBootstrap is now a formal contract (ReaderBootstrapSchema); re-exported so existing
@@ -931,7 +941,9 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       adjustmentCount: owned.userBook.adjustmentCount,
       adjustmentLimit: ADJUSTMENT_LIMIT,
       canAdjust: owned.userBook.adjustmentCount < ADJUSTMENT_LIMIT,
-      canAdopt: revision.status === 'published' && segments.length === 3 && segments.every((segment) => segment.status === 'ready' && segment.viewedAt),
+      // Adoption only requires the three fragments to be generated and published — the reader
+      // is not forced to open all three first (the prototype has no such gate).
+      canAdopt: revision.status === 'published' && segments.length === 3 && segments.every((segment) => segment.status === 'ready'),
     };
   };
 
@@ -949,6 +961,9 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
         generationId: generation.id,
         userBookId,
         scope: 'formal',
+        // Recovery re-enqueue has no reading focus: keep it in the background band so the
+        // position-driven window (priority 1..N) always wins.
+        priority: FORMAL_BACKGROUND_PRIORITY,
       })));
     } catch (error) {
       throw new UserBookError(
@@ -956,6 +971,105 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
         503,
       );
     }
+  };
+
+  // §6.2 / PRD §11.3 lazy-loading window: keep the reader's current node plus the next
+  // FORMAL_WINDOW_SIZE-1 tailoring-eligible nodes queued/generating/ready, and give them the
+  // most urgent BullMQ priorities (1..N) so a jump 提权s the target and its lookahead. Missing
+  // formal node_generations are created on demand; the partial unique index makes the insert
+  // idempotent under concurrent focus reports.
+  const ensureFormalWindow = async (
+    userBookId: string,
+    strategyVersionId: string,
+    sharedBookId: string,
+    focusOrder: number,
+  ) => {
+    const { manifest } = await getManifestAndHtml(sharedBookId);
+    const eligible = manifest.nodes
+      .filter((node) => node.tailoring_eligible)
+      .sort((left, right) => left.order - right.order);
+    if (eligible.length === 0) return;
+    const anchor = Number.isFinite(focusOrder) ? focusOrder : eligible[0]!.order;
+    const ahead = eligible.filter((node) => node.order >= anchor).slice(0, FORMAL_WINDOW_SIZE);
+    // Focus past the last eligible node → keep the tail warm rather than generate nothing.
+    const window = ahead.length > 0 ? ahead : eligible.slice(-FORMAL_WINDOW_SIZE);
+    await db
+      .insert(nodeGenerations)
+      .values(window.map((node) => ({
+        id: randomUUID(),
+        userBookId,
+        generationScope: 'formal' as const,
+        strategyVersionId,
+        sectionId: node.section_id,
+        segment: node.segment,
+        status: 'queued' as const,
+        modelConfigId: options.modelConfigId,
+        promptVersion: 'tailoring-content-1.0',
+        cacheKey: `pending:${randomUUID()}`,
+      })))
+      .onConflictDoNothing();
+    const rows = await db
+      .select({
+        id: nodeGenerations.id,
+        sectionId: nodeGenerations.sectionId,
+        segment: nodeGenerations.segment,
+        status: nodeGenerations.status,
+      })
+      .from(nodeGenerations)
+      .where(and(
+        eq(nodeGenerations.userBookId, userBookId),
+        eq(nodeGenerations.generationScope, 'formal'),
+        eq(nodeGenerations.strategyVersionId, strategyVersionId),
+        inArray(nodeGenerations.sectionId, [...new Set(window.map((node) => node.section_id))]),
+      ));
+    const byKey = new Map(rows.map((row) => [`${row.sectionId}:${row.segment}`, row]));
+    const enqueues: Array<Promise<void>> = [];
+    window.forEach((node, index) => {
+      const row = byKey.get(`${node.section_id}:${node.segment}`);
+      if (!row || (row.status !== 'queued' && row.status !== 'retrying')) return;
+      enqueues.push(options.generations.enqueue({
+        generationId: row.id,
+        userBookId,
+        scope: 'formal',
+        priority: index + 1,
+      }));
+    });
+    try {
+      await Promise.all(enqueues);
+    } catch (error) {
+      throw new UserBookError(
+        error instanceof Error ? `正式内容任务入队失败：${error.message}` : '正式内容任务入队失败',
+        503,
+      );
+    }
+  };
+
+  const buildReaderBootstrap = async (
+    userBookId: string,
+    sharedBookId: string,
+    strategyVersionId: string,
+    strategyDraftVersionId: string,
+  ): Promise<ReaderBootstrap> => {
+    const [strategy, draft, generations] = await Promise.all([
+      db.select().from(strategyVersions).where(eq(strategyVersions.id, strategyVersionId)).limit(1).then((rows) => rows[0]),
+      db.select().from(strategyDraftVersions).where(eq(strategyDraftVersions.id, strategyDraftVersionId)).limit(1).then((rows) => rows[0]),
+      db.select().from(nodeGenerations).where(and(eq(nodeGenerations.userBookId, userBookId), eq(nodeGenerations.generationScope, 'formal'))).orderBy(asc(nodeGenerations.createdAt)),
+    ]);
+    if (!strategy || !draft) throw new UserBookError('正式处理方式不存在', 409);
+    return {
+      userBookId,
+      sharedBookId,
+      workflowStatus: 'active_reading',
+      briefing: draft.readingBriefing,
+      strategySummary: strategy.userFacingSummary,
+      enhancements: generations.map((generation) => ({
+        generationId: generation.id,
+        sectionId: generation.sectionId,
+        segment: generation.segment,
+        status: generation.status,
+        result: generation.result,
+      })),
+    };
   };
 
   return {
@@ -1263,10 +1377,10 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       }
       const current = await trialState(userBookId);
       if (!current.canAdopt || current.trialRevisionId !== input.trialRevisionId || current.strategyDraftVersionId !== input.strategyDraftVersionId) {
-        throw new UserBookError('三个试读片段尚未全部查看，或试读版本已经更新', 409);
+        throw new UserBookError('三个试读片段尚未全部生成，或试读版本已经更新', 409);
       }
       const { manifest } = await getManifestAndHtml(owned.sharedBook.id);
-      const formalNodes = manifest.nodes.filter((item) => item.tailoring_eligible).slice(0, 4);
+      const formalNodes = manifest.nodes.filter((item) => item.tailoring_eligible).slice(0, FORMAL_WINDOW_SIZE);
       if (formalNodes.length === 0) throw new UserBookError('书籍没有可生成的正式阅读节点', 409);
       const result = await db.transaction(async (tx) => {
         const [bookGate] = await tx
@@ -1309,8 +1423,8 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
           .select()
           .from(trialSegments)
           .where(eq(trialSegments.trialRevisionId, revision.id));
-        if (segments.length !== 3 || segments.some((segment) => segment.status !== 'ready' || !segment.viewedAt)) {
-          throw new UserBookError('三个试读片段尚未全部查看', 409);
+        if (segments.length !== 3 || segments.some((segment) => segment.status !== 'ready')) {
+          throw new UserBookError('三个试读片段尚未全部生成', 409);
         }
         const [draft] = await tx
           .update(strategyDraftVersions)
@@ -1381,13 +1495,21 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
         await enqueuePendingFormalGenerations(userBookId);
         return { userBookId, workflowStatus: 'active_reading', strategyVersionId: result.strategy.id };
       }
-      await enqueuePendingFormalGenerations(userBookId);
+      // Seed the initial window (first eligible node + lookahead) at the priority band so the
+      // reader's opening nodes generate first; later scroll/jump 提权 flows through the same helper.
+      // The rows are already committed, so a window failure falls back to the plain background
+      // enqueue rather than introducing a new post-commit failure mode.
+      try {
+        await ensureFormalWindow(userBookId, result.strategy.id, owned.sharedBook.id, formalNodes[0]?.order ?? 1);
+      } catch {
+        await enqueuePendingFormalGenerations(userBookId);
+      }
       return { userBookId, workflowStatus: 'active_reading', strategyVersionId: result.strategy.id };
     },
 
     async reader(userBookId: string): Promise<ReaderBootstrap> {
       const owned = await getOwnedBook(userBookId);
-      if (owned.userBook.workflowStatus !== 'active_reading' || !owned.userBook.currentStrategyVersionId) {
+      if (owned.userBook.workflowStatus !== 'active_reading' || !owned.userBook.currentStrategyVersionId || !owned.userBook.currentStrategyDraftVersionId) {
         throw new UserBookError('尚未完成试读确认', 409);
       }
       try {
@@ -1395,26 +1517,37 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       } catch {
         // Enhancement recovery must not block access to the original book.
       }
-      const [strategy, draft, generations] = await Promise.all([
-        db.select().from(strategyVersions).where(eq(strategyVersions.id, owned.userBook.currentStrategyVersionId)).limit(1).then((rows) => rows[0]),
-        db.select().from(strategyDraftVersions).where(eq(strategyDraftVersions.id, owned.userBook.currentStrategyDraftVersionId!)).limit(1).then((rows) => rows[0]),
-        db.select().from(nodeGenerations).where(and(eq(nodeGenerations.userBookId, userBookId), eq(nodeGenerations.generationScope, 'formal'))).orderBy(asc(nodeGenerations.createdAt)),
-      ]);
-      if (!strategy || !draft) throw new UserBookError('正式处理方式不存在', 409);
-      return {
+      return buildReaderBootstrap(
         userBookId,
-        sharedBookId: owned.sharedBook.id,
-        workflowStatus: 'active_reading',
-        briefing: draft.readingBriefing,
-        strategySummary: strategy.userFacingSummary,
-        enhancements: generations.map((generation) => ({
-          generationId: generation.id,
-          sectionId: generation.sectionId,
-          segment: generation.segment,
-          status: generation.status,
-          result: generation.result,
-        })),
-      };
+        owned.sharedBook.id,
+        owned.userBook.currentStrategyVersionId,
+        owned.userBook.currentStrategyDraftVersionId,
+      );
+    },
+
+    async reportReaderFocus(userBookId: string, input: ReaderFocusRequest): Promise<ReaderBootstrap> {
+      const owned = await getOwnedBook(userBookId);
+      if (owned.userBook.workflowStatus !== 'active_reading' || !owned.userBook.currentStrategyVersionId || !owned.userBook.currentStrategyDraftVersionId) {
+        throw new UserBookError('尚未完成试读确认', 409);
+      }
+      try {
+        // Grow/prioritize the lazy-loading window around the reader's position. Never let this
+        // block the reader — the original text is always available regardless (§14.3).
+        await ensureFormalWindow(
+          userBookId,
+          owned.userBook.currentStrategyVersionId,
+          owned.sharedBook.id,
+          input.order,
+        );
+      } catch {
+        // Window maintenance is best-effort; a failed enqueue must not fail the read.
+      }
+      return buildReaderBootstrap(
+        userBookId,
+        owned.sharedBook.id,
+        owned.userBook.currentStrategyVersionId,
+        owned.userBook.currentStrategyDraftVersionId,
+      );
     },
   };
 }

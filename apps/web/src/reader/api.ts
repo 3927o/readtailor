@@ -141,23 +141,21 @@ export async function getReaderDocument(userBookId: string): Promise<ReaderDocum
   };
 }
 
-export async function getReaderBootstrap(userBookId: string): Promise<ReaderBootstrap> {
-  const raw = await readJson<{
-    userBookId: string;
-    sharedBookId: string;
-    workflowStatus: 'active_reading';
-    briefing: string;
-    strategySummary: string;
-    enhancements: Array<{
-      sectionId: string;
-      segment: number;
-      status: 'queued' | 'generating' | 'ready' | 'failed' | 'retrying' | 'superseded';
-      result: TailoredContent | null;
-    }>;
-  }>(await fetch(
-    `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reader`,
-    { credentials: 'include' },
-  ));
+interface RawReaderBootstrap {
+  userBookId: string;
+  sharedBookId: string;
+  workflowStatus: 'active_reading';
+  briefing: string;
+  strategySummary: string;
+  enhancements: Array<{
+    sectionId: string;
+    segment: number;
+    status: 'queued' | 'generating' | 'ready' | 'failed' | 'retrying' | 'superseded';
+    result: TailoredContent | null;
+  }>;
+}
+
+function mapReaderBootstrap(raw: RawReaderBootstrap): ReaderBootstrap {
   return {
     userBookId: raw.userBookId,
     sharedBookId: raw.sharedBookId,
@@ -176,4 +174,26 @@ export async function getReaderBootstrap(userBookId: string): Promise<ReaderBoot
       errorSummary: enhancement.status === 'failed' ? '裁读内容生成失败' : null,
     })),
   };
+}
+
+export async function getReaderBootstrap(userBookId: string): Promise<ReaderBootstrap> {
+  return mapReaderBootstrap(await readJson<RawReaderBootstrap>(await fetch(
+    `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reader`,
+    { credentials: 'include' },
+  )));
+}
+
+// Reports the reader's current (or jumped-to) node so the host grows the lazy-loading window
+// and raises the target's generation priority (§6.2 / PRD §11.3). Returns the fresh bootstrap
+// so newly-queued enhancements surface immediately.
+export async function reportReaderFocus(userBookId: string, order: number): Promise<ReaderBootstrap> {
+  return mapReaderBootstrap(await readJson<RawReaderBootstrap>(await fetch(
+    `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reader/focus`,
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ order }),
+    },
+  )));
 }

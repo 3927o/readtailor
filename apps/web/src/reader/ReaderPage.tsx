@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
 import { ProgressBar } from '../components/chrome/ProgressBar';
 import { Segmented } from '../components/core/Segmented';
 import { Slider } from '../components/core/Slider';
 import { AnnotationList, AssistanceContent, BriefCard } from '../user-books/components';
-import { getReaderBootstrap, getReaderDocument } from './api';
+import { getReaderBootstrap, getReaderDocument, reportReaderFocus } from './api';
 import type { ReaderNodeEnhancement, ReaderOutlineItem } from './api';
 import { getFragmentTargetId, getOutlineDepth, prepareBookContent } from './content';
 import type { OriginalNote, RenderedHeading, RenderedNode } from './content';
@@ -112,6 +112,21 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const enhancementAnchor = useRef<{ order: number; top: number } | undefined>(undefined);
   const prefersDark = usePrefersDark();
   const theme = resolvedTheme(settings.theme, prefersDark);
+  const queryClient = useQueryClient();
+  // Report the reading position so the host keeps the lazy-loading window generating and raises
+  // the target's priority on a jump (§6.2 / PRD §11.3). The returned bootstrap surfaces newly
+  // queued enhancements; the layout-anchor effect below keeps the scroll position stable.
+  const focus = useMutation({
+    mutationFn: (order: number) => reportReaderFocus(document.userBookId, order),
+    onSuccess: (bootstrap) => queryClient.setQueryData(['reader-bootstrap', document.userBookId], bootstrap),
+  });
+  const reportedOrder = useRef<number | null>(null);
+  const reportFocus = useRef<(order: number) => void>(() => {});
+  reportFocus.current = (order: number) => {
+    if (!Number.isFinite(order) || reportedOrder.current === order) return;
+    reportedOrder.current = order;
+    focus.mutate(order);
+  };
   const enhancements = useMemo(() => new Map(
     document.bootstrap.enhancements.map((item) => [`${item.sectionId}:${item.segment}`, item]),
   ), [document.bootstrap.enhancements]);
@@ -160,6 +175,13 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     return () => observer.disconnect();
   }, [prepared]);
 
+  // Debounce scroll-driven position reports so the window follows the reader without spamming
+  // the host; jumps report immediately (below) for an instant 提权.
+  useEffect(() => {
+    const handle = window.setTimeout(() => reportFocus.current(currentOrder), 700);
+    return () => window.clearTimeout(handle);
+  }, [currentOrder]);
+
   useEffect(() => {
     const closeOverlays = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
@@ -197,6 +219,8 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     scrollRoot.current?.querySelector<HTMLElement>(`[data-node-order="${order}"]`)
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     setTocOpen(false);
+    // Explicit jump: report the target now so its window is prioritized before the scroll settles.
+    reportFocus.current(order);
   };
 
   const handleContentClick = (event: React.MouseEvent<HTMLElement>) => {
