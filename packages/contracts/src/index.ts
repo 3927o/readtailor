@@ -616,13 +616,32 @@ export type ReadingSettingsResponse = Static<typeof ReadingSettingsResponseSchem
 
 // §11.5 / §2.5 — a saved reading anchor: block + UTF-16 offset within one reading node. `offset`
 // is a single point (the range [start]); highlights carry a full [start,end) range instead.
+// `clientObservedAt` is the ISO time the client read this anchor from the DOM (or clicked a TOC
+// jump); the server merges position events last-observed-wins by this field, so a stale event that
+// arrives late can never overwrite a newer position (reader_position_restore_fix §2.3). The client
+// stamps it once at observation time and preserves it across request retries.
 export const ReaderPositionSchema = Type.Object({
   sectionId: Type.String({ minLength: 1 }),
   segment: Type.Integer({ minimum: 1 }),
   blockIndex: Type.Integer({ minimum: 1 }),
   offset: Type.Integer({ minimum: 0 }),
+  clientObservedAt: Type.String({ format: 'date-time' }),
 });
 export type ReaderPosition = Static<typeof ReaderPositionSchema>;
+
+// The resume anchor bootstrap delivers carries server-side metadata the restore fallback chain
+// needs (§3.3): `nodeOrder` locates the nearest still-valid manifest node when the exact
+// section/segment is gone, and `manifestVersion` (null on legacy rows) guards against reinterpreting
+// a stale block/offset against a changed block algorithm. Kept separate from the request
+// ReaderPosition so DB metadata never leaks into the anchor the client sends back.
+export const ReaderResumePositionSchema = Type.Intersect([
+  ReaderPositionSchema,
+  Type.Object({
+    nodeOrder: Type.Integer({ minimum: 1 }),
+    manifestVersion: Type.Union([Type.String(), Type.Null()]),
+  }),
+]);
+export type ReaderResumePosition = Static<typeof ReaderResumePositionSchema>;
 
 // §11.4 — a node the reader has marked read (monotonic set; once read never回退).
 export const ReadNodeSchema = Type.Object({
@@ -650,8 +669,9 @@ export const ReaderBootstrapSchema = Type.Object({
   briefing: Type.String(),
   strategySummary: Type.String(),
   enhancements: Type.Array(ReaderBootstrapEnhancementSchema),
-  // §11.5 last reading position to resume to (null → start from the first node).
-  resumePosition: Type.Union([ReaderPositionSchema, Type.Null()]),
+  // §11.5 last reading position to resume to (null → start from the first node), with the restore
+  // metadata (nodeOrder / manifestVersion) the fallback chain needs (§3.3).
+  resumePosition: Type.Union([ReaderResumePositionSchema, Type.Null()]),
   // §11.6 the user's global reader settings, delivered with bootstrap to avoid a first-paint round trip.
   settings: ReadingSettingsSchema,
   // §11.4 nodes already marked read (monotonic set).

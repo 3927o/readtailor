@@ -136,22 +136,51 @@ function asManifest(value: unknown): ReadingManifest {
   return manifest as ReadingManifest;
 }
 
-// The manifest algorithm version is immutable per (immutable) book package, so memoize it per
-// process. The position-save path (§11.5) stamps it onto every reader_states row for future
-// migration识别 but runs on each scroll settle — it must not re-read the manifest artifact each time.
-const manifestVersionCache = new Map<string, string | null>();
-async function getManifestVersion(books: BookService, sharedBookId: string): Promise<string | null> {
-  const cached = manifestVersionCache.get(sharedBookId);
-  if (cached !== undefined) return cached;
-  let version: string | null = null;
+// The manifest is immutable per (immutable) book package, so memoize its position-relevant metadata
+// per process. The position-save path (§11.5) stamps `version` onto every reader_states row for
+// future migration识别 and validates the reported `order` against `nodesByOrder` (§4.3) — but it runs
+// on each scroll settle, so it must not re-read the manifest artifact each time.
+export interface ManifestMeta {
+  version: string | null;
+  nodesByOrder: Map<number, { sectionId: string; segment: number }>;
+}
+
+// §2.2/§4.3: an anchor is self-consistent only when the manifest node it names by `order` really
+// carries that section/segment. When the manifest is unreadable (empty map) we can't validate, so we
+// allow the write best-effort rather than block the read. Exported so the guard is unit-testable
+// without a database.
+export function positionMatchesManifest(
+  meta: ManifestMeta,
+  order: number,
+  sectionId: string,
+  segment: number,
+): boolean {
+  if (meta.nodesByOrder.size === 0) return true;
+  const node = meta.nodesByOrder.get(order);
+  return Boolean(node) && node!.sectionId === sectionId && node!.segment === segment;
+}
+
+const manifestMetaCache = new Map<string, ManifestMeta>();
+async function getManifestMeta(books: BookService, sharedBookId: string): Promise<ManifestMeta> {
+  const cached = manifestMetaCache.get(sharedBookId);
+  if (cached) return cached;
+  let meta: ManifestMeta = { version: null, nodesByOrder: new Map() };
   try {
-    const raw = (await books.getManifest(sharedBookId)) as { version?: unknown } | null;
-    version = typeof raw?.version === 'string' ? raw.version : null;
+    const raw = (await books.getManifest(sharedBookId)) as { version?: unknown; nodes?: unknown } | null;
+    const nodesByOrder = new Map<number, { sectionId: string; segment: number }>();
+    if (Array.isArray(raw?.nodes)) {
+      for (const node of raw.nodes as ManifestNode[]) {
+        if (typeof node?.order === 'number' && typeof node?.section_id === 'string' && typeof node?.segment === 'number') {
+          nodesByOrder.set(node.order, { sectionId: node.section_id, segment: node.segment });
+        }
+      }
+    }
+    meta = { version: typeof raw?.version === 'string' ? raw.version : null, nodesByOrder };
   } catch {
-    version = null;
+    meta = { version: null, nodesByOrder: new Map() };
   }
-  manifestVersionCache.set(sharedBookId, version);
-  return version;
+  manifestMetaCache.set(sharedBookId, meta);
+  return meta;
 }
 
 function mapQuestion(value: {
@@ -1239,30 +1268,39 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
     }
   };
 
-  // §11.5 — persist the reader's anchor. The anchor's node is the focus node (`order`), and the
-  // client computes { blockIndex, offset } from the same immutable manifest it rendered, so the
-  // schema's own bounds (blockIndex ≥ 1, offset ≥ 0) are the validation; nodeOrder is redundant
-  // metadata taken straight from `order`. The caller wraps this best-effort: a failed save must
-  // never block the read (§14.3).
+  // §11.5 — persist the reader's anchor. The anchor's node is the focus node (`order`). Two guards
+  // make a bad or stale event a no-op instead of a corruption (fix §2.2/§2.3/§4.3):
+  //   1. Validate `order` against the manifest: its section_id/segment must match the position, else
+  //      the anchor was spliced from two nodes — skip the write (but never block the read).
+  //   2. Conditional upsert on client_observed_at: only overwrite when the incoming event is at
+  //      least as new as the stored one, so an earlier observation that arrives late cannot clobber
+  //      a newer position. `updated_at` still records the write time but is no longer the authority.
   const persistReaderPosition = async (
     userBookId: string,
     sharedBookId: string,
     order: number,
     position: ReaderPosition,
   ): Promise<void> => {
+    const meta = await getManifestMeta(options.books, sharedBookId);
+    if (!positionMatchesManifest(meta, order, position.sectionId, position.segment)) return;
     const values = {
       sectionId: position.sectionId,
       segment: position.segment,
       blockIndex: position.blockIndex,
       offset: position.offset,
       nodeOrder: order,
-      manifestVersion: await getManifestVersion(options.books, sharedBookId),
+      manifestVersion: meta.version,
+      clientObservedAt: new Date(position.clientObservedAt),
       updatedAt: new Date(),
     };
     await db
       .insert(readerStates)
       .values({ userBookId, ...values })
-      .onConflictDoUpdate({ target: readerStates.userBookId, set: values });
+      .onConflictDoUpdate({
+        target: readerStates.userBookId,
+        set: values,
+        setWhere: sql`excluded.client_observed_at >= ${readerStates.clientObservedAt}`,
+      });
   };
 
   // §11.6 — the user's global reader settings, falling back to the shared default when no row
@@ -1307,7 +1345,15 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
         result: generation.result,
       })),
       resumePosition: resume
-        ? { sectionId: resume.sectionId, segment: resume.segment, blockIndex: resume.blockIndex, offset: resume.offset }
+        ? {
+          sectionId: resume.sectionId,
+          segment: resume.segment,
+          blockIndex: resume.blockIndex,
+          offset: resume.offset,
+          clientObservedAt: resume.clientObservedAt.toISOString(),
+          nodeOrder: resume.nodeOrder,
+          manifestVersion: resume.manifestVersion,
+        }
         : null,
       settings,
       readNodes: readRows.map((row) => ({ sectionId: row.sectionId, segment: row.segment })),

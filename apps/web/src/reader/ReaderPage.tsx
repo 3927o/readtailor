@@ -16,6 +16,9 @@ import {
 } from './api';
 import type {
   ContentWidthSetting,
+  ObservedReaderAnchor,
+  ReaderBootstrap,
+  ReaderNode,
   ReaderNodeEnhancement,
   ReaderOutlineItem,
   ReaderPosition,
@@ -26,11 +29,13 @@ import {
   domBoundaryForOffset,
   getFragmentTargetId,
   getOutlineDepth,
-  offsetWithinBlock,
+  nearestReaderAnchor,
   prepareBookContent,
   readingBlocks,
 } from './content';
+import type { AnchorProbe } from './content';
 import type { RenderedHeading, RenderedNode } from './content';
+import { createRestoreCoordinator } from './restoreCoordinator';
 import { NotePopover, popoverPlacement } from './NotePopover';
 import type { ActivePopover } from './NotePopover';
 
@@ -73,6 +78,32 @@ function caretAtPoint(x: number, y: number): { node: Node; offset: number } | nu
   return null;
 }
 
+// Live-DOM implementation of the anchor probe nearestReaderAnchor resolves against. Kept out of the
+// resolver so the geometry is injectable in tests. A boundary/block with no measurable rect reports
+// null so the resolver declines rather than fabricate a position (§3.1).
+function domAnchorProbe(): AnchorProbe {
+  return {
+    caretAtPoint,
+    boundaryTop(boundary) {
+      try {
+        const range = window.document.createRange();
+        range.setStart(boundary.container, boundary.offset);
+        range.collapse(true);
+        const rect = range.getBoundingClientRect();
+        if (rect.top === 0 && rect.bottom === 0 && rect.height === 0 && rect.width === 0) return null;
+        return rect.top || rect.bottom;
+      } catch {
+        return null;
+      }
+    },
+    blockBox(block) {
+      const rect = block.getBoundingClientRect();
+      if (rect.height === 0 && rect.top === 0 && rect.bottom === 0) return null;
+      return { top: rect.top, bottom: rect.bottom };
+    },
+  };
+}
+
 const themeOptions: ReadonlyArray<{ value: ThemeSetting; label: string }> = [
   { value: 'system', label: '跟随系统' },
   { value: 'paper', label: '浅色' },
@@ -81,6 +112,21 @@ const themeOptions: ReadonlyArray<{ value: ThemeSetting; label: string }> = [
 
 function resolvedTheme(theme: ThemeSetting, prefersDark: boolean): 'paper' | 'night' {
   return theme === 'system' ? (prefersDark ? 'night' : 'paper') : theme;
+}
+
+// §3.3 fallback step 3: when the saved section/segment no longer resolves to a node, pick the
+// manifest node whose order is closest to the saved nodeOrder (ties → the earlier node).
+function nearestNodeByOrder(nodes: ReaderNode[], targetOrder: number): ReaderNode | undefined {
+  let best: ReaderNode | undefined;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const node of nodes) {
+    const distance = Math.abs(node.order - targetOrder);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = node;
+    }
+  }
+  return best;
 }
 
 function usePrefersDark() {
@@ -167,59 +213,82 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const focus = useMutation({
     mutationFn: (payload: { order: number; position?: ReaderPosition }) =>
       reportReaderFocus(document.userBookId, payload.order, payload.position),
-    onSuccess: (bootstrap) => queryClient.setQueryData(['reader-bootstrap', document.userBookId], bootstrap),
+    // §4.3 anti-regression: two focus responses can resolve out of order. Take the fresh bootstrap
+    // (for newly-queued enhancements) but never let an older `resumePosition` overwrite a newer one
+    // already in cache — compare by clientObservedAt (ISO order == chronological).
+    onSuccess: (bootstrap) => queryClient.setQueryData<ReaderBootstrap>(
+      ['reader-bootstrap', document.userBookId],
+      (previous) => {
+        const previousResume = previous?.resumePosition;
+        if (previousResume && (!bootstrap.resumePosition
+          || previousResume.clientObservedAt > bootstrap.resumePosition.clientObservedAt)) {
+          return { ...bootstrap, resumePosition: previousResume };
+        }
+        return bootstrap;
+      },
+    ),
   });
   const currentOrderRef = useRef(currentOrder);
   currentOrderRef.current = currentOrder;
+  // Scroll-ownership phase (§2.4). While `restoring`, the restore coordinator is the ONLY writer of
+  // scrollTop and warm/scroll position saves are suppressed; on `settled`/`cancelled`/`normal` the
+  // layout-anchor and the save链路 resume. Fresh opens (no resume anchor) stay `normal` throughout.
+  const restorePhaseRef = useRef<'restoring' | 'settled' | 'cancelled' | 'normal'>('normal');
   const reportFocus = useRef<(order: number, position?: ReaderPosition) => void>(() => {});
   reportFocus.current = (order, position) => {
     if (!Number.isFinite(order)) return;
     focus.mutate(position ? { order, position } : { order });
   };
-  // Fold the reading-anchor line (READING_ANCHOR_TOP below the scroll top) into a
-  // { blockIndex, offset } anchor (§11.5). Locate the node/block/offset DIRECTLY from the character
-  // under the probe point — not from `currentOrder`, whose IntersectionObserver threshold is a
-  // different reference line and drifts against a fixed pixel offset as the viewport height changes.
-  // This makes save self-consistent with restore, which scrolls the same character back to the same
-  // line. Falls back to the current node's top when the probe misses the text column (heading/gap).
-  // Held in a ref so scroll/unload handlers always see live DOM, never a stale closure.
-  const computeAnchorRef = useRef<() => ReaderPosition | null>(() => null);
+  // Fold the reading-anchor line (READING_ANCHOR_TOP below the scroll top) into an
+  // { order, position } observation (§11.5, fix §2.1/§2.2). The node/block/offset are located
+  // DIRECTLY from the character under the probe point via nearestReaderAnchor, and `order`,
+  // `sectionId`, `segment` all come from that SAME [data-node-order] element — never spliced with
+  // `currentOrder`, whose IntersectionObserver threshold is a different reference line. On a probe
+  // miss the resolver falls to the nearest original-text character; if nothing reliable is under the
+  // anchor line it returns null and we save NO precise position (the old "current node block 1"
+  // fallback is gone — it destroyed a good saved position on headings/gaps/media). Held in a ref so
+  // scroll/unload handlers always see live DOM, never a stale closure.
+  const computeAnchorRef = useRef<() => ObservedReaderAnchor | null>(() => null);
   computeAnchorRef.current = () => {
     const root = scrollRoot.current;
     if (!root) return null;
     const rootRect = root.getBoundingClientRect();
     const probeY = rootRect.top + READING_ANCHOR_TOP;
     const probeX = rootRect.left + rootRect.width / 2;
-    const currentNode = document.manifest.nodes.find((item) => item.order === currentOrderRef.current);
-    const fallback = currentNode
-      ? { sectionId: currentNode.section_id, segment: currentNode.segment, blockIndex: 1, offset: 0 }
-      : null;
-    const caret = caretAtPoint(probeX, probeY);
-    if (!caret) return fallback;
-    const anchorElement = caret.node instanceof Element ? caret.node : caret.node.parentElement;
-    const nodeEl = anchorElement?.closest<HTMLElement>('[data-node-order]');
-    const contentRoot = nodeEl?.querySelector<HTMLElement>('.reader-original');
+    const roots = [...root.querySelectorAll<HTMLElement>('.reader-original')];
+    const anchor = nearestReaderAnchor(roots, probeX, probeY, domAnchorProbe());
+    if (!anchor) return null;
+    const nodeEl = anchor.root.closest<HTMLElement>('[data-node-order]');
+    const order = Number(nodeEl?.dataset.nodeOrder ?? Number.NaN);
     const sectionId = nodeEl?.dataset.sectionId;
     const segment = Number(nodeEl?.dataset.segment ?? Number.NaN);
-    if (!nodeEl || !contentRoot || !sectionId || !Number.isFinite(segment) || !contentRoot.contains(caret.node)) {
-      return fallback;
-    }
-    const blocks = readingBlocks(contentRoot);
-    const block = blocks.find((candidate) => candidate.contains(caret.node));
-    if (!block) return { sectionId, segment, blockIndex: 1, offset: 0 };
+    if (!nodeEl || !sectionId || !Number.isFinite(order) || !Number.isFinite(segment)) return null;
     return {
-      sectionId,
-      segment,
-      blockIndex: blocks.indexOf(block) + 1,
-      offset: offsetWithinBlock(block, caret.node, caret.offset),
+      order,
+      position: {
+        sectionId,
+        segment,
+        blockIndex: anchor.blockIndex,
+        offset: anchor.offset,
+        clientObservedAt: new Date().toISOString(),
+      },
     };
+  };
+  // Send the current observation: with a precise anchor, persist { order, position }; without one,
+  // report the settled order alone so the generation window stays warm but no coarse position is
+  // written (§3.2). Suppressed while the restore coordinator owns the scroll (§2.4) — see restorePhaseRef.
+  const reportObservation = useRef<() => void>(() => {});
+  reportObservation.current = () => {
+    if (restorePhaseRef.current === 'restoring') return;
+    const observed = computeAnchorRef.current();
+    reportFocus.current(observed?.order ?? currentOrderRef.current, observed?.position);
   };
   const positionTimer = useRef<number | null>(null);
   const schedulePositionReport = () => {
     if (positionTimer.current !== null) window.clearTimeout(positionTimer.current);
     positionTimer.current = window.setTimeout(() => {
       positionTimer.current = null;
-      reportFocus.current(currentOrderRef.current, computeAnchorRef.current() ?? undefined);
+      reportObservation.current();
     }, 800);
   };
   const enhancements = useMemo(() => new Map(
@@ -271,6 +340,10 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     committedEnhancementVersion.current = enhancementVersion;
     const snapshot = pendingAnchor.current;
     pendingAnchor.current = null;
+    // §2.4 single scroll ownership: while the restore coordinator is pinning the boundary it is the
+    // only scroll writer. The layout-anchor must not also compensate this same reflow, or the shift
+    // is counted twice; the coordinator re-measures the boundary each frame and handles it instead.
+    if (restorePhaseRef.current === 'restoring') return;
     if (!snapshot) return;
     const root = scrollRoot.current;
     const node = root?.querySelector<HTMLElement>(`[data-node-order="${snapshot.order}"]`);
@@ -280,48 +353,161 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     root.scrollTop += node.getBoundingClientRect().top - snapshot.top;
   }, [enhancementVersion]);
 
-  // §11.5 position restore: on first content commit, scroll to the saved anchor (block + offset).
-  // Runs once (restoredRef). Fallback chain per PRD §11.5: exact block → the node's first block →
-  // (node missing) start of book. Deliberately runs before the layout-anchor takes over, then hands
-  // stability to it as enhancements stream in. On first mount the layout-anchor is a no-op (the
-  // scroll ref is null during that render), so there is no scroll fight.
+  // §11.5 / §2.4 position restore: on first mount, resolve the saved anchor and hand it to the
+  // restore coordinator, which pins that character boundary to the reading line through first-paint
+  // layout drift (fonts, late images, streamed enhancements) until it stabilizes or the user takes
+  // over. Runs ONCE (restoredRef) with a `[]` dep so a streamed-in enhancement changing `prepared`
+  // mid-restore can't tear the coordinator down. The coordinator is the sole scroll writer while
+  // active; the layout-anchor above yields to it (restorePhaseRef).
   const restoredRef = useRef(false);
   useLayoutEffect(() => {
     if (restoredRef.current) return;
     const root = scrollRoot.current;
     if (!root) return;
     restoredRef.current = true;
-    const pos = document.bootstrap.resumePosition;
-    if (!pos) return;
-    const node = document.manifest.nodes.find((item) => item.section_id === pos.sectionId && item.segment === pos.segment);
-    if (!node) return;
-    const nodeEl = root.querySelector<HTMLElement>(`[data-node-order="${node.order}"]`);
-    const contentRoot = nodeEl?.querySelector<HTMLElement>('.reader-original');
-    if (!nodeEl || !contentRoot) return;
-    const blocks = readingBlocks(contentRoot);
-    const exact = blocks[pos.blockIndex - 1];
-    const block = exact ?? blocks[0];
-    const rootTop = root.getBoundingClientRect().top;
-    const headroom = READING_ANCHOR_TOP;
-    let targetTop = (block ?? nodeEl).getBoundingClientRect().top;
-    if (exact) {
-      const boundary = domBoundaryForOffset(exact, pos.offset);
+    const resume = document.bootstrap.resumePosition;
+    if (!resume) return; // fresh open: nothing to restore, phase stays 'normal'
+
+    const nodes = document.manifest.nodes;
+    // §3.3 fallback chain: exact section/segment → nearest by nodeOrder → start of book.
+    const exactNode = nodes.find((item) => item.section_id === resume.sectionId && item.segment === resume.segment);
+    const targetNode = exactNode ?? nearestNodeByOrder(nodes, resume.nodeOrder) ?? nodes[0];
+    if (!targetNode) return;
+    const nodeEl = root.querySelector<HTMLElement>(`[data-node-order="${targetNode.order}"]`);
+    if (!nodeEl) return;
+    const contentRoot = nodeEl.querySelector<HTMLElement>('.reader-original');
+
+    // Only trust the stored block/offset when we landed on the EXACT node AND the anchor was computed
+    // against the current block algorithm. A manifestVersion mismatch, or any fall back to a
+    // different node, drops us to node/block granularity rather than reinterpreting a stale offset.
+    const versionMatches = resume.manifestVersion == null || resume.manifestVersion === document.manifest.version;
+    let boundary: { container: Node; offset: number } | null = null;
+    let geometryEl: HTMLElement = nodeEl;
+    if (exactNode && versionMatches && contentRoot) {
+      const blocks = readingBlocks(contentRoot);
+      const exactBlock = blocks[resume.blockIndex - 1];
+      const block = exactBlock ?? blocks[0];
+      if (block) {
+        geometryEl = block;
+        if (exactBlock) {
+          const resolved = domBoundaryForOffset(exactBlock, resume.offset);
+          if (resolved) boundary = resolved;
+        }
+      }
+    } else if (!exactNode || !versionMatches) {
+      // Observable: we deliberately declined to reinterpret a stale/relocated anchor (§3.3).
+      // eslint-disable-next-line no-console
+      console.info('[reader] resume fell back to node granularity', {
+        reason: !exactNode ? 'node-missing' : 'manifest-version-changed',
+        savedManifestVersion: resume.manifestVersion,
+        currentManifestVersion: document.manifest.version,
+      });
+    }
+
+    // The saved boundary's current top, relative to the scroll container top edge — the same frame
+    // READING_ANCHOR_TOP is measured in. Falls back to the block/node top when no precise boundary.
+    const measureTop = (): number | null => {
+      const rootTop = root.getBoundingClientRect().top;
       if (boundary) {
         try {
           const range = window.document.createRange();
           range.setStart(boundary.container, boundary.offset);
           range.collapse(true);
           const rect = range.getBoundingClientRect();
-          if (rect.top || rect.bottom) targetTop = rect.top || rect.bottom;
+          const top = rect.top || rect.bottom;
+          if (top) return top - rootTop;
         } catch {
-          // fall through to the block/node top already in targetTop
+          // fall through to element geometry
         }
       }
+      return geometryEl.getBoundingClientRect().top - rootTop;
+    };
+
+    setCurrentOrder(targetNode.order);
+    currentOrderRef.current = targetNode.order;
+    restorePhaseRef.current = 'restoring';
+
+    // Instant restore: suppress `.reader-scroll`'s smooth behavior so corrections don't animate — a
+    // mid-animation sample would land off the anchor line (§1.4).
+    const previousScrollBehavior = root.style.scrollBehavior;
+    root.style.scrollBehavior = 'auto';
+
+    let torndown = false;
+    const cleanups: Array<() => void> = [];
+    const teardown = () => {
+      if (torndown) return;
+      torndown = true;
+      root.style.scrollBehavior = previousScrollBehavior;
+      for (const cleanup of cleanups) cleanup();
+    };
+
+    const coordinator = createRestoreCoordinator({
+      now: () => performance.now(),
+      requestFrame: (callback) => window.requestAnimationFrame(callback),
+      cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+      getScrollTop: () => root.scrollTop,
+      setScrollTop: (value) => { root.scrollTop = value; },
+      measureTop,
+      anchorTop: READING_ANCHOR_TOP,
+      onSettle: () => {
+        // Phase flips before the report so reportObservation is no longer suppressed; one final
+        // stable-anchor save (§2.4), then release control.
+        restorePhaseRef.current = 'settled';
+        reportObservation.current();
+        teardown();
+      },
+    });
+    // Stop the rAF loop on teardown (including an unmount mid-restore) so it never ticks on a
+    // detached root. A no-op once the coordinator has already settled/cancelled.
+    cleanups.push(() => coordinator.cancel());
+
+    // Any deliberate user input hands control back immediately (§2.4); the user's own scroll then
+    // flows through the normal save chain. Programmatic scrollTop writes don't emit these events.
+    const cancelToUser = () => {
+      if (coordinator.phase() !== 'restoring') return;
+      coordinator.cancel();
+      restorePhaseRef.current = 'cancelled';
+      teardown();
+    };
+    const navKeys = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Spacebar']);
+    const onKey = (event: KeyboardEvent) => { if (navKeys.has(event.key)) cancelToUser(); };
+    for (const type of ['wheel', 'touchstart', 'pointerdown'] as const) {
+      root.addEventListener(type, cancelToUser, { passive: true });
+      cleanups.push(() => root.removeEventListener(type, cancelToUser));
     }
-    root.scrollTop += targetTop - rootTop - headroom;
-    setCurrentOrder(node.order);
-    currentOrderRef.current = node.order;
-  }, [prepared]);
+    window.addEventListener('keydown', onKey);
+    cleanups.push(() => window.removeEventListener('keydown', onKey));
+
+    // Early completion is gated on assets that move the boundary: fonts and images that sit BEFORE
+    // the target. Below/at-target images don't shift it, so they don't hold up the handoff (§2.4).
+    let fontsReady = false;
+    let pendingImages = 0;
+    const maybeReady = () => { if (fontsReady && pendingImages === 0) coordinator.markAssetsReady(); };
+    const precedingImages = [...root.querySelectorAll<HTMLImageElement>('img')].filter((image) => (
+      !image.complete
+      && (geometryEl.compareDocumentPosition(image) & Node.DOCUMENT_POSITION_PRECEDING) !== 0
+    ));
+    pendingImages = precedingImages.length;
+    for (const image of precedingImages) {
+      const done = () => { pendingImages = Math.max(0, pendingImages - 1); maybeReady(); };
+      image.addEventListener('load', done, { once: true });
+      image.addEventListener('error', done, { once: true });
+      cleanups.push(() => {
+        image.removeEventListener('load', done);
+        image.removeEventListener('error', done);
+      });
+    }
+    const fonts = window.document.fonts;
+    if (fonts?.ready) {
+      fonts.ready.then(() => { fontsReady = true; maybeReady(); }).catch(() => {});
+    } else {
+      fontsReady = true;
+    }
+    maybeReady();
+
+    coordinator.start();
+    return teardown;
+  }, []);
 
   useEffect(() => {
     const root = scrollRoot.current;
@@ -338,10 +524,11 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   }, [prepared]);
 
   // Warm the window for the opening/resumed node even if the reader never scrolls; scroll-driven
-  // reports (schedulePositionReport) and jumps take over from here.
+  // reports (schedulePositionReport) and jumps take over from here. Suppressed while the restore
+  // coordinator still owns the scroll — reportObservation checks the phase (§2.4).
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      reportFocus.current(currentOrderRef.current, computeAnchorRef.current() ?? undefined);
+      reportObservation.current();
     }, 300);
     return () => window.clearTimeout(handle);
   }, []);
@@ -350,8 +537,10 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   // debounced scroll report may not have fired yet. keepalive lets the request outlive unload.
   useEffect(() => {
     const flush = () => {
-      const anchor = computeAnchorRef.current();
-      if (anchor) saveReaderPositionBeacon(document.userBookId, currentOrderRef.current, anchor);
+      // §3.2: on unload, only persist a precise anchor. If the probe can't sample one, send nothing —
+      // never a destructive fallback that would replace a good saved position with a chapter start.
+      const observed = computeAnchorRef.current();
+      if (observed) saveReaderPositionBeacon(document.userBookId, observed.order, observed.position);
     };
     const onVisibility = () => {
       if (window.document.visibilityState === 'hidden') flush();
@@ -453,11 +642,19 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     scrollRoot.current?.querySelector<HTMLElement>(`[data-node-order="${order}"]`)
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     setTocOpen(false);
-    // Explicit jump: report the target now (with the top-of-node anchor) so its window is
-    // prioritized and the saved position matches the jump before the scroll settles.
+    // Explicit jump: this is the one place §2.1 allows an active save of a node's first block/offset 0.
+    // Report the target now (with the top-of-node anchor) so its window is prioritized and the saved
+    // position matches the jump before the scroll settles. clientObservedAt is stamped at click time
+    // so a jump correctly wins over an earlier scroll observation that lands late (§2.3).
     const target = document.manifest.nodes.find((item) => item.order === order);
     reportFocus.current(order, target
-      ? { sectionId: target.section_id, segment: target.segment, blockIndex: 1, offset: 0 }
+      ? {
+        sectionId: target.section_id,
+        segment: target.segment,
+        blockIndex: 1,
+        offset: 0,
+        clientObservedAt: new Date().toISOString(),
+      }
       : undefined);
   };
 

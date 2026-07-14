@@ -72,12 +72,33 @@ export interface ReadingSettings {
   theme: ThemeSetting;
 }
 
-// §11.5 — a saved reading anchor: block + UTF-16 offset within one node.
+// §11.5 — a saved reading anchor: block + UTF-16 offset within one node. `clientObservedAt` is the
+// ISO time the anchor was read from the DOM (or the moment a TOC jump was clicked); the server merges
+// events last-observed-wins by this field so a stale event that arrives late can never overwrite a
+// newer position (reader_position_restore_fix §2.3).
 export interface ReaderPosition {
   sectionId: string;
   segment: number;
   blockIndex: number;
   offset: number;
+  clientObservedAt: string;
+}
+
+// The resume anchor delivered with bootstrap carries the server-side metadata needed for the restore
+// fallback chain (§3.3): `nodeOrder` locates the nearest still-valid manifest node when the exact
+// section/segment is gone, and `manifestVersion` guards against reinterpreting a stale block/offset
+// against a changed block algorithm. Kept distinct from the request ReaderPosition so DB metadata
+// never leaks into the anchor the client sends back.
+export interface ReaderResumePosition extends ReaderPosition {
+  nodeOrder: number;
+  manifestVersion: string | null;
+}
+
+// A single sampling of the reading-anchor line: the focus node `order` and the precise `position`
+// read from the SAME [data-node-order] element, so they can never be spliced from two nodes (§2.2).
+export interface ObservedReaderAnchor {
+  order: number;
+  position: ReaderPosition;
 }
 
 export interface ReadNode {
@@ -101,7 +122,7 @@ export interface ReaderBootstrap {
   briefing: string;
   strategySummary: string;
   // §11.5 last reading position to resume to (null → start from the first node).
-  resumePosition: ReaderPosition | null;
+  resumePosition: ReaderResumePosition | null;
   // §11.6 the user's global reader settings.
   settings: ReadingSettings;
   // §11.4 nodes already marked read.
@@ -183,7 +204,7 @@ interface RawReaderBootstrap {
   workflowStatus: 'active_reading';
   briefing: string;
   strategySummary: string;
-  resumePosition: ReaderPosition | null;
+  resumePosition: ReaderResumePosition | null;
   settings: ReadingSettings;
   readNodes: ReadNode[];
   enhancements: Array<{

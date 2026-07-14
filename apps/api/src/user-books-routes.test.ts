@@ -153,6 +153,63 @@ describe('user book workflow routes', () => {
     expect(response.statusCode).toBe(400);
   });
 
+  // §2.3 / §5.3: the position anchor carries the client's observation time so the server can merge
+  // last-observed-wins. The route schema is the first gate — a full, well-formed anchor reaches the
+  // service verbatim; a missing or non-ISO clientObservedAt is a 400 before any write.
+  it('forwards a position carrying clientObservedAt to the service', async () => {
+    let received: unknown;
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async reportReaderFocus(_userBookId, input) {
+          received = input;
+          return {
+            userBookId: USER_BOOK_ID,
+            sharedBookId: SHARED_BOOK_ID,
+            workflowStatus: 'active_reading',
+            briefing: 'Briefing',
+            strategySummary: 'Strategy',
+            enhancements: [],
+            resumePosition: null,
+            settings: READER_SETTINGS,
+            readNodes: [],
+          };
+        },
+      }),
+    });
+    const position = { sectionId: 'chapter-3', segment: 1, blockIndex: 2, offset: 42, clientObservedAt: '2026-07-14T10:00:00.000Z' };
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/reader/focus`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { order: 12, position },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(received).toEqual({ order: 12, position });
+  });
+
+  it('rejects a reader focus position missing clientObservedAt', async () => {
+    const app = await buildApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/reader/focus`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { order: 12, position: { sectionId: 'c', segment: 1, blockIndex: 1, offset: 0 } },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('rejects a reader focus position with a non-ISO clientObservedAt', async () => {
+    const app = await buildApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/reader/focus`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { order: 12, position: { sectionId: 'c', segment: 1, blockIndex: 1, offset: 0, clientObservedAt: 'yesterday' } },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
   it('returns a conflict response for stale workflow commands', async () => {
     const app = await buildApiApp(config, {
       auth: fakeAuth,

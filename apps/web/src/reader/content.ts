@@ -324,6 +324,23 @@ export function readingBlocks(root: HTMLElement): HTMLElement[] {
   return annotationBlocks(root);
 }
 
+// The block a DOM point belongs to, walking the caret node UP toward the root and returning the
+// first ancestor that is itself a reading block (§11.5, reader_position_restore_fix §3.1). This is
+// deliberately NOT `blocks.find(b => b.contains(node))`: blocks enumerate in document order, so an
+// ancestor block (an outer <li>, or a <figure>) precedes its descendant block and a forward
+// `contains` scan would bind the position to the ancestor. A nested <li>, a <figcaption>, or an
+// inline element inside a <p> therefore resolves to its own innermost block, keeping the saved
+// offset in the same text-projection coordinate system the backend used to enumerate it.
+export function readingBlockForDomPoint(blocks: HTMLElement[], node: Node): HTMLElement | null {
+  const members = new Set(blocks);
+  let current: Node | null = node;
+  while (current) {
+    if (current instanceof HTMLElement && members.has(current)) return current;
+    current = current.parentNode;
+  }
+  return null;
+}
+
 // Projection length (in the boundaryAt coordinate system) of a descendant subtree — used to skip
 // over children that sit before a DOM position when folding it back to a block offset. Mirrors
 // projectionLength / boundaryAt: <br> = 1, a nested list inside an <li> is its own block (skipped).
@@ -387,6 +404,118 @@ export function offsetWithinBlock(block: HTMLElement, container: Node, domOffset
 // 'start' bias used for a single-point anchor.
 export function domBoundaryForOffset(block: HTMLElement, offset: number): { container: Node; offset: number } | null {
   return boundaryAt(block, offset, 'start');
+}
+
+// A resolved reading anchor discovered from the live DOM: which content root / block / offset the
+// reading-anchor line currently sits on. `blockIndex` is 1-based (matching readingBlocks). The
+// caller reads the node metadata (order / sectionId / segment) off `root`'s [data-node-order]
+// ancestor so order and position always come from the same node (§2.2).
+export interface ReaderDomAnchor {
+  root: HTMLElement;
+  block: HTMLElement;
+  blockIndex: number;
+  offset: number;
+}
+
+// Geometry/caret access, injected so the pure resolver in nearestReaderAnchor is testable without a
+// real layout engine. Production wires these to the browser caret APIs and getBoundingClientRect;
+// tests supply deterministic rects. All coordinates are viewport-relative, same frame as `anchorY`.
+export interface AnchorProbe {
+  caretAtPoint(x: number, y: number): { node: Node; offset: number } | null;
+  // Viewport top of a collapsed range at a block boundary, or null if it cannot be measured.
+  boundaryTop(boundary: { container: Node; offset: number }): number | null;
+  // Viewport top/bottom of a whole block, or null if it cannot be measured.
+  blockBox(block: HTMLElement): { top: number; bottom: number } | null;
+}
+
+// Within one block whose standard text is `length` chars, the offset whose boundary sits closest to
+// the anchor line. Boundary tops are non-decreasing in offset (text flows down the page), so a
+// binary search converges while tracking the minimal |top - anchorY| seen. Returns null only when
+// no offset in the block is measurable — the caller then declines rather than fabricate a position.
+function offsetNearestLine(block: HTMLElement, length: number, anchorY: number, probe: AnchorProbe): number | null {
+  let lo = 0;
+  let hi = length;
+  let best: number | null = null;
+  let bestDelta = Number.POSITIVE_INFINITY;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const boundary = domBoundaryForOffset(block, mid);
+    const top = boundary ? probe.boundaryTop(boundary) : null;
+    if (top === null) {
+      // Unmeasurable mid (e.g. a collapsed line): retreat toward the start so the search still
+      // terminates on a measurable neighbour instead of spinning.
+      if (mid === lo) break;
+      hi = mid - 1;
+      continue;
+    }
+    const delta = Math.abs(top - anchorY);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = mid;
+    }
+    if (top < anchorY) lo = mid + 1;
+    else if (top > anchorY) hi = mid - 1;
+    else return mid;
+  }
+  return best;
+}
+
+// Resolve the reading-anchor line to a concrete { root, block, blockIndex, offset } (§3.1). Order:
+//   1. A precise caret hit inside a real block — the common case while reading body text.
+//   2. On a miss (caret landed on a heading / guide /媒体 / inter-block gap), fall to the
+//      `.reader-original` block nearest the anchor line by vertical distance.
+//   3. For a text block, binary-search the offset whose character boundary is closest to the line.
+//   4. For a pure media block (no projected text), offset 0 anchored at the block top.
+//   5. If nothing can be measured, return null — never invent a chapter-start position.
+export function nearestReaderAnchor(
+  roots: HTMLElement[],
+  anchorX: number,
+  anchorY: number,
+  probe: AnchorProbe,
+): ReaderDomAnchor | null {
+  const caret = probe.caretAtPoint(anchorX, anchorY);
+  if (caret) {
+    const root = roots.find((candidate) => candidate.contains(caret.node));
+    if (root) {
+      const blocks = readingBlocks(root);
+      const block = readingBlockForDomPoint(blocks, caret.node);
+      if (block) {
+        return {
+          root,
+          block,
+          blockIndex: blocks.indexOf(block) + 1,
+          offset: offsetWithinBlock(block, caret.node, caret.offset),
+        };
+      }
+    }
+  }
+
+  let nearest: { root: HTMLElement; block: HTMLElement; blockIndex: number; distance: number } | null = null;
+  for (const root of roots) {
+    const blocks = readingBlocks(root);
+    for (let index = 0; index < blocks.length; index += 1) {
+      const block = blocks[index]!;
+      const box = probe.blockBox(block);
+      if (!box) continue;
+      const distance = anchorY < box.top
+        ? box.top - anchorY
+        : anchorY > box.bottom
+          ? anchorY - box.bottom
+          : 0;
+      if (!nearest || distance < nearest.distance) {
+        nearest = { root, block, blockIndex: index + 1, distance };
+      }
+    }
+  }
+  if (!nearest) return null;
+
+  const length = projectionLength(nearest.block);
+  if (length === 0) {
+    return { root: nearest.root, block: nearest.block, blockIndex: nearest.blockIndex, offset: 0 };
+  }
+  const offset = offsetNearestLine(nearest.block, length, anchorY, probe);
+  if (offset === null) return null;
+  return { root: nearest.root, block: nearest.block, blockIndex: nearest.blockIndex, offset };
 }
 
 export function applyAnnotationMarks(rawHtml: string, annotations: TailoredAnnotation[]): string {

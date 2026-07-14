@@ -939,11 +939,14 @@ export const nodeGenerations = pgTable(
 );
 
 // §11.5 — last reading position, one row per user-book, precise to block_index + UTF-16 offset
-// (reading_contract §2.5). Overwritten on each focus report; `updatedAt` drives cross-device
-// last-write-wins (PRD :1399). `nodeOrder` is a manifest redundancy for fast window/progress
-// checks, not the authority. `manifestVersion` binds the anchor to the Block/manifest algorithm
-// version it was computed against, so a future algorithm change migrates anchors explicitly
-// rather than silently reinterpreting them (reading_contract 冻结约束 :29-30).
+// (reading_contract §2.5). `clientObservedAt` is the client's observation time of the event and is
+// the authority for merging: an upsert only wins when its client_observed_at ≥ the stored one, so a
+// stale event that arrives late can never overwrite a newer position (reader_position_restore_fix
+// §2.3). `updatedAt` still records the actual write time but is no longer the event-recency
+// authority. `nodeOrder` is a manifest redundancy for fast window/progress checks, not the
+// authority. `manifestVersion` binds the anchor to the Block/manifest algorithm version it was
+// computed against, so a future algorithm change migrates anchors explicitly rather than silently
+// reinterpreting them (reading_contract 冻结约束 :29-30).
 export const readerStates = pgTable(
   'reader_states',
   {
@@ -956,6 +959,7 @@ export const readerStates = pgTable(
     offset: integer('offset').notNull(),
     nodeOrder: integer('node_order').notNull(),
     manifestVersion: text('manifest_version'),
+    clientObservedAt: timestamp('client_observed_at', { withTimezone: true }).notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
