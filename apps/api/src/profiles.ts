@@ -11,6 +11,7 @@ import {
   users,
   type Database,
 } from '@readtailor/database';
+import { bindPresetBooks } from './preset-books';
 
 export const PROFILE_ONBOARDING_SCHEMA_VERSION = 'reader-profile-onboarding-1.0';
 export const PROFILE_MAPPING_VERSION = 'reader-profile-mapping-1.0';
@@ -338,6 +339,12 @@ export function createProfileService(options: { db: Database }) {
           .update(users)
           .set({ readerProfileCompletedAt: completedAt, updatedAt: completedAt })
           .where(eq(users.id, userId));
+
+        // §5.2「完成后把所有预置书籍加入用户书架」— stock the shelf in the same transaction so the
+        // profile and its preset books commit atomically. Idempotent: a replay short-circuits above
+        // (existingOnboarding), and a rare concurrent double-submit is caught by the on-conflict guard
+        // inside bindPresetBooks, so「预置书籍只加入一次」holds (PRD §19.1).
+        await bindPresetBooks(tx, userId);
 
         return { completed: true, profile: generatedProfile };
       });
