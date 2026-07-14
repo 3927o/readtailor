@@ -56,7 +56,7 @@ import {
   UserBookShelfResponseSchema,
   UserBookWorkflowResponseSchema,
 } from '@readtailor/contracts';
-import { createLogger } from '@readtailor/observability';
+import { createLogger, type PerfSink } from '@readtailor/observability';
 import {
   AUTH_SESSION_COOKIE,
   GOOGLE_OAUTH_STATE_COOKIE,
@@ -95,6 +95,7 @@ export interface AppDeps {
   userBooks?: UserBookService | undefined;
   auth?: AuthService | undefined;
   profiles?: ProfileService | undefined;
+  perfSink?: PerfSink | undefined;
 }
 
 const bookIdParams = Type.Object({
@@ -191,6 +192,21 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     },
   });
   app.decorateRequest('authUser', null);
+  if (deps.perfSink) {
+    app.addHook('onResponse', async (request, reply) => {
+      deps.perfSink?.recordHttp({
+        requestId: request.id,
+        method: request.method,
+        route: request.routeOptions?.url ?? request.url,
+        statusCode: reply.statusCode,
+        durationMs: Math.round(reply.elapsedTime),
+        userId: request.authUser?.id ?? null,
+      });
+    });
+    app.addHook('onClose', async () => {
+      await deps.perfSink?.close();
+    });
+  }
 
   const cookieOptions = {
     httpOnly: true,
@@ -584,7 +600,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     },
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
-      return deps.userBooks.forUser(request.authUser!.id).list();
+      return deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).list();
     },
   );
 
@@ -604,7 +620,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).workflow(request.params.id);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).workflow(request.params.id);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -622,7 +638,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).interviewState(request.params.id);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).interviewState(request.params.id);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -642,7 +658,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       const events = deps.userBooks
-        .forUser(request.authUser!.id)
+        .forUser(request.authUser!.id, { requestId: request.id })
         .streamInterviewAnswer(request.params.id, request.body);
 
       // 先拉首个事件再开流：开流前（校验、落库）的失败仍能以 HTTP 错误码呈现；一旦响应头发出，
@@ -684,7 +700,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).strategyState(request.params.id);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).strategyState(request.params.id);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -703,7 +719,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).submitStrategyFeedback(request.params.id, request.body);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).submitStrategyFeedback(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -722,7 +738,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).approveStrategy(request.params.id, request.body);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).approveStrategy(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -740,7 +756,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).trialState(request.params.id);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).trialState(request.params.id);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -759,7 +775,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).retryTrial(request.params.id);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).retryTrial(request.params.id);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -778,7 +794,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).markTrialViewed(request.params.id, request.body);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).markTrialViewed(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -797,7 +813,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).submitTrialFeedback(request.params.id, request.body);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).submitTrialFeedback(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -816,7 +832,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).adoptTrial(request.params.id, request.body);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).adoptTrial(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -834,7 +850,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).reader(request.params.id);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).reader(request.params.id);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -856,7 +872,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).reportReaderFocus(request.params.id, request.body);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).reportReaderFocus(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -876,7 +892,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).markReadNode(request.params.id, request.body);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).markReadNode(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -889,7 +905,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     { schema: { response: { 200: ReadingSettingsResponseSchema, 503: ErrorResponseSchema } } },
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
-      return deps.userBooks.forUser(request.authUser!.id).getReadingSettings();
+      return deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).getReadingSettings();
     },
   );
 
@@ -904,7 +920,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).updateReadingSettings(request.body);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).updateReadingSettings(request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -925,7 +941,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).listHighlights(request.params.id);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).listHighlights(request.params.id);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -944,7 +960,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).createHighlight(request.params.id, request.body);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).createHighlight(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -963,7 +979,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).updateHighlightNote(request.params.id, request.params.hid, request.body);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).updateHighlightNote(request.params.id, request.params.hid, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -981,7 +997,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).deleteHighlight(request.params.id, request.params.hid);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).deleteHighlight(request.params.id, request.params.hid);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -1002,7 +1018,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).recordHeartbeat(request.params.id, request.body);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).recordHeartbeat(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -1021,7 +1037,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).recordReadingActivitySlice(request.params.id, request.body);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).recordReadingActivitySlice(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -1041,7 +1057,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).getGlobalReadingStats(request.query);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).getGlobalReadingStats(request.query);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -1060,7 +1076,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id).getBookReadingStats(request.params.id);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).getBookReadingStats(request.params.id);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -1315,7 +1331,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
 
       // 先拉取首个事件再开流：开流前的失败（如数据库不可用）还能以 HTTP 错误码呈现，
       // 一旦响应头发出就只能靠带内 error 事件了。
-      const events = systemChat.stream(request.body.prompt);
+      const events = systemChat.stream(request.body.prompt, { requestId: request.id });
       let first: IteratorResult<SystemChatEvent>;
       try {
         first = await events.next();

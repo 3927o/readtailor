@@ -8,6 +8,7 @@ import {
   type Database,
 } from '@readtailor/database';
 import { sha256 } from '@readtailor/normalized-book';
+import type { PerfSink } from '@readtailor/observability';
 import type { ObjectStorage } from '@readtailor/storage';
 import { classifyNormalizationFailure, runFormalNormalization } from './coordinator';
 import { publishValidatedNormalization } from './publication';
@@ -27,6 +28,7 @@ export interface NormalizationExecutionOptions {
   analysisMaxTurns: number;
   analysisTimeoutMs: number;
   logger: Logger;
+  perfSink?: PerfSink;
 }
 
 export async function executeNormalizationRun(options: NormalizationExecutionOptions) {
@@ -84,6 +86,7 @@ export async function executeNormalizationRun(options: NormalizationExecutionOpt
       maxTurns: options.maxTurns,
       attemptTimeoutMs: options.attemptTimeoutMs,
       logger: options.logger,
+      ...(options.perfSink ? { perfSink: options.perfSink } : {}),
     });
     return await publishValidatedNormalization({
       db: options.db,

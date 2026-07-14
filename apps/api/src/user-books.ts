@@ -768,15 +768,23 @@ type UserBookServiceOptions = {
   modelConfigId: string;
 };
 
+type RequestContext = {
+  requestId?: string;
+};
+
 export function createUserBookService(options: UserBookServiceOptions) {
   return {
-    forUser(userId: string) {
-      return createUserBookServiceForUser(options, userId);
+    forUser(userId: string, context: RequestContext = {}) {
+      return createUserBookServiceForUser(options, userId, context);
     },
   };
 }
 
-function createUserBookServiceForUser(options: UserBookServiceOptions, userId: string) {
+function createUserBookServiceForUser(
+  options: UserBookServiceOptions,
+  userId: string,
+  requestContext: RequestContext,
+) {
   const { db } = options;
 
   const getOwnedBook = async (userBookId: string) => {
@@ -984,6 +992,7 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       phase: 'interviewing',
       askedCount: session.questionCount,
       context: setup.context,
+      ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
       ...(onStream ? { onStream } : {}),
     });
     await saveSetupOutcome(userBookId, sessionId, outcome, {
@@ -1229,6 +1238,7 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       askedCount: 0,
       context: { ...setup.context, currentStrategy: params.draft },
       feedback: params.feedback,
+      ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
     });
     if (outcome.type !== 'revised') throw new UserBookError('处理方式修订失败', 503);
     const revised = outcome;
@@ -1520,6 +1530,7 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       phase: 'select_trial',
       askedCount: 0,
       context: { ...setup.context, currentStrategy: draft, trialNodeContents },
+      ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
     });
     if (outcome.type !== 'fragments') throw new UserBookError('试读片段选择失败', 503);
     return mapFragments(outcome.fragments);

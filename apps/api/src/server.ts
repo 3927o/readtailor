@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { requireCompleteModelEndpoint } from '@readtailor/config';
 import { createDatabase } from '@readtailor/database';
 import { createFakeModelEngine, createOpenAiCompatibleEngine } from '@readtailor/model';
+import { createLogger, createPerfSink } from '@readtailor/observability';
 import {
   createContentGenerationQueue,
   createNormalizationQueue,
@@ -28,6 +29,8 @@ const config = loadApiConfig();
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
 const database = config.databaseUrl ? createDatabase(config.databaseUrl) : undefined;
+const logger = createLogger(config.logLevel);
+const perfSink = database ? createPerfSink({ db: database.db, logger }) : undefined;
 const googleVars = [config.googleClientId, config.googleClientSecret];
 if (googleVars.some(Boolean) && !googleVars.every(Boolean)) {
   throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must both be configured');
@@ -81,7 +84,11 @@ const modelEngine = systemChatEndpoint
   : createFakeModelEngine();
 
 const systemChat = database
-  ? createSystemChatService({ db: database.db, engine: modelEngine })
+  ? createSystemChatService({
+      db: database.db,
+      engine: modelEngine,
+      ...(perfSink ? { perfSink } : {}),
+    })
   : undefined;
 const books =
   database && objectStorage
@@ -107,6 +114,7 @@ const readingSetupEngine = readingSetupEndpoint
       apiBaseUrl: readingSetupEndpoint.baseUrl,
       apiKey: readingSetupEndpoint.apiKey,
       modelName: readingSetupEndpoint.modelName,
+      ...(perfSink ? { perfSink } : {}),
     })
   : createFakeReadingSetupEngine();
 const userBooks =
@@ -176,6 +184,7 @@ const app = await buildApp(config, {
   userBooks,
   auth,
   profiles,
+  perfSink,
 });
 
 app.log.info({ model: modelEngine.name }, 'model engine ready');

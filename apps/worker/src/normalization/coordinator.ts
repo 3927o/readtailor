@@ -14,6 +14,7 @@ import {
   validateNormalizedCandidate,
   type HostValidationResult,
 } from '@readtailor/normalized-book';
+import { timeAgentCall, type PerfSink } from '@readtailor/observability';
 import type { ObjectStorage } from '@readtailor/storage';
 import { createE2BNormalizationSandbox } from './e2b-sandbox';
 import {
@@ -127,6 +128,7 @@ export async function runFormalNormalization(options: {
   maxTurns?: number;
   attemptTimeoutMs?: number;
   logger: NormalizationCoordinatorLogger;
+  perfSink?: PerfSink;
   repository?: NormalizationRepository;
   createSandbox?: (input: {
     attemptId: string;
@@ -183,24 +185,35 @@ export async function runFormalNormalization(options: {
         'normalization attempt started',
       );
 
-      const agent = await runNormalizationAgent({
-        apiBaseUrl: options.modelApiBaseUrl,
-        apiKey: options.modelApiKey,
-        modelName: options.modelName,
-        toolbox: sandbox,
-        sessionId,
-        ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
-        timeoutMs: attemptTimeoutMs,
-        onEvent: async () => {
-          await repository.heartbeat(started.id, options.normalizationRunId);
+      const activeSandbox = sandbox;
+      const agent = await timeAgentCall(
+        options.perfSink,
+        {
+          requestId: options.normalizationRunId,
+          source: 'worker',
+          kind: 'normalization',
+          model: options.modelName,
         },
-        onTrace: (event) => {
-          options.logger.info(
-            { attemptId: started.id, attemptNo: started.attemptNo, agentTrace: event },
-            'agent trace',
-          );
-        },
-      });
+        () => runNormalizationAgent({
+          apiBaseUrl: options.modelApiBaseUrl,
+          apiKey: options.modelApiKey,
+          modelName: options.modelName,
+          toolbox: activeSandbox,
+          sessionId,
+          ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
+          timeoutMs: attemptTimeoutMs,
+          onEvent: async () => {
+            await repository.heartbeat(started.id, options.normalizationRunId);
+          },
+          onTrace: (event) => {
+            options.logger.info(
+              { attemptId: started.id, attemptNo: started.attemptNo, agentTrace: event },
+              'agent trace',
+            );
+          },
+        }),
+        { onSuccess: (result) => ({ turnCount: result.turns }) },
+      );
       await repository.recordAgentFinish(started.id, agent.finishBinding, {
         turns: agent.turns,
         toolCalls: agent.toolCalls,

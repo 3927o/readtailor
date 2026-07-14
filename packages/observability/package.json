@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@readtailor/config": "workspace:*",
+    "@readtailor/database": "workspace:*",
     "pino": "^9.7.0"
   }
 }

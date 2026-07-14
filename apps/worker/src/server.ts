@@ -5,7 +5,7 @@ import { eq, sql } from 'drizzle-orm';
 import { requireCompleteModelEndpoint } from '@readtailor/config';
 import { createDatabase, systemJobs } from '@readtailor/database';
 import { createFakeModelEngine, createOpenAiCompatibleEngine } from '@readtailor/model';
-import { createLogger } from '@readtailor/observability';
+import { createLogger, createPerfSink } from '@readtailor/observability';
 import {
   createContentGenerationWorker,
   createNormalizationWorker,
@@ -23,6 +23,21 @@ const logger = createLogger(config.logLevel);
 const app = Fastify({ loggerInstance: logger });
 
 const database = config.databaseUrl ? createDatabase(config.databaseUrl) : undefined;
+const perfSink = database ? createPerfSink({ db: database.db, logger }) : undefined;
+if (perfSink) {
+  app.addHook('onResponse', async (request, reply) => {
+    perfSink.recordHttp({
+      requestId: request.id,
+      method: request.method,
+      route: request.routeOptions?.url ?? request.url,
+      statusCode: reply.statusCode,
+      durationMs: Math.round(reply.elapsedTime),
+    });
+  });
+  app.addHook('onClose', async () => {
+    await perfSink.close();
+  });
+}
 const objectStorage = createObjectStorage({
   localRoot: config.objectStorageLocalRoot
     ? resolve(repoRoot, config.objectStorageLocalRoot)
@@ -113,6 +128,7 @@ const normalizationWorker =
             analysisMaxTurns: config.analysisMaxTurns,
             analysisTimeoutMs: config.analysisTimeoutMs,
             logger,
+            ...(perfSink ? { perfSink } : {}),
           });
         },
       })
@@ -141,6 +157,7 @@ const contentGenerationWorker =
             storage: objectStorage,
             model: contentModel,
             generationId: job.data.generationId,
+            ...(perfSink ? { perfSink } : {}),
           });
         },
         onTerminalFailure: async (job, error) => {

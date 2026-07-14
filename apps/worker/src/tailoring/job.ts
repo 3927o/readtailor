@@ -21,6 +21,7 @@ import {
   type Database,
 } from '@readtailor/database';
 import type { ModelEngine } from '@readtailor/model';
+import type { PerfSink } from '@readtailor/observability';
 import type { ObjectStorage } from '@readtailor/storage';
 
 type ManifestNode = {
@@ -63,7 +64,10 @@ function contextExcerpt(rawHtml: string, node: ManifestNode | undefined, edge: '
   return edge === 'start' ? text.slice(0, 1200) : text.slice(-1200);
 }
 
-function createModelClient(engine: ModelEngine): TailoringModelClient {
+function createModelClient(
+  engine: ModelEngine,
+  telemetry?: { perfSink?: PerfSink; requestId: string },
+): TailoringModelClient {
   return {
     async generate(request) {
       if (engine.name === 'fake') {
@@ -73,9 +77,35 @@ function createModelClient(engine: ModelEngine): TailoringModelClient {
           after_reading: '读完后，可以用一句话复述这一段在全书主线中的作用。',
         });
       }
+      const started = performance.now();
       let content = '';
-      for await (const event of engine.streamChat(request.prompt, { maxTokens: 4096 })) {
-        if (event.type === 'content') content += event.text;
+      try {
+        for await (const event of engine.streamChat(request.prompt, { maxTokens: 4096 })) {
+          if (event.type === 'content') content += event.text;
+        }
+        telemetry?.perfSink?.recordAgentCall({
+          requestId: telemetry.requestId,
+          source: 'worker',
+          kind: 'content_generation',
+          model: engine.name,
+          status: 'ok',
+          durationMs: performance.now() - started,
+          promptChars: request.prompt.length,
+          outputChars: content.length,
+        });
+      } catch (error) {
+        telemetry?.perfSink?.recordAgentCall({
+          requestId: telemetry.requestId,
+          source: 'worker',
+          kind: 'content_generation',
+          model: engine.name,
+          status: 'error',
+          durationMs: performance.now() - started,
+          promptChars: request.prompt.length,
+          outputChars: content.length,
+          errorSummary: (error instanceof Error ? error.message : String(error)).slice(0, 1000),
+        });
+        throw error;
       }
       return content;
     },
@@ -87,6 +117,7 @@ export async function executeContentGeneration(options: {
   storage: ObjectStorage;
   model: ModelEngine;
   generationId: string;
+  perfSink?: PerfSink;
 }) {
   const [row] = await options.db
     .select({
@@ -253,7 +284,13 @@ export async function executeContentGeneration(options: {
         })),
         after_reading: cached.result.afterReading,
       }
-    : await generateTailoredContent(input, createModelClient(options.model));
+    : await generateTailoredContent(
+        input,
+        createModelClient(options.model, {
+          ...(options.perfSink ? { perfSink: options.perfSink } : {}),
+          requestId: options.generationId,
+        }),
+      );
   const result = {
     guide: generated.guide,
     annotations: generated.annotations.map((annotation, index) => ({

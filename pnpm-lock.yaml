@@ -238,6 +238,9 @@ importers:
       '@readtailor/config':
         specifier: workspace:*
         version: link:../config
+      '@readtailor/database':
+        specifier: workspace:*
+        version: link:../database
       pino:
         specifier: ^9.7.0
         version: 9.14.0

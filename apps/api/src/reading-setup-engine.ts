@@ -7,6 +7,7 @@ import {
   type ReadingStrategy,
   type TrialFragmentSelection,
 } from '@readtailor/agent-kit';
+import { timeAgentCall, type PerfSink } from '@readtailor/observability';
 
 export interface ReadingSetupEngine {
   // One continuous logical session per user_book. `phase` selects the exposed tools:
@@ -19,6 +20,7 @@ export interface ReadingSetupEngine {
     askedCount: number;
     context: Record<string, unknown>;
     feedback?: string;
+    requestId?: string;
     onStream?: (delta: InterviewStreamDelta) => void;
   }): Promise<ReadingSetupOutcome>;
 }
@@ -27,10 +29,20 @@ export function createAgentReadingSetupEngine(options: {
   apiBaseUrl: string;
   apiKey: string;
   modelName: string;
+  perfSink?: PerfSink;
 }): ReadingSetupEngine {
   return {
     runTurn(input) {
-      return runReadingSetupAgent({ ...options, ...input });
+      return timeAgentCall(
+        options.perfSink,
+        {
+          requestId: input.requestId ?? null,
+          source: 'api',
+          kind: 'briefing',
+          model: options.modelName,
+        },
+        () => runReadingSetupAgent({ ...options, ...input }),
+      );
     },
   };
 }

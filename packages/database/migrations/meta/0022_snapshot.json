@@ -1,9 +1,146 @@
 {
-  "id": "01d93067-36e3-4219-a6fe-8a7f6f5ef1db",
-  "prevId": "9a0a3e2a-646e-4c4a-b606-f061dd7def49",
+  "id": "4a33b0e6-ff79-4798-affc-35dd1deb8c79",
+  "prevId": "01d93067-36e3-4219-a6fe-8a7f6f5ef1db",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
+    "public.agent_call_logs": {
+      "name": "agent_call_logs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "duration_ms": {
+          "name": "duration_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prompt_chars": {
+          "name": "prompt_chars",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_chars": {
+          "name": "output_chars",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "turn_count": {
+          "name": "turn_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_summary": {
+          "name": "error_summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "agent_call_logs_created_at_idx": {
+          "name": "agent_call_logs_created_at_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_call_logs_kind_created_at_idx": {
+          "name": "agent_call_logs_kind_created_at_idx",
+          "columns": [
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "agent_call_logs_duration_nonnegative": {
+          "name": "agent_call_logs_duration_nonnegative",
+          "value": "\"agent_call_logs\".\"duration_ms\" >= 0"
+        },
+        "agent_call_logs_status_valid": {
+          "name": "agent_call_logs_status_valid",
+          "value": "\"agent_call_logs\".\"status\" in ('ok', 'error')"
+        },
+        "agent_call_logs_source_valid": {
+          "name": "agent_call_logs_source_valid",
+          "value": "\"agent_call_logs\".\"source\" in ('api', 'worker')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.auth_identities": {
       "name": "auth_identities",
       "schema": "",
@@ -642,6 +779,125 @@
       },
       "isRLSEnabled": false
     },
+    "public.book_reading_stats": {
+      "name": "book_reading_stats",
+      "schema": "",
+      "columns": {
+        "user_book_id": {
+          "name": "user_book_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "effective_seconds": {
+          "name": "effective_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "forward_seconds": {
+          "name": "forward_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "forward_chars": {
+          "name": "forward_chars",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "last_read_at": {
+          "name": "last_read_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "book_reading_stats_user_idx": {
+          "name": "book_reading_stats_user_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "book_reading_stats_user_book_id_user_books_id_fk": {
+          "name": "book_reading_stats_user_book_id_user_books_id_fk",
+          "tableFrom": "book_reading_stats",
+          "tableTo": "user_books",
+          "columnsFrom": [
+            "user_book_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "book_reading_stats_user_id_users_id_fk": {
+          "name": "book_reading_stats_user_id_users_id_fk",
+          "tableFrom": "book_reading_stats",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "book_reading_stats_effective_nonneg": {
+          "name": "book_reading_stats_effective_nonneg",
+          "value": "\"book_reading_stats\".\"effective_seconds\" >= 0"
+        },
+        "book_reading_stats_forward_seconds_nonneg": {
+          "name": "book_reading_stats_forward_seconds_nonneg",
+          "value": "\"book_reading_stats\".\"forward_seconds\" >= 0"
+        },
+        "book_reading_stats_forward_chars_nonneg": {
+          "name": "book_reading_stats_forward_chars_nonneg",
+          "value": "\"book_reading_stats\".\"forward_chars\" >= 0"
+        },
+        "book_reading_stats_forward_seconds_lte_effective": {
+          "name": "book_reading_stats_forward_seconds_lte_effective",
+          "value": "\"book_reading_stats\".\"forward_seconds\" <= \"book_reading_stats\".\"effective_seconds\""
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.daily_reading_totals": {
       "name": "daily_reading_totals",
       "schema": "",
@@ -853,6 +1109,111 @@
         "highlights_note_nonempty": {
           "name": "highlights_note_nonempty",
           "value": "\"highlights\".\"note\" is null or length(btrim(\"highlights\".\"note\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.http_request_logs": {
+      "name": "http_request_logs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "method": {
+          "name": "method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "route": {
+          "name": "route",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status_code": {
+          "name": "status_code",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "duration_ms": {
+          "name": "duration_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "http_request_logs_created_at_idx": {
+          "name": "http_request_logs_created_at_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "http_request_logs_route_created_at_idx": {
+          "name": "http_request_logs_route_created_at_idx",
+          "columns": [
+            {
+              "expression": "route",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "http_request_logs_duration_nonnegative": {
+          "name": "http_request_logs_duration_nonnegative",
+          "value": "\"http_request_logs\".\"duration_ms\" >= 0"
         }
       },
       "isRLSEnabled": false
@@ -2773,201 +3134,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.reading_sessions": {
-      "name": "reading_sessions",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "user_book_id": {
-          "name": "user_book_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "client_interval_id": {
-          "name": "client_interval_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "day": {
-          "name": "day",
-          "type": "date",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ended_at": {
-          "name": "ended_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "effective_seconds": {
-          "name": "effective_seconds",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "forward_seconds": {
-          "name": "forward_seconds",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "forward_chars": {
-          "name": "forward_chars",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "reading_sessions_user_book_idx": {
-          "name": "reading_sessions_user_book_idx",
-          "columns": [
-            {
-              "expression": "user_book_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "reading_sessions_user_day_idx": {
-          "name": "reading_sessions_user_day_idx",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "day",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "reading_sessions_user_book_interval_unique": {
-          "name": "reading_sessions_user_book_interval_unique",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "user_book_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "client_interval_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "reading_sessions_user_book_id_user_books_id_fk": {
-          "name": "reading_sessions_user_book_id_user_books_id_fk",
-          "tableFrom": "reading_sessions",
-          "tableTo": "user_books",
-          "columnsFrom": [
-            "user_book_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "reading_sessions_user_id_users_id_fk": {
-          "name": "reading_sessions_user_id_users_id_fk",
-          "tableFrom": "reading_sessions",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "reading_sessions_effective_nonneg": {
-          "name": "reading_sessions_effective_nonneg",
-          "value": "\"reading_sessions\".\"effective_seconds\" >= 0"
-        },
-        "reading_sessions_forward_seconds_nonneg": {
-          "name": "reading_sessions_forward_seconds_nonneg",
-          "value": "\"reading_sessions\".\"forward_seconds\" >= 0"
-        },
-        "reading_sessions_forward_chars_nonneg": {
-          "name": "reading_sessions_forward_chars_nonneg",
-          "value": "\"reading_sessions\".\"forward_chars\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.reading_activity_slices": {
       "name": "reading_activity_slices",
       "schema": "",
@@ -3439,14 +3605,21 @@
       },
       "isRLSEnabled": false
     },
-    "public.book_reading_stats": {
-      "name": "book_reading_stats",
+    "public.reading_sessions": {
+      "name": "reading_sessions",
       "schema": "",
       "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
         "user_book_id": {
           "name": "user_book_id",
           "type": "uuid",
-          "primaryKey": true,
+          "primaryKey": false,
           "notNull": true
         },
         "user_id": {
@@ -3454,6 +3627,30 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "client_interval_id": {
+          "name": "client_interval_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "day": {
+          "name": "day",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "effective_seconds": {
           "name": "effective_seconds",
@@ -3476,11 +3673,12 @@
           "notNull": true,
           "default": 0
         },
-        "last_read_at": {
-          "name": "last_read_at",
+        "created_at": {
+          "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": "now()"
         },
         "updated_at": {
           "name": "updated_at",
@@ -3491,11 +3689,59 @@
         }
       },
       "indexes": {
-        "book_reading_stats_user_idx": {
-          "name": "book_reading_stats_user_idx",
+        "reading_sessions_user_book_interval_unique": {
+          "name": "reading_sessions_user_book_interval_unique",
           "columns": [
             {
               "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_book_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "client_interval_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "reading_sessions_user_book_idx": {
+          "name": "reading_sessions_user_book_idx",
+          "columns": [
+            {
+              "expression": "user_book_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "reading_sessions_user_day_idx": {
+          "name": "reading_sessions_user_day_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "day",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -3508,9 +3754,9 @@
         }
       },
       "foreignKeys": {
-        "book_reading_stats_user_book_id_user_books_id_fk": {
-          "name": "book_reading_stats_user_book_id_user_books_id_fk",
-          "tableFrom": "book_reading_stats",
+        "reading_sessions_user_book_id_user_books_id_fk": {
+          "name": "reading_sessions_user_book_id_user_books_id_fk",
+          "tableFrom": "reading_sessions",
           "tableTo": "user_books",
           "columnsFrom": [
             "user_book_id"
@@ -3521,9 +3767,9 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "book_reading_stats_user_id_users_id_fk": {
-          "name": "book_reading_stats_user_id_users_id_fk",
-          "tableFrom": "book_reading_stats",
+        "reading_sessions_user_id_users_id_fk": {
+          "name": "reading_sessions_user_id_users_id_fk",
+          "tableFrom": "reading_sessions",
           "tableTo": "users",
           "columnsFrom": [
             "user_id"
@@ -3539,21 +3785,17 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
-        "book_reading_stats_effective_nonneg": {
-          "name": "book_reading_stats_effective_nonneg",
-          "value": "\"book_reading_stats\".\"effective_seconds\" >= 0"
+        "reading_sessions_effective_nonneg": {
+          "name": "reading_sessions_effective_nonneg",
+          "value": "\"reading_sessions\".\"effective_seconds\" >= 0"
         },
-        "book_reading_stats_forward_seconds_nonneg": {
-          "name": "book_reading_stats_forward_seconds_nonneg",
-          "value": "\"book_reading_stats\".\"forward_seconds\" >= 0"
+        "reading_sessions_forward_seconds_nonneg": {
+          "name": "reading_sessions_forward_seconds_nonneg",
+          "value": "\"reading_sessions\".\"forward_seconds\" >= 0"
         },
-        "book_reading_stats_forward_chars_nonneg": {
-          "name": "book_reading_stats_forward_chars_nonneg",
-          "value": "\"book_reading_stats\".\"forward_chars\" >= 0"
-        },
-        "book_reading_stats_forward_seconds_lte_effective": {
-          "name": "book_reading_stats_forward_seconds_lte_effective",
-          "value": "\"book_reading_stats\".\"forward_seconds\" <= \"book_reading_stats\".\"effective_seconds\""
+        "reading_sessions_forward_chars_nonneg": {
+          "name": "reading_sessions_forward_chars_nonneg",
+          "value": "\"reading_sessions\".\"forward_chars\" >= 0"
         }
       },
       "isRLSEnabled": false

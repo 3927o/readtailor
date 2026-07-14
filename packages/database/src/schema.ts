@@ -51,6 +51,50 @@ export const systemJobs = pgTable('system_jobs', {
   completedAt: timestamp('completed_at', { withTimezone: true }),
 });
 
+export const httpRequestLogs = pgTable(
+  'http_request_logs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: text('request_id').notNull(),
+    method: text('method').notNull(),
+    route: text('route').notNull(),
+    statusCode: integer('status_code').notNull(),
+    durationMs: integer('duration_ms').notNull(),
+    userId: uuid('user_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('http_request_logs_created_at_idx').on(table.createdAt),
+    index('http_request_logs_route_created_at_idx').on(table.route, table.createdAt),
+    check('http_request_logs_duration_nonnegative', sql`${table.durationMs} >= 0`),
+  ],
+);
+
+export const agentCallLogs = pgTable(
+  'agent_call_logs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: text('request_id'),
+    source: text('source').$type<'api' | 'worker'>().notNull(),
+    kind: text('kind').notNull(),
+    model: text('model').notNull(),
+    status: text('status').$type<'ok' | 'error'>().notNull(),
+    durationMs: integer('duration_ms').notNull(),
+    promptChars: integer('prompt_chars'),
+    outputChars: integer('output_chars'),
+    turnCount: integer('turn_count'),
+    errorSummary: text('error_summary'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index('agent_call_logs_created_at_idx').on(table.createdAt),
+    index('agent_call_logs_kind_created_at_idx').on(table.kind, table.createdAt),
+    check('agent_call_logs_duration_nonnegative', sql`${table.durationMs} >= 0`),
+    check('agent_call_logs_status_valid', sql`${table.status} in ('ok', 'error')`),
+    check('agent_call_logs_source_valid', sql`${table.source} in ('api', 'worker')`),
+  ],
+);
+
 export const sharedBooks = pgTable(
   'shared_books',
   {
