@@ -3,11 +3,18 @@ import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import { eq, sql } from 'drizzle-orm';
 import { createDatabase, systemJobs } from '@readtailor/database';
+import { createFakeModelEngine, createOpenAiCompatibleEngine } from '@readtailor/model';
 import { createLogger } from '@readtailor/observability';
-import { createNormalizationWorker, createSystemWorker } from '@readtailor/queue';
+import {
+  createContentGenerationWorker,
+  createNormalizationWorker,
+  createSystemWorker,
+} from '@readtailor/queue';
 import { createObjectStorage } from '@readtailor/storage';
 import { loadWorkerConfig } from './config';
 import { executeNormalizationRun } from './normalization/job';
+import { reconcileOrphanedNormalizationRuns } from './normalization/reconcile';
+import { executeContentGeneration, failContentGeneration } from './tailoring/job';
 
 const config = loadWorkerConfig();
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -74,6 +81,13 @@ const normalizationConfigured = Boolean(
     normalizationModel &&
     analysisModel,
 );
+// 消费队列前先回收上一个进程崩溃遗留的孤儿 run，避免书籍永远卡在处理中。
+if (database) {
+  await reconcileOrphanedNormalizationRuns({ db: database.db, logger }).catch((error: unknown) => {
+    logger.error({ err: error }, 'failed to reconcile orphaned normalization runs');
+  });
+}
+
 const normalizationWorker =
   normalizationConfigured &&
   config.redisUrl &&
@@ -111,9 +125,52 @@ const normalizationWorker =
       })
     : undefined;
 
+const modelVars = [config.modelApiBaseUrl, config.modelApiKey, config.modelName];
+if (modelVars.some(Boolean) && !modelVars.every(Boolean)) {
+  throw new Error(
+    'partial model configuration: MODEL_API_BASE_URL, MODEL_API_KEY and MODEL_NAME must all be set (or none, to use the fake engine)',
+  );
+}
+const contentModel =
+  config.modelApiBaseUrl && config.modelApiKey && config.modelName
+    ? createOpenAiCompatibleEngine({
+        baseUrl: config.modelApiBaseUrl,
+        apiKey: config.modelApiKey,
+        model: config.modelName,
+      })
+    : createFakeModelEngine();
+const contentGenerationWorker =
+  config.redisUrl && database && objectStorage
+    ? createContentGenerationWorker({
+        redisUrl: config.redisUrl,
+        concurrency: config.concurrency,
+        logger,
+        handler: async (job) => {
+          await executeContentGeneration({
+            db: database.db,
+            storage: objectStorage,
+            model: contentModel,
+            generationId: job.data.generationId,
+          });
+        },
+        onTerminalFailure: async (job, error) => {
+          await failContentGeneration({
+            db: database.db,
+            generationId: job.data.generationId,
+            error,
+          });
+        },
+      })
+    : undefined;
+
 if (!normalizationWorker) {
   logger.warn(
     'normalization queue consumer disabled: Redis, database, object storage, E2B and model configuration are required',
+  );
+}
+if (!contentGenerationWorker) {
+  logger.warn(
+    'content generation queue consumer disabled: Redis, database and object storage are required',
   );
 }
 
@@ -166,6 +223,9 @@ queueWorker?.on('error', (error) => {
 if (queueWorker) {
   void queueWorker.client
     .then((client) => {
+      if (client.status === 'ready') {
+        markQueueConnected();
+      }
       client.on('ready', markQueueConnected);
     })
     .catch((error: unknown) => {
@@ -215,6 +275,7 @@ const shutdown = async (signal: string) => {
   setTimeout(() => process.exit(1), 10_000).unref();
   await queueWorker?.close();
   await normalizationWorker?.close();
+  await contentGenerationWorker?.close();
   await app.close();
   await database?.client.end({ timeout: 5 });
   process.exit(0);
