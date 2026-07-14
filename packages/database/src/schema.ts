@@ -603,6 +603,10 @@ export const interviewMessages = pgTable(
     kind: text('kind').$type<'question' | 'answer' | 'feedback' | 'summary'>().notNull(),
     content: text('content').notNull(),
     payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+    // Only `feedback` messages carry one (strategy/trial revision requests). A real unique
+    // index on it (below) replaces the previous jsonb payload full-scan idempotency check
+    // (§6.5), matching the interview_answers idempotency_key column pattern.
+    idempotencyKey: text('idempotency_key'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -610,6 +614,9 @@ export const interviewMessages = pgTable(
       table.interviewSessionId,
       table.sequence,
     ),
+    uniqueIndex('interview_messages_feedback_idempotency_unique')
+      .on(table.interviewSessionId, table.idempotencyKey)
+      .where(sql`${table.kind} = 'feedback'`),
     check('interview_messages_sequence_positive', sql`${table.sequence} > 0`),
     check('interview_messages_role_valid', sql`${table.role} in ('user', 'assistant')`),
     check(
@@ -617,6 +624,10 @@ export const interviewMessages = pgTable(
       sql`${table.kind} in ('question', 'answer', 'feedback', 'summary')`,
     ),
     check('interview_messages_content_nonempty', sql`length(btrim(${table.content})) > 0`),
+    check(
+      'interview_messages_idempotency_nonempty',
+      sql`${table.idempotencyKey} is null or length(btrim(${table.idempotencyKey})) > 0`,
+    ),
   ],
 );
 

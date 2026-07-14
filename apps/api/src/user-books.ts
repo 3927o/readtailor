@@ -104,6 +104,20 @@ export class UserBookError extends Error {
   }
 }
 
+// A concurrent duplicate feedback (same idempotency key) loses the race on the partial unique
+// index `interview_messages_feedback_idempotency_unique`. Surfacing that as an idempotent
+// success — rather than a 500 — is the DB-level backstop behind the fast-path pre-check (§6.5).
+// postgres-js exposes the Postgres unique-violation as code 23505 with the index name in
+// `constraint_name`; check the wrapped cause too in case a driver layer re-throws.
+function isFeedbackIdempotencyConflict(error: unknown): boolean {
+  const candidates = [error, (error as { cause?: unknown } | null)?.cause];
+  return candidates.some((candidate) => {
+    if (typeof candidate !== 'object' || candidate === null) return false;
+    const pg = candidate as { code?: unknown; constraint_name?: unknown };
+    return pg.code === '23505' && pg.constraint_name === 'interview_messages_feedback_idempotency_unique';
+  });
+}
+
 function asManifest(value: unknown): ReadingManifest {
   const manifest = value as Partial<ReadingManifest>;
   if (!Array.isArray(manifest.nodes) || !Array.isArray(manifest.outline)) {
@@ -465,7 +479,10 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
           }
         }
       }
-      await tx
+      // §6.5 guard: the session active→completed flip above already serializes completion, so
+      // the book is invariably 'interviewing' here — assert it instead of blind-writing by id,
+      // so an impossible stray state surfaces rather than silently diverging from the session.
+      const activated = await tx
         .update(userBooks)
         .set({
           workflowStatus: 'strategy_review',
@@ -473,7 +490,9 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
           currentStrategyDraftVersionId: draft.id,
           updatedAt: new Date(),
         })
-        .where(eq(userBooks.id, userBookId));
+        .where(and(eq(userBooks.id, userBookId), eq(userBooks.workflowStatus, 'interviewing')))
+        .returning({ id: userBooks.id });
+      if (activated.length !== 1) throw new UserBookError('访谈状态已经变化', 409);
     });
   };
 
@@ -511,10 +530,15 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       const [session] = await db.select().from(interviewSessions).where(eq(interviewSessions.userBookId, userBookId)).limit(1);
       if (!session) throw new UserBookError('访谈初始化失败', 503);
       sessionId = session.id;
+      // §6.5 guard: only start interviewing from the two valid prior states (checked above).
+      // A concurrent advance makes this a no-op; the next call re-links the session (self-heal).
       await db
         .update(userBooks)
         .set({ workflowStatus: 'interviewing', currentInterviewSessionId: session.id, updatedAt: new Date() })
-        .where(eq(userBooks.id, userBookId));
+        .where(and(
+          eq(userBooks.id, userBookId),
+          inArray(userBooks.workflowStatus, ['on_shelf', 'interviewing']),
+        ));
     }
     const [session] = await db.select().from(interviewSessions).where(eq(interviewSessions.id, sessionId)).limit(1);
     if (!session || session.status !== 'active') return;
@@ -690,6 +714,10 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
     };
   };
 
+  // Fast-path idempotency (§6.5): a replay with a key we already recorded returns the current
+  // strategy without re-running the LLM. Backed by the indexed `idempotencyKey` column (was a
+  // jsonb payload full-scan); the partial unique index is the race-safe backstop for the rare
+  // concurrent duplicate (see isFeedbackIdempotencyConflict).
   const feedbackAlreadyApplied = async (userBookId: string, idempotencyKey: string) => {
     const owned = await getOwnedBook(userBookId);
     if (!owned.userBook.currentInterviewSessionId) return false;
@@ -699,10 +727,131 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       .where(and(
         eq(interviewMessages.interviewSessionId, owned.userBook.currentInterviewSessionId),
         eq(interviewMessages.kind, 'feedback'),
-        sql`${interviewMessages.payload}->>'idempotencyKey' = ${idempotencyKey}`,
+        eq(interviewMessages.idempotencyKey, idempotencyKey),
       ))
       .limit(1);
     return Boolean(message);
+  };
+
+  // §6.4 / §10.7 shared revision engine. Runs the revision LLM FIRST (no writes), then applies
+  // the whole change in ONE transaction: supersede the current draft, insert the revised draft,
+  // record the feedback message (carrying the idempotency key) and bump the adjustment count,
+  // landing the book back in strategy_review. When `trialRevisionId` is present (trial feedback,
+  // §6.4) the published trial round and its generations are voided in the SAME transaction — so a
+  // crash before commit leaves the trial intact and the request is simply retried, with no
+  // half-applied state and no double count. Callers do their own phase-specific pre-validation.
+  const reviseFromFeedback = async (
+    userBookId: string,
+    params: {
+      draft: StrategyReviewResponse['draft'];
+      feedback: string;
+      idempotencyKey: string;
+      trialRevisionId?: string;
+    },
+  ): Promise<StrategyReviewResponse> => {
+    const setup = await getSetupContext(userBookId);
+    const outcome = await options.setupEngine.runTurn({
+      sessionId: setup.owned.userBook.currentInterviewSessionId!,
+      phase: 'strategy_review',
+      askedCount: 0,
+      context: { ...setup.context, currentStrategy: params.draft },
+      feedback: params.feedback,
+    });
+    if (outcome.type !== 'revised') throw new UserBookError('处理方式修订失败', 503);
+    const revised = outcome;
+    try {
+      await db.transaction(async (tx) => {
+        const [bookGate] = await tx.select().from(userBooks).where(eq(userBooks.id, userBookId)).limit(1);
+        if (!bookGate || bookGate.currentStrategyDraftVersionId !== params.draft.id || bookGate.adjustmentCount >= 5) {
+          throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
+        }
+        if (params.trialRevisionId) {
+          if (bookGate.workflowStatus !== 'trial_review' || bookGate.currentTrialRevisionId !== params.trialRevisionId) {
+            throw new UserBookError('试读版本已经更新', 409);
+          }
+          const changedRevision = await tx
+            .update(trialRevisions)
+            .set({ status: 'superseded', supersededAt: new Date(), updatedAt: new Date() })
+            .where(and(
+              eq(trialRevisions.id, params.trialRevisionId),
+              eq(trialRevisions.userBookId, userBookId),
+              eq(trialRevisions.status, 'published'),
+            ))
+            .returning({ id: trialRevisions.id });
+          if (changedRevision.length !== 1) throw new UserBookError('试读版本已经更新', 409);
+          await tx
+            .update(nodeGenerations)
+            .set({ status: 'superseded', result: null, completedAt: new Date(), updatedAt: new Date() })
+            .where(and(
+              eq(nodeGenerations.userBookId, userBookId),
+              eq(nodeGenerations.generationScope, 'trial'),
+              inArray(nodeGenerations.status, ['queued', 'generating', 'retrying', 'ready', 'failed']),
+            ));
+        } else if (bookGate.workflowStatus !== 'strategy_review' || bookGate.currentTrialRevisionId) {
+          throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
+        }
+        const superseded = await tx
+          .update(strategyDraftVersions)
+          .set({ status: 'superseded', supersededAt: new Date() })
+          .where(and(
+            eq(strategyDraftVersions.id, params.draft.id),
+            eq(strategyDraftVersions.userBookId, userBookId),
+            eq(strategyDraftVersions.status, params.draft.status),
+          ))
+          .returning({ id: strategyDraftVersions.id });
+        if (superseded.length !== 1) throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
+        const profileId = bookGate.currentBookReaderProfileVersionId;
+        if (!profileId) throw new UserBookError('本书画像不存在', 409);
+        const sessionId = bookGate.currentInterviewSessionId;
+        if (sessionId) {
+          const [session] = await tx.select().from(interviewSessions).where(eq(interviewSessions.id, sessionId)).limit(1);
+          if (session) {
+            // The feedback insert is the idempotency gate: a duplicate key collides on the
+            // partial unique index and rolls the whole transaction back (caught below).
+            await tx.insert(interviewMessages).values({
+              interviewSessionId: sessionId,
+              sequence: session.conversationVersion + 1,
+              role: 'user',
+              kind: 'feedback',
+              content: params.feedback.trim(),
+              payload: { strategyDraftVersionId: params.draft.id, feedback: params.feedback },
+              idempotencyKey: params.idempotencyKey,
+            });
+            await tx.update(interviewSessions).set({ conversationVersion: session.conversationVersion + 1, updatedAt: new Date() }).where(eq(interviewSessions.id, sessionId));
+          }
+        }
+        const [draft] = await tx.insert(strategyDraftVersions).values({
+          userBookId,
+          bookReaderProfileVersionId: profileId,
+          version: params.draft.version + 1,
+          status: 'draft',
+          readingBriefing: params.draft.readingBriefing,
+          userFacingSummary: revised.publicStrategy,
+          strategy: mapStrategy(revised.strategy),
+        }).returning();
+        if (!draft) throw new Error('failed to save revised strategy');
+        const updated = await tx
+          .update(userBooks)
+          .set({
+            workflowStatus: 'strategy_review',
+            currentStrategyDraftVersionId: draft.id,
+            currentTrialRevisionId: null,
+            adjustmentCount: sql`${userBooks.adjustmentCount} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(userBooks.id, userBookId),
+            eq(userBooks.currentStrategyDraftVersionId, params.draft.id),
+            sql`${userBooks.adjustmentCount} < 5`,
+          ))
+          .returning({ id: userBooks.id });
+        if (updated.length !== 1) throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
+      });
+    } catch (error) {
+      if (isFeedbackIdempotencyConflict(error)) return strategyState(userBookId);
+      throw error;
+    }
+    return strategyState(userBookId);
   };
 
   const getManifestAndHtml = async (sharedBookId: string) => {
@@ -824,10 +973,18 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
         });
         generationIds.push(generationId);
       }
-      await tx
+      // §6.5 guard: createTrialRevision is reachable only from strategy_review (approve) or
+      // trial_generation_failed (retry); assert it so a stray state can't strand an orphan
+      // generating revision without the book advancing.
+      const advanced = await tx
         .update(userBooks)
         .set({ workflowStatus: 'trial_generating', currentTrialRevisionId: revision.id, updatedAt: new Date() })
-        .where(eq(userBooks.id, userBookId));
+        .where(and(
+          eq(userBooks.id, userBookId),
+          inArray(userBooks.workflowStatus, ['strategy_review', 'trial_generation_failed']),
+        ))
+        .returning({ id: userBooks.id });
+      if (advanced.length !== 1) throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
       return { revision, generationIds };
     });
     try {
@@ -847,7 +1004,12 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
           failedAt: new Date(),
           updatedAt: new Date(),
         }).where(eq(trialRevisions.id, created.revision.id));
-        await tx.update(userBooks).set({ workflowStatus: 'trial_generation_failed', updatedAt: new Date() }).where(eq(userBooks.id, userBookId));
+        // §6.5 guard: only fail the book we just moved to trial_generating for this revision.
+        await tx.update(userBooks).set({ workflowStatus: 'trial_generation_failed', updatedAt: new Date() }).where(and(
+          eq(userBooks.id, userBookId),
+          eq(userBooks.workflowStatus, 'trial_generating'),
+          eq(userBooks.currentTrialRevisionId, created.revision.id),
+        ));
       });
       throw new UserBookError(
         error instanceof Error ? `试读任务入队失败：${error.message}` : '试读任务入队失败',
@@ -905,6 +1067,11 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       getManifestAndHtml(owned.sharedBook.id),
     ]);
     if (!revision) throw new UserBookError('当前试读不存在', 404);
+    // §6.3 / §10.5: all-or-nothing is a server-side guarantee, not just the client-side
+    // `canAdopt` gate. Until the whole revision is published we withhold every per-segment
+    // `result`, so `workflow()` during `trial_generating` and a `failed`/`superseded` round
+    // never leak a partially-generated fragment.
+    const exposeResults = revision.status === 'published';
     const segments = segmentRows.map(({ segment, generation }) => {
       const extracted = extractNodeSourceFromHtml(source.html, segment.sectionId, segment.segment);
       const range = {
@@ -926,7 +1093,7 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
         originalHtml: sliced.structuredHtml,
         selectionReason: segment.selectionReason,
         status: segment.status,
-        result: generation?.result ?? null,
+        result: exposeResults ? generation?.result ?? null : null,
         viewedAt: segment.viewedAt?.toISOString() ?? null,
       };
     });
@@ -1154,90 +1321,11 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       ) {
         throw new UserBookError('当前处理方式已经进入试读，不能从旧页面直接修改', 409);
       }
-      const setup = await getSetupContext(userBookId);
-      const outcome = await options.setupEngine.runTurn({
-        sessionId: setup.owned.userBook.currentInterviewSessionId!,
-        phase: 'strategy_review',
-        askedCount: 0,
-        context: { ...setup.context, currentStrategy: current.draft },
+      return reviseFromFeedback(userBookId, {
+        draft: current.draft,
         feedback: input.feedback,
+        idempotencyKey: input.idempotencyKey,
       });
-      if (outcome.type !== 'revised') throw new UserBookError('处理方式修订失败', 503);
-      const revised = outcome;
-      await db.transaction(async (tx) => {
-        const [bookGate] = await tx
-          .select()
-          .from(userBooks)
-          .where(eq(userBooks.id, userBookId))
-          .limit(1);
-        if (
-          !bookGate
-          || bookGate.workflowStatus !== 'strategy_review'
-          || bookGate.currentStrategyDraftVersionId !== current.draft.id
-          || bookGate.currentTrialRevisionId
-          || bookGate.adjustmentCount >= 5
-        ) {
-          throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
-        }
-        const superseded = await tx
-          .update(strategyDraftVersions)
-          .set({ status: 'superseded', supersededAt: new Date() })
-          .where(and(
-            eq(strategyDraftVersions.id, current.draft.id),
-            eq(strategyDraftVersions.userBookId, userBookId),
-            eq(strategyDraftVersions.status, current.draft.status),
-          ))
-          .returning({ id: strategyDraftVersions.id });
-        if (superseded.length !== 1) {
-          throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
-        }
-        const profileId = bookGate.currentBookReaderProfileVersionId;
-        if (!profileId) throw new UserBookError('本书画像不存在', 409);
-        const [draft] = await tx.insert(strategyDraftVersions).values({
-          userBookId,
-          bookReaderProfileVersionId: profileId,
-          version: current.draft.version + 1,
-          status: 'draft',
-          readingBriefing: current.draft.readingBriefing,
-          userFacingSummary: revised.publicStrategy,
-          strategy: mapStrategy(revised.strategy),
-        }).returning();
-        if (!draft) throw new Error('failed to save revised strategy');
-        const sessionId = bookGate.currentInterviewSessionId;
-        if (sessionId) {
-          const [session] = await tx.select().from(interviewSessions).where(eq(interviewSessions.id, sessionId)).limit(1);
-          if (session) {
-            await tx.insert(interviewMessages).values({
-              interviewSessionId: sessionId,
-              sequence: session.conversationVersion + 1,
-              role: 'user',
-              kind: 'feedback',
-              content: input.feedback.trim(),
-              payload: input,
-            });
-            await tx.update(interviewSessions).set({ conversationVersion: session.conversationVersion + 1, updatedAt: new Date() }).where(eq(interviewSessions.id, sessionId));
-          }
-        }
-        const updatedBook = await tx
-          .update(userBooks)
-          .set({
-            currentStrategyDraftVersionId: draft.id,
-            adjustmentCount: sql`${userBooks.adjustmentCount} + 1`,
-            updatedAt: new Date(),
-          })
-          .where(and(
-            eq(userBooks.id, userBookId),
-            eq(userBooks.workflowStatus, 'strategy_review'),
-            eq(userBooks.currentStrategyDraftVersionId, current.draft.id),
-            isNull(userBooks.currentTrialRevisionId),
-            sql`${userBooks.adjustmentCount} < 5`,
-          ))
-          .returning({ id: userBooks.id });
-        if (updatedBook.length !== 1) {
-          throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
-        }
-      });
-      return strategyState(userBookId);
     },
 
     async approveStrategy(userBookId: string, input: ApproveStrategyRequest): Promise<ApproveStrategyResponse> {
@@ -1335,37 +1423,16 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       const current = await trialState(userBookId);
       if (!current.canAdjust) throw new UserBookError('已经达到 5 次调整上限', 409);
       if (current.trialRevisionId !== input.trialRevisionId) throw new UserBookError('试读版本已经更新', 409);
-      await db.transaction(async (tx) => {
-        const changedRevision = await tx
-          .update(trialRevisions)
-          .set({ status: 'superseded', supersededAt: new Date(), updatedAt: new Date() })
-          .where(and(
-            eq(trialRevisions.id, current.trialRevisionId),
-            eq(trialRevisions.userBookId, userBookId),
-            eq(trialRevisions.status, 'published'),
-          ))
-          .returning({ id: trialRevisions.id });
-        if (changedRevision.length !== 1) throw new UserBookError('试读版本已经更新', 409);
-        await tx.update(nodeGenerations).set({ status: 'superseded', result: null, completedAt: new Date(), updatedAt: new Date() }).where(and(
-          eq(nodeGenerations.userBookId, userBookId),
-          eq(nodeGenerations.generationScope, 'trial'),
-          inArray(nodeGenerations.status, ['queued', 'generating', 'retrying', 'ready', 'failed']),
-        ));
-        const changedBook = await tx
-          .update(userBooks)
-          .set({ workflowStatus: 'strategy_review', currentTrialRevisionId: null, updatedAt: new Date() })
-          .where(and(
-            eq(userBooks.id, userBookId),
-            eq(userBooks.workflowStatus, 'trial_review'),
-            eq(userBooks.currentTrialRevisionId, current.trialRevisionId),
-          ))
-          .returning({ id: userBooks.id });
-        if (changedBook.length !== 1) throw new UserBookError('试读状态已经更新', 409);
-      });
-      return this.submitStrategyFeedback(userBookId, {
-        strategyDraftVersionId: current.strategyDraftVersionId,
+      // §6.4: void the published trial round AND produce the revised draft in ONE recoverable
+      // transaction (reviseFromFeedback), replacing the previous two-commit split that could
+      // strand the book in strategy_review with the trial voided but no new draft and no count
+      // bump — after which a retry hit `当前试读不存在` (currentTrialRevisionId already null).
+      const { draft } = await strategyState(userBookId);
+      return reviseFromFeedback(userBookId, {
+        draft,
         feedback: input.feedback,
         idempotencyKey: input.idempotencyKey,
+        trialRevisionId: input.trialRevisionId,
       });
     },
 

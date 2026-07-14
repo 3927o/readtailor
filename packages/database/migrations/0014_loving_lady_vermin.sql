@@ -1,0 +1,3 @@
+ALTER TABLE "interview_messages" ADD COLUMN "idempotency_key" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "interview_messages_feedback_idempotency_unique" ON "interview_messages" USING btree ("interview_session_id","idempotency_key") WHERE "interview_messages"."kind" = 'feedback';--> statement-breakpoint
+ALTER TABLE "interview_messages" ADD CONSTRAINT "interview_messages_idempotency_nonempty" CHECK ("interview_messages"."idempotency_key" is null or length(btrim("interview_messages"."idempotency_key")) > 0);

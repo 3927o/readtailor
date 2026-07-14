@@ -464,9 +464,11 @@ export type SubmitStrategyFeedbackRequest = Static<
   typeof SubmitStrategyFeedbackRequestSchema
 >;
 
+// No idempotencyKey: approval is idempotent by state — a re-approve of an already-approved
+// draft returns the existing trial revision (see approveStrategy), so a dedup key added nothing
+// (and the client sent a fresh UUID each call anyway). §6.5.
 export const ApproveStrategyRequestSchema = Type.Object({
   strategyDraftVersionId: Type.String(),
-  idempotencyKey: Type.String({ minLength: 1, maxLength: 200 }),
 });
 export type ApproveStrategyRequest = Static<typeof ApproveStrategyRequestSchema>;
 
@@ -572,10 +574,11 @@ export type MarkTrialSegmentViewedRequest = Static<
   typeof MarkTrialSegmentViewedRequestSchema
 >;
 
+// No idempotencyKey: adoption is idempotent by state — once active_reading, re-adopting returns
+// the existing formal strategy (see adoptTrial), so the key was dead weight. §6.5.
 export const AdoptTrialRequestSchema = Type.Object({
   trialRevisionId: Type.String(),
   strategyDraftVersionId: Type.String(),
-  idempotencyKey: Type.String({ minLength: 1, maxLength: 200 }),
 });
 export type AdoptTrialRequest = Static<typeof AdoptTrialRequestSchema>;
 

@@ -448,7 +448,7 @@ export function submitStrategyFeedback(userBookId: string, draftId: string, feed
 }
 
 export async function approveStrategyForTrial(userBookId: string, draftId: string): Promise<TrialSnapshot> {
-  await post(`${userBookRoot(userBookId)}/strategy/approve`, { strategyDraftVersionId: draftId });
+  await post(`${userBookRoot(userBookId)}/strategy/approve`, { strategyDraftVersionId: draftId }, false);
   return getTrial(userBookId);
 }
 
@@ -490,6 +490,6 @@ export async function adoptTrial(
   await post(`${userBookRoot(userBookId)}/trial/adopt`, {
     trialRevisionId: revisionId,
     strategyDraftVersionId: draftId,
-  });
+  }, false);
   return getUserBook(userBookId);
 }

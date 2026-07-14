@@ -156,11 +156,62 @@ describe('user book workflow routes', () => {
       method: 'POST',
       url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve`,
       headers: { origin: 'http://localhost:5173' },
-      payload: { strategyDraftVersionId: SHARED_BOOK_ID, idempotencyKey: 'request-1' },
+      payload: { strategyDraftVersionId: SHARED_BOOK_ID },
     });
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ error: '处理方式已经更新，请刷新后继续' });
+  });
+
+  // §6.5: approve/adopt dropped their unused idempotencyKey (both are idempotent by state).
+  // A body without the key must still be accepted — the schema no longer requires it.
+  it('approves a strategy without an idempotency key', async () => {
+    let received: unknown;
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async approveStrategy(_userBookId, input) {
+          received = input;
+          return {
+            userBookId: USER_BOOK_ID,
+            workflowStatus: 'trial_generating',
+            strategyDraftVersionId: input.strategyDraftVersionId,
+            trialRevisionId: SHARED_BOOK_ID,
+          };
+        },
+      }),
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { strategyDraftVersionId: SHARED_BOOK_ID },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(received).toEqual({ strategyDraftVersionId: SHARED_BOOK_ID });
+    expect(response.json()).toMatchObject({ workflowStatus: 'trial_generating' });
+  });
+
+  it('adopts a trial without an idempotency key', async () => {
+    let received: unknown;
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async adoptTrial(_userBookId, input) {
+          received = input;
+          return { userBookId: USER_BOOK_ID, workflowStatus: 'active_reading', strategyVersionId: SHARED_BOOK_ID };
+        },
+      }),
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/trial/adopt`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { trialRevisionId: SHARED_BOOK_ID, strategyDraftVersionId: SHARED_BOOK_ID },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(received).toEqual({ trialRevisionId: SHARED_BOOK_ID, strategyDraftVersionId: SHARED_BOOK_ID });
+    expect(response.json()).toMatchObject({ workflowStatus: 'active_reading' });
   });
 
   it('streams interview deltas as SSE and closes with question_final', async () => {
