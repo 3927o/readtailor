@@ -183,13 +183,7 @@ export function TrialPage() {
 
           <nav className="trial-navigation" aria-label="试读片段导航">
             <button className="button button-ghost" type="button" disabled={sampleIndex === 0} onClick={() => setSampleIndex((value) => Math.max(0, value - 1))}>‹ 上一个片段</button>
-            {sampleIndex < samples.length - 1 ? (
-              <button className="button button-primary" type="button" onClick={() => setSampleIndex((value) => Math.min(samples.length - 1, value + 1))}>下一个片段 ›</button>
-            ) : (
-              <button className="button button-primary" type="button" disabled={!snapshot.allViewed || adopt.isPending} onClick={() => adopt.mutate()}>
-                {adopt.isPending ? '正在采用…' : snapshot.allViewed ? '采用这个处理方式并开始阅读' : '查看全部三个片段后采用'}
-              </button>
-            )}
+            <button className="button button-ghost" type="button" disabled={sampleIndex >= samples.length - 1} onClick={() => setSampleIndex((value) => Math.min(samples.length - 1, value + 1))}>下一个片段 ›</button>
           </nav>
 
           {snapshot.canAdjust ? (
@@ -203,7 +197,12 @@ export function TrialPage() {
             />
           ) : <div className="adjustment-limit">已经达到 {snapshot.adjustmentLimit} 次调整上限。你仍可查看三个片段并采用当前处理方式。</div>}
           {mutationError ? <div className="form-error" role="alert">{mutationError}</div> : null}
-          <div className="trial-exit"><BackToShelf /></div>
+          <div className="workflow-actions workflow-actions-final">
+            <button className="button button-primary" type="button" disabled={adopt.isPending} onClick={() => adopt.mutate()}>
+              {adopt.isPending ? '正在采用…' : '采用这个处理方式并开始阅读'}
+            </button>
+            <BackToShelf />
+          </div>
         </div>
       ) : <WorkflowMessage title="试读结果不完整">当前 revision 没有返回完整的三个片段，请重新读取。</WorkflowMessage>}
     </WorkflowPage>
