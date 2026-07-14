@@ -1,7 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Navigate, useSearchParams } from 'react-router';
 import { useAuth } from './AuthProvider';
-import { googleLoginUrl } from './api';
 
 export const AUTH_RETURN_TO_STORAGE_KEY = 'readtailor.auth.returnTo';
 
@@ -139,40 +138,30 @@ export function LoginPage() {
           </button>
         </form>
 
-        <div className="login-divider"><span>或</span></div>
-
-        <div className="login-actions">
-          <button
-            className="button button-secondary login-google"
-            type="button"
-            onClick={() => {
-              rememberReturnTo();
-              window.location.assign(googleLoginUrl(returnTo));
-            }}
-          >
-            使用 Google 登录
-          </button>
-
-          {developmentEnabled ? (
-            <button
-              className="button button-secondary"
-              type="button"
-              disabled={developmentPending}
-              onClick={() => {
-                setFormError(null);
-                setDevelopmentPending(true);
-                rememberReturnTo();
-                void auth.developmentLogin()
-                  .catch((error: unknown) => {
-                    setFormError(error instanceof Error ? error.message : '开发登录失败');
-                  })
-                  .finally(() => setDevelopmentPending(false));
-              }}
-            >
-              {developmentPending ? '正在登录…' : '开发环境登录'}
-            </button>
-          ) : null}
-        </div>
+        {developmentEnabled ? (
+          <>
+            <div className="login-divider"><span>或</span></div>
+            <div className="login-actions">
+              <button
+                className="button button-secondary"
+                type="button"
+                disabled={developmentPending}
+                onClick={() => {
+                  setFormError(null);
+                  setDevelopmentPending(true);
+                  rememberReturnTo();
+                  void auth.developmentLogin()
+                    .catch((error: unknown) => {
+                      setFormError(error instanceof Error ? error.message : '开发登录失败');
+                    })
+                    .finally(() => setDevelopmentPending(false));
+                }}
+              >
+                {developmentPending ? '正在登录…' : '开发环境登录'}
+              </button>
+            </div>
+          </>
+        ) : null}
       </section>
     </main>
   );
