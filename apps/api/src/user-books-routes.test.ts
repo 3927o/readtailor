@@ -103,6 +103,20 @@ function fakeService(overrides: Partial<UserBookUserService> = {}): UserBookServ
         highlights: [],
       };
     },
+    async recordHeartbeat() {
+      return { accepted: true };
+    },
+    async getGlobalReadingStats() {
+      return { todaySeconds: 600, weekSeconds: 3600, totalSeconds: 7200, streakDays: 3 };
+    },
+    async getBookReadingStats() {
+      return {
+        totalEffectiveSeconds: 1800,
+        lastReadAt: '2026-07-14T00:00:00.000Z',
+        progressPercent: 42,
+        remaining: { seconds: 5400, approximate: true },
+      };
+    },
     ...overrides,
   } as UserBookUserService;
   return { forUser: () => bound };
@@ -459,5 +473,87 @@ describe('user book workflow routes', () => {
     });
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ error: '划线范围超出节点' });
+  });
+
+  it('accepts a reading heartbeat and passes the parsed interval through', async () => {
+    let received: unknown;
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async recordHeartbeat(_userBookId, input) {
+          received = input;
+          return { accepted: true };
+        },
+      }),
+    });
+    const payload = {
+      clientIntervalId: 'interval-abcdef01',
+      effectiveSeconds: 120,
+      forwardSeconds: 90,
+      forwardChars: 700,
+      day: '2026-07-14',
+      startedAt: '2026-07-14T09:00:00.000Z',
+      at: '2026-07-14T09:02:00.000Z',
+    };
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/reading-sessions/heartbeat`,
+      headers: { origin: 'http://localhost:5173' },
+      payload,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ accepted: true });
+    // The idempotency key + split counters reach the service verbatim (the GREATEST clamp that makes a
+    // retry a no-op is DB-level, exercised by the integration round-trip).
+    expect(received).toEqual(payload);
+  });
+
+  it('rejects a malformed heartbeat before the handler runs', async () => {
+    const app = await buildApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/reading-sessions/heartbeat`,
+      headers: { origin: 'http://localhost:5173' },
+      // forwardChars minimum is 0 — a negative is rejected by the schema.
+      payload: {
+        clientIntervalId: 'interval-abcdef01',
+        effectiveSeconds: 60,
+        forwardSeconds: 30,
+        forwardChars: -1,
+        day: '2026-07-14',
+        startedAt: '2026-07-14T09:00:00.000Z',
+        at: '2026-07-14T09:01:00.000Z',
+      },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('serves global reading stats and requires the client day window', async () => {
+    const app = await buildApp();
+    const ok = await app.inject({
+      method: 'GET',
+      url: `/v1/me/reading-stats?day=2026-07-14&weekStart=2026-07-13`,
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toEqual({ todaySeconds: 600, weekSeconds: 3600, totalSeconds: 7200, streakDays: 3 });
+
+    // day/weekStart are required and format-checked — a missing window is a 400, never a wrong-tz guess.
+    const missing = await app.inject({ method: 'GET', url: `/v1/me/reading-stats` });
+    expect(missing.statusCode).toBe(400);
+  });
+
+  it('serves per-book reading stats including the remaining-time estimate', async () => {
+    const app = await buildApp();
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/user-books/${USER_BOOK_ID}/reading-stats`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      totalEffectiveSeconds: 1800,
+      lastReadAt: '2026-07-14T00:00:00.000Z',
+      progressPercent: 42,
+      remaining: { seconds: 5400, approximate: true },
+    });
   });
 });

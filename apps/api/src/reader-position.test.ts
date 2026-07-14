@@ -6,7 +6,13 @@ import { positionMatchesManifest, type ManifestMeta } from './user-books';
 // never block the read). This locks the pure guard; the conditional client_observed_at upsert and the
 // migration backfill are exercised at the SQL layer, which needs a Postgres integration harness.
 function meta(entries: Array<[number, { sectionId: string; segment: number }]>): ManifestMeta {
-  return { version: 'v1', nodesByOrder: new Map(entries) };
+  return {
+    version: 'v1',
+    language: null,
+    bookTotalChars: null,
+    charCountByOrder: new Map(),
+    nodesByOrder: new Map(entries),
+  };
 }
 
 describe('positionMatchesManifest', () => {

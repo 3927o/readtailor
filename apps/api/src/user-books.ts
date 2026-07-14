@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
 import type {
   AdoptTrialRequest,
   AdoptTrialResponse,
@@ -11,6 +11,8 @@ import type {
   Highlight,
   HighlightListResponse,
   HighlightResponse,
+  HeartbeatRequest,
+  HeartbeatResponse,
   InterviewQuestion,
   InterviewStateResponse,
   InterviewStreamEvent,
@@ -23,6 +25,9 @@ import type {
   ReaderProfile,
   ReadingSettings,
   ReadingSettingsResponse,
+  ReadingStatsGlobal,
+  ReadingStatsPerBook,
+  ReadingStatsQuery,
   Strategy,
   StrategyReviewResponse,
   TextRange,
@@ -40,6 +45,7 @@ import { DEFAULT_READING_SETTINGS } from '@readtailor/contracts';
 import {
   bookPackages,
   bookReaderProfileVersions,
+  dailyReadingTotals,
   highlights,
   interviewAnswers,
   interviewMessages,
@@ -49,6 +55,7 @@ import {
   readerProfileVersions,
   readerReadNodes,
   readerStates,
+  readingSessions,
   sharedBooks,
   strategyDraftVersions,
   strategyVersions,
@@ -73,6 +80,86 @@ const FORMAL_WINDOW_SIZE = 4;
 // window band (1..FORMAL_WINDOW_SIZE) so the reader's lookahead is always processed first.
 // (BullMQ: lower number = more urgent; 0 would jump ahead of everything, so we never use it.)
 const FORMAL_BACKGROUND_PRIORITY = 1000;
+
+// §11.10 implementation parameters (「样本阈值、异常速度过滤和默认速度属于实现参数,不在普通界面展示」).
+// Default reading speeds in original-text UTF-16 chars/sec, keyed by primary language subtag. zh ≈ 390
+// 字/min; en ≈ 216 wpm × ~5 chars/word ≈ 18 chars/sec; other languages fall back to a generic middle.
+const DEFAULT_READING_SPEED_CHARS_PER_SEC: Record<string, number> = { zh: 6.5, en: 18 };
+const FALLBACK_READING_SPEED_CHARS_PER_SEC = 9;
+// Switch from the language default to the book's own speed only once the forward-reading sample is
+// solid enough to trust (both a time and a char floor, so a single burst can't flip it early).
+const MIN_PERSONAL_SAMPLE_SECONDS = 180;
+const MIN_PERSONAL_SAMPLE_CHARS = 1500;
+// Abnormal-speed filter: ignore a personal speed outside a sane band and keep the default instead.
+const MIN_REASONABLE_SPEED_CHARS_PER_SEC = 1;
+const MAX_REASONABLE_SPEED_CHARS_PER_SEC = 60;
+
+// §11.10 — pick the reading speed for the remaining-time estimate. Uses the book's own forward-reading
+// speed (ΣforwardChars / ΣforwardSeconds) once the sample clears both floors and lands in a sane band;
+// otherwise the language default, flagged `approximate` so the UI shows「约 X 小时」. Pure/exported for
+// unit testing. `forwardSeconds`/`forwardChars` are the §11.10 分母/分子 (forward original-text reading
+// only) — never total effective time.
+export function resolveReadingSpeed(
+  language: string | null,
+  forwardSeconds: number,
+  forwardChars: number,
+): { charsPerSec: number; approximate: boolean } {
+  const primary = (language ?? '').toLowerCase().split('-')[0]!;
+  const fallback = DEFAULT_READING_SPEED_CHARS_PER_SEC[primary] ?? FALLBACK_READING_SPEED_CHARS_PER_SEC;
+  if (forwardSeconds >= MIN_PERSONAL_SAMPLE_SECONDS && forwardChars >= MIN_PERSONAL_SAMPLE_CHARS) {
+    const personal = forwardChars / forwardSeconds;
+    if (personal >= MIN_REASONABLE_SPEED_CHARS_PER_SEC && personal <= MAX_REASONABLE_SPEED_CHARS_PER_SEC) {
+      return { charsPerSec: personal, approximate: false };
+    }
+  }
+  return { charsPerSec: fallback, approximate: true };
+}
+
+// §11.9/§11.10 — whole-node original-text progress at a stable node order (the reader progress-bar 口径:
+// charactersBefore = Σ character_count for nodes strictly before the current order; 只算原文). Returns
+// nulls the caller maps to a 0%/unknown estimate when the manifest carries no char counts.
+export function computeBookProgress(
+  meta: ManifestMeta,
+  nodeOrder: number | null,
+): { totalChars: number | null; charsBefore: number; remainingChars: number; progressPercent: number } {
+  if (meta.bookTotalChars === null) {
+    return { totalChars: null, charsBefore: 0, remainingChars: 0, progressPercent: 0 };
+  }
+  let charsBefore = 0;
+  if (nodeOrder !== null) {
+    for (const [order, count] of meta.charCountByOrder) {
+      if (order < nodeOrder) charsBefore += count;
+    }
+  }
+  charsBefore = Math.min(charsBefore, meta.bookTotalChars);
+  const remainingChars = Math.max(0, meta.bookTotalChars - charsBefore);
+  const progressPercent = meta.bookTotalChars > 0
+    ? Math.min(100, Math.max(0, Math.round((charsBefore / meta.bookTotalChars) * 100)))
+    : 0;
+  return { totalChars: meta.bookTotalChars, charsBefore, remainingChars, progressPercent };
+}
+
+// Calendar-day arithmetic on 'YYYY-MM-DD' strings via UTC midnight, so it never drifts by a day from
+// local timezone offsets — the strings are opaque calendar dates, not instants.
+function addCalendarDays(day: string, delta: number): string {
+  const [y, m, d] = day.split('-').map(Number);
+  const dt = new Date(Date.UTC(y!, m! - 1, d!));
+  dt.setUTCDate(dt.getUTCDate() + delta);
+  return dt.toISOString().slice(0, 10);
+}
+
+// §11.9 current consecutive reading streak: the run of days that each have any effective reading,
+// ending at `today` — or at yesterday when today has none yet, so an active streak isn't reported as
+// broken merely because today's reading hasn't happened. Pure/exported for unit testing.
+export function computeStreakDays(activeDays: Set<string>, today: string): number {
+  let cursor = activeDays.has(today) ? today : addCalendarDays(today, -1);
+  let streak = 0;
+  while (activeDays.has(cursor)) {
+    streak += 1;
+    cursor = addCalendarDays(cursor, -1);
+  }
+  return streak;
+}
 
 type ManifestBlock = {
   block_index: number;
@@ -149,6 +236,12 @@ function asManifest(value: unknown): ReadingManifest {
 // on each scroll settle, so it must not re-read the manifest artifact each time.
 export interface ManifestMeta {
   version: string | null;
+  // §11.10 progress/remaining inputs: the book's primary language (for the default-speed lookup), the
+  // total original-text character count, and per-order original character counts (for the whole-node
+  // charactersBefore 口径 the reader progress bar uses). All null/empty when the manifest is unreadable.
+  language: string | null;
+  bookTotalChars: number | null;
+  charCountByOrder: Map<number, number>;
   nodesByOrder: Map<number, { sectionId: string; segment: number }>;
 }
 
@@ -171,20 +264,51 @@ const manifestMetaCache = new Map<string, ManifestMeta>();
 async function getManifestMeta(books: BookService, sharedBookId: string): Promise<ManifestMeta> {
   const cached = manifestMetaCache.get(sharedBookId);
   if (cached) return cached;
-  let meta: ManifestMeta = { version: null, nodesByOrder: new Map() };
+  const empty = (): ManifestMeta => ({
+    version: null,
+    language: null,
+    bookTotalChars: null,
+    charCountByOrder: new Map(),
+    nodesByOrder: new Map(),
+  });
+  let meta: ManifestMeta = empty();
   try {
-    const raw = (await books.getManifest(sharedBookId)) as { version?: unknown; nodes?: unknown } | null;
+    const raw = (await books.getManifest(sharedBookId)) as {
+      version?: unknown;
+      book_total_characters?: unknown;
+      document?: { language?: unknown };
+      nodes?: unknown;
+    } | null;
     const nodesByOrder = new Map<number, { sectionId: string; segment: number }>();
+    const charCountByOrder = new Map<number, number>();
+    let sumChars = 0;
+    let sawChars = false;
     if (Array.isArray(raw?.nodes)) {
-      for (const node of raw.nodes as ManifestNode[]) {
+      for (const node of raw.nodes as Array<ManifestNode & { character_count?: unknown }>) {
         if (typeof node?.order === 'number' && typeof node?.section_id === 'string' && typeof node?.segment === 'number') {
           nodesByOrder.set(node.order, { sectionId: node.section_id, segment: node.segment });
+          if (typeof node.character_count === 'number' && Number.isFinite(node.character_count)) {
+            charCountByOrder.set(node.order, node.character_count);
+            sumChars += node.character_count;
+            sawChars = true;
+          }
         }
       }
     }
-    meta = { version: typeof raw?.version === 'string' ? raw.version : null, nodesByOrder };
+    // Prefer the manifest's own book_total_characters; fall back to the sum of per-node counts so the
+    // ratio stays self-consistent with charCountByOrder when the top-level total is absent.
+    const bookTotalChars = typeof raw?.book_total_characters === 'number' && Number.isFinite(raw.book_total_characters)
+      ? raw.book_total_characters
+      : sawChars ? sumChars : null;
+    meta = {
+      version: typeof raw?.version === 'string' ? raw.version : null,
+      language: typeof raw?.document?.language === 'string' ? raw.document.language : null,
+      bookTotalChars,
+      charCountByOrder,
+      nodesByOrder,
+    };
   } catch {
-    meta = { version: null, nodesByOrder: new Map() };
+    meta = empty();
   }
   manifestMetaCache.set(sharedBookId, meta);
   return meta;
@@ -1936,6 +2060,119 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
         .returning({ id: highlights.id });
       if (!row) throw new UserBookError('划线不存在', 404);
       return { id: row.id };
+    },
+
+    // §11.8 — accumulate one effective reading interval. Idempotent by clientIntervalId (GREATEST
+    // clamp), then the (user, day) rollup is recomputed as an exact SUM so retries / a pagehide flush
+    // racing a periodic beat never double-count. Heartbeats only land during active reading (§11.8
+    // 「位于正式阅读器」); a non-reading book is a 409.
+    async recordHeartbeat(userBookId: string, input: HeartbeatRequest): Promise<HeartbeatResponse> {
+      const owned = await getOwnedBook(userBookId);
+      if (owned.userBook.workflowStatus !== 'active_reading') {
+        throw new UserBookError('尚未完成试读确认', 409);
+      }
+      const now = new Date();
+      const startedAt = new Date(input.startedAt);
+      const endedAt = new Date(input.at);
+      await db.transaction(async (tx) => {
+        await tx
+          .insert(readingSessions)
+          .values({
+            userBookId,
+            userId,
+            clientIntervalId: input.clientIntervalId,
+            day: input.day,
+            startedAt,
+            endedAt,
+            effectiveSeconds: input.effectiveSeconds,
+            forwardSeconds: input.forwardSeconds,
+            forwardChars: input.forwardChars,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: readingSessions.clientIntervalId,
+            set: {
+              endedAt,
+              effectiveSeconds: sql`greatest(${readingSessions.effectiveSeconds}, ${input.effectiveSeconds})`,
+              forwardSeconds: sql`greatest(${readingSessions.forwardSeconds}, ${input.forwardSeconds})`,
+              forwardChars: sql`greatest(${readingSessions.forwardChars}, ${input.forwardChars})`,
+              updatedAt: now,
+            },
+          });
+        // Recompute the day's rollup across all of the user's books (the global daily total, §11.9 /
+        // PRD :1204) from the just-clamped session values — an absolute SET, never an increment.
+        const [rollup] = await tx
+          .select({ total: sql<number>`coalesce(sum(${readingSessions.effectiveSeconds}), 0)::int` })
+          .from(readingSessions)
+          .where(and(eq(readingSessions.userId, userId), eq(readingSessions.day, input.day)));
+        const total = rollup?.total ?? 0;
+        await tx
+          .insert(dailyReadingTotals)
+          .values({ userId, day: input.day, effectiveSeconds: total, updatedAt: now })
+          .onConflictDoUpdate({
+            target: [dailyReadingTotals.userId, dailyReadingTotals.day],
+            set: { effectiveSeconds: total, updatedAt: now },
+          });
+      });
+      return { accepted: true };
+    },
+
+    // §11.9 global stats: 今日 / 本周 / 累计有效时长 + 当前连续阅读天数. Read entirely from the durable
+    // daily rollup (survives book deletion, PRD :1204). `day`/`weekStart` come from the client so the
+    // calendar boundaries honor its timezone; 'YYYY-MM-DD' compares chronologically as strings.
+    async getGlobalReadingStats(query: ReadingStatsQuery): Promise<ReadingStatsGlobal> {
+      const rows = await db
+        .select({ day: dailyReadingTotals.day, effectiveSeconds: dailyReadingTotals.effectiveSeconds })
+        .from(dailyReadingTotals)
+        .where(eq(dailyReadingTotals.userId, userId));
+      let todaySeconds = 0;
+      let weekSeconds = 0;
+      let totalSeconds = 0;
+      const activeDays = new Set<string>();
+      for (const row of rows) {
+        totalSeconds += row.effectiveSeconds;
+        if (row.effectiveSeconds > 0) activeDays.add(row.day);
+        if (row.day === query.day) todaySeconds += row.effectiveSeconds;
+        if (row.day >= query.weekStart && row.day <= query.day) weekSeconds += row.effectiveSeconds;
+      }
+      return { todaySeconds, weekSeconds, totalSeconds, streakDays: computeStreakDays(activeDays, query.day) };
+    },
+
+    // §11.9 per-book stats: 累计有效时长 / 最近阅读时间 / 全书进度 / 预计剩余时间. Progress uses the stored
+    // stable position (reader_states) against the manifest's whole-node char counts; remaining time is
+    // 剩余原文字符 ÷ speed, with the language default until the book's forward-reading sample is solid
+    // (§11.10). Sessions are per-book, so this total dies with the book by design (PRD :1197).
+    async getBookReadingStats(userBookId: string): Promise<ReadingStatsPerBook> {
+      const owned = await getOwnedBook(userBookId);
+      const [agg] = await db
+        .select({
+          totalEffective: sql<number>`coalesce(sum(${readingSessions.effectiveSeconds}), 0)::int`,
+          forwardSeconds: sql<number>`coalesce(sum(${readingSessions.forwardSeconds}), 0)::int`,
+          forwardChars: sql<number>`coalesce(sum(${readingSessions.forwardChars}), 0)::int`,
+          lastReadAt: sql<Date | null>`max(${readingSessions.updatedAt})`,
+        })
+        .from(readingSessions)
+        .where(eq(readingSessions.userBookId, userBookId));
+      const [resume] = await db
+        .select({ nodeOrder: readerStates.nodeOrder })
+        .from(readerStates)
+        .where(eq(readerStates.userBookId, userBookId))
+        .limit(1);
+      const meta = await getManifestMeta(options.books, owned.sharedBook.id);
+      const progress = computeBookProgress(meta, resume?.nodeOrder ?? null);
+      const speed = resolveReadingSpeed(meta.language, agg?.forwardSeconds ?? 0, agg?.forwardChars ?? 0);
+      const remaining = progress.totalChars === null
+        ? { seconds: null, approximate: true }
+        : {
+          seconds: speed.charsPerSec > 0 ? Math.round(progress.remainingChars / speed.charsPerSec) : null,
+          approximate: speed.approximate,
+        };
+      return {
+        totalEffectiveSeconds: agg?.totalEffective ?? 0,
+        lastReadAt: agg?.lastReadAt ? new Date(agg.lastReadAt).toISOString() : null,
+        progressPercent: progress.progressPercent,
+        remaining,
+      };
     },
   };
 }

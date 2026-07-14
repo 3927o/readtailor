@@ -21,6 +21,8 @@ import {
   EnqueueSystemPingResponseSchema,
   ErrorResponseSchema,
   HealthResponseSchema,
+  HeartbeatRequestSchema,
+  HeartbeatResponseSchema,
   HighlightListResponseSchema,
   HighlightResponseSchema,
   ImportBookResponseSchema,
@@ -37,6 +39,9 @@ import {
   ReaderProfileResponseSchema,
   ReadingSettingsResponseSchema,
   ReadingSettingsSchema,
+  ReadingStatsGlobalSchema,
+  ReadingStatsPerBookSchema,
+  ReadingStatsQuerySchema,
   SharedBookSchema,
   StrategyReviewResponseSchema,
   SubmitInterviewAnswerRequestSchema,
@@ -975,6 +980,66 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
         return await deps.userBooks.forUser(request.authUser!.id).deleteHighlight(request.params.id, request.params.hid);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  // §11.8: an effective-reading heartbeat. Idempotent by clientIntervalId, so a retry never
+  // double-counts; the response is a bare ack (stats are read via the GETs below).
+  app.post(
+    '/v1/user-books/:id/reading-sessions/heartbeat',
+    {
+      schema: {
+        params: userBookIdParams,
+        body: HeartbeatRequestSchema,
+        response: { 200: HeartbeatResponseSchema, 400: ErrorResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).recordHeartbeat(request.params.id, request.body);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  // §11.9: global reading stats (今日/本周/累计/连续天数). `day`/`weekStart` come from the client so
+  // 今日/本周 respect its timezone. Sourced from the durable daily rollup (survives book deletion).
+  app.get(
+    '/v1/me/reading-stats',
+    {
+      schema: {
+        querystring: ReadingStatsQuerySchema,
+        response: { 200: ReadingStatsGlobalSchema, 400: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).getGlobalReadingStats(request.query);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  // §11.9/§11.10: per-book stats (累计时长/最近阅读/进度/预计剩余时间).
+  app.get(
+    '/v1/user-books/:id/reading-stats',
+    {
+      schema: {
+        params: userBookIdParams,
+        response: { 200: ReadingStatsPerBookSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).getBookReadingStats(request.params.id);
       } catch (error) {
         return userBookFailure(error, reply);
       }

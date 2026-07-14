@@ -756,6 +756,68 @@ export const MarkReadNodeResponseSchema = Type.Object({
 });
 export type MarkReadNodeResponse = Static<typeof MarkReadNodeResponseSchema>;
 
+// §11.8 — a reading heartbeat for one effective interval. `clientIntervalId` is the client's stable
+// idempotency key for a contiguous active period; every heartbeat carries the interval's *cumulative*
+// counters (not deltas), so the server upserts by that id and clamps monotonically — a network retry
+// of the same interval never double-counts (§11.8「网络重试不得重复累计同一区间」). `effectiveSeconds`
+// is all active reading time; `forwardSeconds`/`forwardChars` are the §11.10 speed 分母/分子 — only
+// 正常向前读原文 accrues them. `day` is the client's local natural day (YYYY-MM-DD, §10 开放问题 3 取
+// 浏览器时区) the interval's新增有效秒 rolls into. `startedAt`/`at` bound the interval (at → endedAt).
+export const HeartbeatRequestSchema = Type.Object({
+  clientIntervalId: Type.String({ minLength: 8, maxLength: 64 }),
+  effectiveSeconds: Type.Integer({ minimum: 0 }),
+  forwardSeconds: Type.Integer({ minimum: 0 }),
+  forwardChars: Type.Integer({ minimum: 0 }),
+  day: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' }),
+  startedAt: Type.String({ format: 'date-time' }),
+  at: Type.String({ format: 'date-time' }),
+});
+export type HeartbeatRequest = Static<typeof HeartbeatRequestSchema>;
+
+export const HeartbeatResponseSchema = Type.Object({
+  accepted: Type.Boolean(),
+});
+export type HeartbeatResponse = Static<typeof HeartbeatResponseSchema>;
+
+// §11.9 — the client passes its own local `day` and week start (Monday) so 今日/本周 respect the
+// user's timezone; the server can't know the client's calendar boundaries otherwise. 连续阅读天数 is
+// computed relative to `day` from the set of days that have any effective reading.
+export const ReadingStatsQuerySchema = Type.Object({
+  day: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' }),
+  weekStart: Type.String({ pattern: '^\\d{4}-\\d{2}-\\d{2}$' }),
+});
+export type ReadingStatsQuery = Static<typeof ReadingStatsQuerySchema>;
+
+// §11.9 global stats: 今日 / 本周 / 累计有效时长 + 当前连续阅读天数. Sourced from daily_reading_totals so
+// the累计 and streak survive a book deletion (PRD :1204).
+export const ReadingStatsGlobalSchema = Type.Object({
+  todaySeconds: Type.Integer({ minimum: 0 }),
+  weekSeconds: Type.Integer({ minimum: 0 }),
+  totalSeconds: Type.Integer({ minimum: 0 }),
+  streakDays: Type.Integer({ minimum: 0 }),
+});
+export type ReadingStatsGlobal = Static<typeof ReadingStatsGlobalSchema>;
+
+// §11.10 estimated remaining time for one book: 剩余原文字符 ÷ 有效阅读速度. `seconds` is null only when
+// the manifest can't be read; `approximate` is true when the estimate uses the language default speed
+// (insufficient personal sample) and false once the book's own forward-reading speed takes over.
+export const RemainingReadingTimeSchema = Type.Object({
+  seconds: Type.Union([Type.Number(), Type.Null()]),
+  approximate: Type.Boolean(),
+});
+export type RemainingReadingTime = Static<typeof RemainingReadingTimeSchema>;
+
+// §11.9 per-book stats: 累计有效时长 / 最近阅读时间 / 当前全书进度 / 预计剩余阅读时间. Progress reuses the
+// reader's whole-node charactersBefore/total 口径 (§11.10, 只算原文); `lastReadAt` is the latest
+// session's end (null → never read).
+export const ReadingStatsPerBookSchema = Type.Object({
+  totalEffectiveSeconds: Type.Integer({ minimum: 0 }),
+  lastReadAt: Type.Union([Type.String(), Type.Null()]),
+  progressPercent: Type.Integer({ minimum: 0, maximum: 100 }),
+  remaining: RemainingReadingTimeSchema,
+});
+export type ReadingStatsPerBook = Static<typeof ReadingStatsPerBookSchema>;
+
 export const ContentGenerationJobPayloadSchema = Type.Object({
   kind: Type.Literal('content.generate'),
   generationId: Type.String(),

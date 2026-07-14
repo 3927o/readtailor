@@ -3378,6 +3378,100 @@ h1 {
   line-height: 1.85;
 }
 
+/* §11.9 reading-stats panel — mirrors the book-info panel geometry (fixed right rail → mobile sheet). */
+.reader-stats {
+  position: fixed;
+  top: 58px;
+  right: 18px;
+  bottom: 18px;
+  z-index: 50;
+  width: min(420px, calc(100vw - 36px));
+  overflow-y: auto;
+  padding: 20px;
+  border: 1px solid var(--rt-rule);
+  border-radius: 8px;
+  background: var(--rt-bg-card);
+  box-shadow: 0 24px 60px -34px rgba(10, 10, 9, 0.48);
+}
+
+.reader-stats > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.reader-stats > header strong {
+  color: var(--rt-ink-3);
+  font-family: var(--rt-mono);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.reader-stats > header button {
+  min-width: 40px;
+  min-height: 36px;
+  border: 0;
+  background: transparent;
+  color: var(--rt-ink-3);
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.reader-stats-group {
+  margin-bottom: 20px;
+}
+
+.reader-stats-title {
+  display: block;
+  margin-bottom: 12px;
+  color: var(--rt-green-deep);
+  font-family: var(--rt-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.reader-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.reader-stat-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 14px;
+  border: 1px solid var(--rt-rule);
+  border-radius: 8px;
+  background: var(--rt-bg);
+}
+
+.reader-stat-value {
+  color: var(--rt-ink);
+  font-family: var(--rt-demo);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.reader-stat-label {
+  color: var(--rt-ink-3);
+  font-family: var(--rt-serif);
+  font-size: 12px;
+}
+
+.reader-stats-hint {
+  margin: 4px 0 0;
+  color: var(--rt-ink-3);
+  font-family: var(--rt-serif);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
 @media (max-width: 640px) {
   /* Keep the interview's sticky bar flush under the shorter mobile masthead. */
   .app-shell {
@@ -3418,7 +3512,8 @@ h1 {
   .trial-navigation .button { flex: 1; padding-inline: 12px; }
   .trial-original { --reader-font-size: 16.5px; }
 
-  .reader-book-info {
+  .reader-book-info,
+  .reader-stats {
     top: auto;
     right: 0;
     bottom: 0;
@@ -3432,5 +3527,6 @@ h1 {
     border-radius: 14px 14px 0 0;
   }
 
-  .reader-book-info .reader-sheet-handle { display: block; }
+  .reader-book-info .reader-sheet-handle,
+  .reader-stats .reader-sheet-handle { display: block; }
 }

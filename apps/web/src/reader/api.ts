@@ -1,4 +1,5 @@
 import type { TailoredContent, TextRange, WorkflowStatus } from '../user-books/api';
+import type { HeartbeatPayload } from './session';
 
 export interface ReaderBook {
   id: string;
@@ -126,6 +127,29 @@ export const defaultReadingSettings: ReadingSettings = {
   contentWidth: 'medium',
   theme: 'system',
 };
+
+// §11.9 global reading stats: 今日 / 本周 / 累计有效时长 + 当前连续阅读天数.
+export interface ReadingStatsGlobal {
+  todaySeconds: number;
+  weekSeconds: number;
+  totalSeconds: number;
+  streakDays: number;
+}
+
+// §11.10 estimated remaining time. `seconds` is null only when the book's char total is unknown;
+// `approximate` is true while the estimate uses the language default speed (insufficient personal sample).
+export interface RemainingReadingTime {
+  seconds: number | null;
+  approximate: boolean;
+}
+
+// §11.9 per-book stats: 累计有效时长 / 最近阅读时间 / 全书进度 / 预计剩余阅读时间.
+export interface ReadingStatsPerBook {
+  totalEffectiveSeconds: number;
+  lastReadAt: string | null;
+  progressPercent: number;
+  remaining: RemainingReadingTime;
+}
 
 export interface ReaderBootstrap {
   userBookId: string;
@@ -371,4 +395,39 @@ export async function deleteHighlight(userBookId: string, highlightId: string): 
     { method: 'DELETE', credentials: 'include' },
   ));
   return body.id;
+}
+
+// §11.8 — fire-and-forget effective-reading heartbeat. Cumulative + idempotent by clientIntervalId, so
+// a dropped/duplicated send never double-counts; failures are swallowed. `keepalive` lets a flush on
+// pagehide / node-change outlive the unload.
+export function sendHeartbeat(userBookId: string, payload: HeartbeatPayload, opts: { keepalive?: boolean } = {}): void {
+  try {
+    void fetch(`${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reading-sessions/heartbeat`, {
+      method: 'POST',
+      credentials: 'include',
+      ...(opts.keepalive ? { keepalive: true } : {}),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  } catch {
+    // never throw from a heartbeat
+  }
+}
+
+// §11.9 — global reading stats. `day`/`weekStart` are the client's local calendar boundaries so
+// 今日/本周 honor its timezone.
+export async function getGlobalReadingStats(day: string, weekStart: string): Promise<ReadingStatsGlobal> {
+  const params = new URLSearchParams({ day, weekStart });
+  return readJson<ReadingStatsGlobal>(await fetch(
+    `${apiBaseUrl}/v1/me/reading-stats?${params.toString()}`,
+    { credentials: 'include' },
+  ));
+}
+
+// §11.9/§11.10 — per-book stats (累计时长 / 最近阅读 / 进度 / 预计剩余时间).
+export async function getBookReadingStats(userBookId: string): Promise<ReadingStatsPerBook> {
+  return readJson<ReadingStatsPerBook>(await fetch(
+    `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reading-stats`,
+    { credentials: 'include' },
+  ));
 }

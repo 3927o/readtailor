@@ -2,6 +2,7 @@ import {
   bigint,
   boolean,
   check,
+  date,
   index,
   integer,
   jsonb,
@@ -1045,5 +1046,72 @@ export const highlights = pgTable(
     ),
     check('highlights_section_nonempty', sql`length(btrim(${table.sectionId})) > 0`),
     check('highlights_note_nonempty', sql`${table.note} is null or length(btrim(${table.note})) > 0`),
+  ],
+);
+
+// §11.8 — one effective reading interval. The client owns a `clientIntervalId` per contiguous active
+// period and heartbeats the interval's *cumulative* effectiveSeconds/forwardSeconds/forwardChars; the
+// server upserts by that id and clamps monotonically (GREATEST), so a network retry of the same
+// interval can never double-count (§11.8 「网络重试不得重复累计同一区间」). `effectiveSeconds` is all
+// active reading time (原文 + 导读 + 注释 + 助读, §11.8); `forwardSeconds`/`forwardChars` are the
+// speed 分子/分母 — only 正常向前读原文 accrues them (回读/跳转/停留/读注释 counts toward effective but
+// not forward, §11.10). Deleted with the book (per-book detail, PRD :1197); the day-grained global
+// total lives in `daily_reading_totals` so累计时长/连续天数 survive a book deletion.
+export const readingSessions = pgTable(
+  'reading_sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userBookId: uuid('user_book_id')
+      .notNull()
+      .references(() => userBooks.id),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    // Client-generated idempotency key for one contiguous active interval (crypto.randomUUID). Unique
+    // so heartbeat upserts land on the same row regardless of retries.
+    clientIntervalId: text('client_interval_id').notNull(),
+    // Client's local natural day (§10 开放问题 3 取浏览器时区). The per-user daily total is recomputed as
+    // an exact SUM over a day's sessions, keeping the rollup idempotent under retries.
+    day: date('day', { mode: 'string' }).notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull(),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+    effectiveSeconds: integer('effective_seconds').notNull().default(0),
+    forwardSeconds: integer('forward_seconds').notNull().default(0),
+    forwardChars: integer('forward_chars').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('reading_sessions_client_interval_unique').on(table.clientIntervalId),
+    index('reading_sessions_user_book_idx').on(table.userBookId),
+    // Composite (user_id, day): serves the daily-total SUM (user_id + day) and, via its user_id
+    // prefix, the per-user total across all days.
+    index('reading_sessions_user_day_idx').on(table.userId, table.day),
+    check('reading_sessions_effective_nonneg', sql`${table.effectiveSeconds} >= 0`),
+    check('reading_sessions_forward_seconds_nonneg', sql`${table.forwardSeconds} >= 0`),
+    check('reading_sessions_forward_chars_nonneg', sql`${table.forwardChars} >= 0`),
+  ],
+);
+
+// §11.9 / PRD :1204 — per-user daily effective-time rollup, keyed on the user's local natural day.
+// Recomputed on each heartbeat as the exact SUM of that (user, day)'s reading_sessions, so it stays
+// idempotent and race-free (interval-clamp convergence is reflected without any double counting).
+// Deliberately NOT referencing user_books: this is the durable spine of 累计时长 and 连续阅读天数, so a
+// book deletion must not touch it (PRD :1204「保留不再关联具体书籍的全局每日有效阅读时长汇总」). Stores
+// only user / day / seconds — no title, position, note, or per-book detail. `day` is a calendar date
+// string ('YYYY-MM-DD') reported by the client in its own timezone (§10 开放问题 3: 取浏览器时区).
+export const dailyReadingTotals = pgTable(
+  'daily_reading_totals',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    day: date('day', { mode: 'string' }).notNull(),
+    effectiveSeconds: integer('effective_seconds').notNull().default(0),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.day] }),
+    check('daily_reading_totals_effective_nonneg', sql`${table.effectiveSeconds} >= 0`),
   ],
 );

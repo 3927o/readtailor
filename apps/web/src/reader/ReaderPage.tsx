@@ -9,12 +9,15 @@ import {
   createHighlight,
   defaultReadingSettings,
   deleteHighlight,
+  getBookReadingStats,
+  getGlobalReadingStats,
   getReaderBootstrap,
   getReaderDocument,
   markReadNode,
   putReadingSettings,
   reportReaderFocus,
   saveReaderPositionBeacon,
+  sendHeartbeat,
   updateHighlightNote,
 } from './api';
 import type {
@@ -27,8 +30,11 @@ import type {
   ReaderOutlineItem,
   ReaderPosition,
   ReadingSettings,
+  ReadingStatsGlobal,
+  ReadingStatsPerBook,
   ThemeSetting,
 } from './api';
+import { localDay, localWeekStart, ReadingSessionTracker } from './session';
 import {
   domBoundaryForOffset,
   getFragmentTargetId,
@@ -69,6 +75,32 @@ const defaultSettings: ReaderSettings = defaultReadingSettings;
 // The reading-settings localStorage cache key (§11.6): server is authoritative; this only avoids
 // a first-paint flash on next open.
 const SETTINGS_CACHE_KEY = 'readtailor:reading-settings';
+
+// §11.8 session cadence (implementation params, not surfaced): the accountant ticks every second; a
+// heartbeat flushes to the server every 15s (plus on node change / hide / unload). JUMP_SETTLE_MS is
+// the window after a TOC jump during which order changes are treated as a jump, not forward reading.
+const TICK_MS = 1000;
+const HEARTBEAT_MS = 15_000;
+const JUMP_SETTLE_MS = 1200;
+
+// §11.9 — reading-length format ("适合阅读的分钟/小时格式"). Sub-minute rounds up to 1 分钟 so a just-
+// started session never shows 0.
+function formatReadingDuration(totalSeconds: number): string {
+  const minutes = Math.max(0, Math.round(totalSeconds / 60));
+  if (minutes < 1) return totalSeconds > 0 ? '1 分钟' : '0 分钟';
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} 小时` : `${hours} 小时 ${rest} 分`;
+}
+
+// §11.10 — the remaining-time label. Approximate estimates (language-default speed) read「约 …」; a
+// personal-speed estimate drops the 约. Null (unknown book length) shows a dash.
+function formatRemaining(remaining: ReadingStatsPerBook['remaining'] | undefined): string {
+  if (!remaining || remaining.seconds === null) return '—';
+  const body = formatReadingDuration(remaining.seconds);
+  return remaining.approximate ? `约 ${body}` : body;
+}
 
 // The viewport-relative line the reader "reads from": position save probes for the character at
 // this offset below the scroll top, and restore scrolls that character back to it. Save and restore
@@ -221,6 +253,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const [tocOpen, setTocOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [bookInfoOpen, setBookInfoOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
   const [currentOrder, setCurrentOrder] = useState(document.manifest.nodes[0]?.order ?? 1);
   const [popover, setPopover] = useState<ActivePopover | null>(null);
   const [scrollProgress, setScrollProgress] = useState(0);
@@ -327,6 +360,62 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       reportObservation.current();
     }, 800);
   };
+
+  // §11.8/§11.10 effective-reading session. One tracker instance for the reader's lifetime; the
+  // lifecycle effect below drives its 1s tick, heartbeats, and flushes. Order changes (from the
+  // IntersectionObserver and jumps) feed forward-progress; scroll/pointer/key feed activity. All sends
+  // are fire-and-forget — session tracking must never block or crash reading.
+  const sessionRef = useRef<ReadingSessionTracker | null>(null);
+  if (sessionRef.current === null) sessionRef.current = new ReadingSessionTracker();
+  const charCountByOrder = useMemo(
+    () => new Map(document.manifest.nodes.map((node) => [node.order, node.character_count])),
+    [document.manifest.nodes],
+  );
+  // Set on a TOC jump: order changes within JUMP_SETTLE_MS after it are treated as a jump (no forward
+  // credit for skipped content, §11.10 目录大跳不算读完中间).
+  const jumpEndRef = useRef(0);
+  const flushHeartbeat = useRef<(keepalive?: boolean) => void>(() => {});
+  flushHeartbeat.current = (keepalive = false) => {
+    const snapshot = sessionRef.current?.snapshot(Date.now());
+    if (snapshot) sendHeartbeat(document.userBookId, snapshot, keepalive ? { keepalive: true } : {});
+  };
+  const recordOrder = useRef<(order: number) => void>(() => {});
+  recordOrder.current = (order) => {
+    // A TOC jump OR the programmatic restore scroll (§2.4) is not forward reading: credit no skipped
+    // chars, just move the frontier to the landing node so real reading onward counts from there.
+    const viaJump = Date.now() < jumpEndRef.current || restorePhaseRef.current === 'restoring';
+    sessionRef.current?.recordOrder(Date.now(), order, (o) => charCountByOrder.get(o) ?? 0, viaJump);
+  };
+
+  // §11.9/§11.10 stats. Per-book stats back the remaining-time indicator (near the progress bar) and
+  // the stats panel; global stats (今日/本周/累计/连续天数) load when the panel opens. `day`/`weekStart`
+  // are the client's local calendar boundaries so 今日/本周 honor its timezone.
+  const bookStats = useQuery({
+    queryKey: ['reading-stats-book', document.userBookId],
+    queryFn: () => getBookReadingStats(document.userBookId),
+    staleTime: 30_000,
+  });
+  const globalStats = useQuery({
+    queryKey: ['reading-stats-global', document.userBookId],
+    queryFn: () => getGlobalReadingStats(localDay(Date.now()), localWeekStart(Date.now())),
+    enabled: statsOpen,
+    staleTime: 15_000,
+  });
+  const refetchBookStats = bookStats.refetch;
+  const refetchGlobalStats = globalStats.refetch;
+  // Refresh per-book stats a beat after the settled node changes: the remaining-time estimate depends
+  // on the stored position, which persists on an 800ms debounce, so wait past that before re-reading.
+  useEffect(() => {
+    const handle = window.setTimeout(() => void refetchBookStats(), 2500);
+    return () => window.clearTimeout(handle);
+  }, [currentOrder, refetchBookStats]);
+  // Opening the stats panel pulls the freshest data (§11.9 「再次进入统计视图必须看到已提交的数据」).
+  useEffect(() => {
+    if (!statsOpen) return;
+    void refetchGlobalStats();
+    void refetchBookStats();
+  }, [statsOpen, refetchGlobalStats, refetchBookStats]);
+
   const enhancements = useMemo(() => new Map(
     document.bootstrap.enhancements.map((item) => [`${item.sectionId}:${item.segment}`, item]),
   ), [document.bootstrap.enhancements]);
@@ -574,7 +663,12 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
         .filter((entry) => entry.isIntersecting)
         .sort((left, right) => Math.abs(left.boundingClientRect.top) - Math.abs(right.boundingClientRect.top));
       const order = Number((visible[0]?.target as HTMLElement | undefined)?.dataset.nodeOrder);
-      if (Number.isFinite(order)) setCurrentOrder(order);
+      if (Number.isFinite(order)) {
+        setCurrentOrder(order);
+        // §11.10: feed the settled node into the session tracker so forward-read chars accrue (a jump
+        // within JUMP_SETTLE_MS is credited as a jump, not forward reading).
+        recordOrder.current(order);
+      }
     }, { root, rootMargin: '-12% 0px -72% 0px', threshold: 0 });
     root.querySelectorAll<HTMLElement>('[data-node-order]').forEach((element) => observer.observe(element));
     return () => observer.disconnect();
@@ -607,6 +701,64 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     return () => {
       window.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pagehide', flush);
+    };
+  }, [document.userBookId]);
+
+  // §11.8: drive the effective-reading session. A 1s accountant advances the tracker (which decides
+  // active vs idle) and, on the active→idle edge, flushes + ends the interval so idle time is never
+  // back-filled. A 15s heartbeat flushes the running interval; node changes, backgrounding, and unload
+  // flush + end immediately (immediate submit, §11.8). Being mounted IS being in the formal reader.
+  useEffect(() => {
+    const tracker = sessionRef.current;
+    if (!tracker) return;
+    tracker.setInReader(true);
+    tracker.setVisible(window.document.visibilityState === 'visible');
+    tracker.initOrder(currentOrderRef.current);
+
+    // Scroll direction is handled in handleScroll; here we capture the other activity kinds. A moving
+    // pointer / key / touch marks presence but not forward reading (that's forward scroll only).
+    const onActivity = () => tracker.recordActivity(Date.now(), false);
+    const activityEvents: Array<keyof WindowEventMap> = ['pointerdown', 'pointermove', 'keydown', 'touchstart'];
+    activityEvents.forEach((type) => window.addEventListener(type, onActivity, { passive: true }));
+
+    let wasActive = false;
+    const tickTimer = window.setInterval(() => {
+      const active = tracker.tick(Date.now());
+      if (wasActive && !active) {
+        flushHeartbeat.current();
+        tracker.endInterval();
+      }
+      wasActive = active;
+    }, TICK_MS);
+    const beatTimer = window.setInterval(() => flushHeartbeat.current(), HEARTBEAT_MS);
+
+    const onVisibility = () => {
+      const visible = window.document.visibilityState === 'visible';
+      tracker.setVisible(visible);
+      if (!visible) {
+        flushHeartbeat.current(true);
+        tracker.endInterval();
+        wasActive = false;
+      }
+    };
+    const onPageHide = () => {
+      flushHeartbeat.current(true);
+      tracker.endInterval();
+      wasActive = false;
+    };
+    window.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onPageHide);
+
+    return () => {
+      activityEvents.forEach((type) => window.removeEventListener(type, onActivity));
+      window.clearInterval(tickTimer);
+      window.clearInterval(beatTimer);
+      window.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHide);
+      // Leaving the reader (unmount / route change) ends the interval and flushes it (keepalive so a
+      // fast teardown still delivers).
+      flushHeartbeat.current(true);
+      tracker.endInterval();
     };
   }, [document.userBookId]);
 
@@ -665,6 +817,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       setTocOpen(false);
       setSettingsOpen(false);
       setBookInfoOpen(false);
+      setStatsOpen(false);
       setPopover(null);
       setSelectionDraft(null);
       setHighlightEditor(null);
@@ -728,6 +881,12 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     } else if ((delta < -4 || root.scrollTop < 120) && chromeHidden) {
       setChromeHidden(false);
     }
+    // §11.8/§11.10 activity: a downward scroll is forward reading (keeps forward-time eligible); an
+    // upward scroll is still activity but not forward. The programmatic restore scroll (§2.4) is not
+    // user activity, so it must not open an interval or accrue time.
+    if (delta !== 0 && restorePhaseRef.current !== 'restoring') {
+      sessionRef.current?.recordActivity(Date.now(), delta > 0);
+    }
     lastScrollTop.current = root.scrollTop;
     setPopover(null);
     // Anchored overlays (§11.7) misalign once the page scrolls, so dismiss them like the note popover.
@@ -742,6 +901,10 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     scrollRoot.current?.querySelector<HTMLElement>(`[data-node-order="${order}"]`)
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     setTocOpen(false);
+    // §11.10: the settling scroll after this jump must not be credited as forward reading of the
+    // skipped content. Mark the jump window and flush the session (node-change immediate submit, §11.8).
+    jumpEndRef.current = Date.now() + JUMP_SETTLE_MS;
+    flushHeartbeat.current();
     // Explicit jump: this is the one place §2.1 allows an active save of a node's first block/offset 0.
     // Report the target now (with the top-of-node anchor) so its window is prioritized and the saved
     // position matches the jump before the scroll settles. clientObservedAt is stamped at click time
@@ -876,20 +1039,30 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const openToc = () => {
     setSettingsOpen(false);
     setBookInfoOpen(false);
+    setStatsOpen(false);
     setChromeHidden(false);
     setTocOpen(true);
   };
   const openSettings = () => {
     setTocOpen(false);
     setBookInfoOpen(false);
+    setStatsOpen(false);
     setChromeHidden(false);
     setSettingsOpen(true);
   };
   const openBookInfo = () => {
     setTocOpen(false);
     setSettingsOpen(false);
+    setStatsOpen(false);
     setChromeHidden(false);
     setBookInfoOpen(true);
+  };
+  const openStats = () => {
+    setTocOpen(false);
+    setSettingsOpen(false);
+    setBookInfoOpen(false);
+    setChromeHidden(false);
+    setStatsOpen(true);
   };
 
   return (
@@ -907,6 +1080,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
           <div className="reader-desktop-actions">
             <ReaderAction glyph="≡" label="目录" onClick={openToc} />
             <ReaderAction glyph="···" label="本书" onClick={openBookInfo} />
+            <ReaderAction glyph="◔" label="统计" onClick={openStats} />
             <ReaderAction glyph="Aa" label="设置" onClick={openSettings} />
           </div>
         </header>
@@ -915,11 +1089,13 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       <nav className="reader-mobile-bar" data-hidden={chromeHidden} aria-label="阅读工具">
         <ReaderAction glyph="≡" label="目录" onClick={openToc} />
         <ReaderAction glyph="···" label="本书" onClick={openBookInfo} />
+        <ReaderAction glyph="◔" label="统计" onClick={openStats} />
         <ReaderAction glyph="Aa" label="设置" onClick={openSettings} />
       </nav>
 
       {settingsOpen && <button className="reader-modal-scrim" type="button" onClick={() => setSettingsOpen(false)} aria-label="关闭阅读设置" />}
       {bookInfoOpen && <button className="reader-modal-scrim" type="button" onClick={() => setBookInfoOpen(false)} aria-label="关闭本书说明" />}
+      {statsOpen && <button className="reader-modal-scrim" type="button" onClick={() => setStatsOpen(false)} aria-label="关闭阅读统计" />}
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
@@ -935,6 +1111,15 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
           highlights={highlights}
           jumpToHighlight={jumpToHighlight}
           close={() => setBookInfoOpen(false)}
+        />
+      )}
+      {statsOpen && (
+        <StatsPanel
+          global={globalStats.data}
+          book={bookStats.data}
+          progressPercent={textProgress}
+          loading={globalStats.isFetching || bookStats.isFetching}
+          close={() => setStatsOpen(false)}
         />
       )}
 
@@ -953,6 +1138,12 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
               <span>原文阅读 · Original text</span>
               <i aria-hidden="true" />
               <span>全书 {textProgress}%</span>
+              {bookStats.data && bookStats.data.remaining.seconds !== null ? (
+                <>
+                  <i aria-hidden="true" />
+                  <span>预计还需 {formatRemaining(bookStats.data.remaining)}</span>
+                </>
+              ) : null}
             </div>
             <h1>{document.book.title}</h1>
             <p><span aria-hidden="true">◷</span>{document.book.authors.join(' · ') || '作者未详'}</p>
@@ -1213,6 +1404,59 @@ function BookInfoPanel({ title, briefing, strategySummary, highlights, jumpToHig
       </section>
       {!hasBriefing && !hasStrategy ? <p className="reader-book-info-empty">当前没有可展示的读前简报或处理方式。</p> : null}
     </aside>
+  );
+}
+
+// §11.9 最近阅读时间 — compact local date + time, or a "not started" placeholder.
+function formatLastRead(iso: string | null): string {
+  if (!iso) return '尚未开始';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString(undefined, { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+// §11.9 the reading-stats view: 全局 (今日/本周/累计/连续天数) + 本书 (累计/最近/进度/预计剩余). Data
+// arrives via TanStack Query and refetches on open, so a session that just ended shows up immediately.
+function StatsPanel({ global, book, progressPercent, loading, close }: {
+  global: ReadingStatsGlobal | undefined;
+  book: ReadingStatsPerBook | undefined;
+  progressPercent: number;
+  loading: boolean;
+  close: () => void;
+}) {
+  return (
+    <aside className="reader-stats" aria-label="阅读统计">
+      <div className="reader-sheet-handle" aria-hidden="true" />
+      <header><strong>阅读统计</strong><button type="button" onClick={close} aria-label="关闭阅读统计">×</button></header>
+      <section className="reader-stats-group">
+        <span className="reader-stats-title">全局</span>
+        <div className="reader-stats-grid">
+          <StatItem label="今日" value={global ? formatReadingDuration(global.todaySeconds) : '—'} />
+          <StatItem label="本周" value={global ? formatReadingDuration(global.weekSeconds) : '—'} />
+          <StatItem label="累计" value={global ? formatReadingDuration(global.totalSeconds) : '—'} />
+          <StatItem label="连续阅读" value={global ? `${global.streakDays} 天` : '—'} />
+        </div>
+      </section>
+      <section className="reader-stats-group">
+        <span className="reader-stats-title">本书</span>
+        <div className="reader-stats-grid">
+          <StatItem label="累计时长" value={book ? formatReadingDuration(book.totalEffectiveSeconds) : '—'} />
+          <StatItem label="最近阅读" value={formatLastRead(book?.lastReadAt ?? null)} />
+          <StatItem label="全书进度" value={`${book?.progressPercent ?? progressPercent}%`} />
+          <StatItem label="预计剩余" value={formatRemaining(book?.remaining)} />
+        </div>
+      </section>
+      <p className="reader-stats-hint">{loading ? '正在更新…' : '统计仅计入正式阅读器内的有效阅读时间。'}</p>
+    </aside>
+  );
+}
+
+function StatItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="reader-stat-item">
+      <span className="reader-stat-value">{value}</span>
+      <span className="reader-stat-label">{label}</span>
+    </div>
   );
 }
 
