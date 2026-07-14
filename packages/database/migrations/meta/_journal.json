@@ -169,6 +169,20 @@
       "when": 1784060690264,
       "tag": "0023_chunky_the_order",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784066406669,
+      "tag": "0024_familiar_exiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1784069857498,
+      "tag": "0025_youthful_grey_gargoyle",
+      "breakpoints": true
     }
   ]
 }

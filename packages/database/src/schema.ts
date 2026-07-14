@@ -526,6 +526,13 @@ export const readerProfileVersions = pgTable(
     changeSource: text('change_source')
       .$type<'onboarding' | 'interview' | 'question_answer' | 'manual'>()
       .notNull(),
+    sourceQaSessionId: uuid('source_qa_session_id').references(
+      (): AnyPgColumn => qaSessions.id,
+    ),
+    sourceQaMessageId: uuid('source_qa_message_id').references(
+      (): AnyPgColumn => qaMessages.id,
+    ),
+    changeReason: text('change_reason'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -750,6 +757,9 @@ export const strategyDraftVersions = pgTable(
       .notNull()
       .references(() => bookReaderProfileVersions.id),
     sourceMessageId: uuid('source_message_id').references(() => interviewMessages.id),
+    sourceQaMessageId: uuid('source_qa_message_id').references(
+      (): AnyPgColumn => qaMessages.id,
+    ),
     version: integer('version').notNull(),
     status: text('status').$type<StrategyDraftStatus>().notNull().default('draft'),
     readingBriefing: jsonb('reading_briefing').$type<Briefing>().notNull(),
@@ -775,7 +785,7 @@ export const strategyDraftVersions = pgTable(
     ),
     check(
       'strategy_draft_versions_approval_valid',
-      sql`${table.status} not in ('approved_for_trial', 'confirmed') or ${table.approvedForTrialAt} is not null`,
+      sql`${table.status} <> 'approved_for_trial' or ${table.approvedForTrialAt} is not null`,
     ),
     check(
       'strategy_draft_versions_confirmation_valid',
@@ -955,7 +965,7 @@ export const nodeGenerations = pgTable(
       .where(sql`${table.generationScope} = 'trial'`),
     uniqueIndex('node_generations_formal_node_strategy_unique')
       .on(table.userBookId, table.strategyVersionId, table.sectionId, table.segment)
-      .where(sql`${table.generationScope} = 'formal'`),
+      .where(sql`${table.generationScope} = 'formal' and ${table.status} <> 'superseded'`),
     check(
       'node_generations_scope_valid',
       sql`${table.generationScope} in ('trial', 'formal')`,
@@ -1043,6 +1053,9 @@ export const readerReadNodes = pgTable(
       .references(() => userBooks.id),
     sectionId: text('section_id').notNull(),
     segment: integer('segment').notNull(),
+    strategyVersionId: uuid('strategy_version_id')
+      .notNull()
+      .references(() => strategyVersions.id),
     markedAt: timestamp('marked_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -1369,6 +1382,19 @@ export const strategyChangeProposals = pgTable(
       .references(() => qaSessions.id),
     triggeringMessageId: uuid('triggering_message_id').references(() => qaMessages.id),
     status: text('status').$type<StrategyChangeProposalStatus>().notNull().default('pending'),
+    revision: integer('revision').notNull().default(1),
+    currentRevisionId: uuid('current_revision_id').references(
+      (): AnyPgColumn => strategyChangeProposalRevisions.id,
+    ),
+    currentStrategyDraftVersionId: uuid('current_strategy_draft_version_id')
+      .notNull()
+      .references(() => strategyDraftVersions.id),
+    baseStrategyVersionId: uuid('base_strategy_version_id')
+      .notNull()
+      .references(() => strategyVersions.id),
+    originSectionId: text('origin_section_id').notNull(),
+    originSegment: integer('origin_segment').notNull(),
+    originNodeOrder: integer('origin_node_order').notNull(),
     publicSummary: text('public_summary').notNull(),
     proposedStrategy: jsonb('proposed_strategy').$type<ProposedStrategy>().notNull(),
     feedback: text('feedback'),
@@ -1384,6 +1410,9 @@ export const strategyChangeProposals = pgTable(
   (table) => [
     index('strategy_change_proposals_user_book_idx').on(table.userBookId),
     index('strategy_change_proposals_qa_session_idx').on(table.qaSessionId),
+    uniqueIndex('strategy_change_proposals_resulting_strategy_unique')
+      .on(table.resultingStrategyVersionId)
+      .where(sql`${table.resultingStrategyVersionId} is not null`),
     uniqueIndex('strategy_change_proposals_one_pending_per_book')
       .on(table.userBookId)
       .where(sql`${table.status} = 'pending'`),
@@ -1394,6 +1423,11 @@ export const strategyChangeProposals = pgTable(
     check(
       'strategy_change_proposals_summary_nonempty',
       sql`length(btrim(${table.publicSummary})) > 0`,
+    ),
+    check('strategy_change_proposals_revision_positive', sql`${table.revision} > 0`),
+    check(
+      'strategy_change_proposals_origin_valid',
+      sql`${table.originSegment} > 0 and ${table.originNodeOrder} > 0 and length(btrim(${table.originSectionId})) > 0`,
     ),
     check(
       'strategy_change_proposals_confirmed_valid',
@@ -1410,6 +1444,74 @@ export const strategyChangeProposals = pgTable(
     check(
       'strategy_change_proposals_feedback_nonempty',
       sql`${table.feedback} is null or length(btrim(${table.feedback})) > 0`,
+    ),
+  ],
+);
+
+export const strategyChangeProposalRevisions = pgTable(
+  'strategy_change_proposal_revisions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    proposalId: uuid('proposal_id')
+      .notNull()
+      .references(() => strategyChangeProposals.id),
+    revision: integer('revision').notNull(),
+    triggeringMessageId: uuid('triggering_message_id')
+      .notNull()
+      .references(() => qaMessages.id),
+    strategyDraftVersionId: uuid('strategy_draft_version_id')
+      .notNull()
+      .references(() => strategyDraftVersions.id),
+    publicSummary: text('public_summary').notNull(),
+    changedFields: jsonb('changed_fields').$type<string[]>().notNull().default([]),
+    reason: text('reason').notNull(),
+    evidence: text('evidence').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('strategy_change_proposal_revisions_proposal_revision_unique').on(
+      table.proposalId,
+      table.revision,
+    ),
+    uniqueIndex('strategy_change_proposal_revisions_draft_unique').on(
+      table.strategyDraftVersionId,
+    ),
+    check('strategy_change_proposal_revisions_revision_positive', sql`${table.revision} > 0`),
+    check(
+      'strategy_change_proposal_revisions_summary_nonempty',
+      sql`length(btrim(${table.publicSummary})) > 0`,
+    ),
+  ],
+);
+
+export const strategyChangeProposalActions = pgTable(
+  'strategy_change_proposal_actions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    proposalId: uuid('proposal_id')
+      .notNull()
+      .references(() => strategyChangeProposals.id),
+    revisionId: uuid('revision_id')
+      .notNull()
+      .references(() => strategyChangeProposalRevisions.id),
+    action: text('action').$type<'feedback' | 'confirm' | 'reject'>().notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+    result: jsonb('result').$type<Record<string, unknown>>().notNull().default({}),
+    idempotencyKey: text('idempotency_key').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('strategy_change_proposal_actions_idempotency_unique').on(
+      table.proposalId,
+      table.idempotencyKey,
+    ),
+    check(
+      'strategy_change_proposal_actions_action_valid',
+      sql`${table.action} in ('feedback', 'confirm', 'reject')`,
+    ),
+    check(
+      'strategy_change_proposal_actions_idempotency_nonempty',
+      sql`length(btrim(${table.idempotencyKey})) > 0`,
     ),
   ],
 );

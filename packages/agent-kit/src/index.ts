@@ -767,6 +767,18 @@ export type ProposedStrategy = Static<typeof ProposedStrategySchema>;
 export const StrategyChangeProposalSchema = Type.Object({
   // The confirmation-card body shown verbatim to the user: what changes and why.
   public_summary: Type.String({ minLength: 10, maxLength: 4000 }),
+  changed_fields: Type.Array(
+    Type.Union([
+      Type.Literal('goals'),
+      Type.Literal('expressionPrinciples'),
+      Type.Literal('guide'),
+      Type.Literal('annotations'),
+      Type.Literal('afterReading'),
+    ]),
+    { minItems: 1, maxItems: 5 },
+  ),
+  reason: Type.String({ minLength: 5, maxLength: 2000 }),
+  evidence: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 8 }),
   strategy: ProposedStrategySchema,
 });
 export type StrategyChangeProposal = Static<typeof StrategyChangeProposalSchema>;
@@ -1331,10 +1343,10 @@ export interface AskAiToolbox {
   ): Promise<ToolTextResult>;
   // Long-term reader profile + this book's profile + the current *confirmed* strategy.
   getReaderContext(signal?: AbortSignal): Promise<ToolTextResult>;
-  // Persist a long-term profile patch (no user confirmation; must have conversational evidence).
+  // Validate/acknowledge a staged long-term profile patch; the host persists it with the answer.
   updateReaderProfile(patch: ReaderProfilePatch, signal?: AbortSignal): Promise<ToolTextResult>;
-  // Record a pending strategy-change proposal. Returns text the model reads (e.g. "已提交，等待
-  //用户确认"); the module also fires onProposal so the host can push the confirmation card.
+  // Stage a pending strategy-change proposal. The host persists it with the successful answer
+  // before exposing a confirmation card.
   proposeStrategyChange(
     proposal: StrategyChangeProposal,
     signal?: AbortSignal,
@@ -1346,7 +1358,9 @@ export type AskAiOutcome = {
   answer: string;
   // Present iff the agent called propose_strategy_change at least once this turn.
   proposedStrategyChange?: StrategyChangeProposal;
-  // True iff update_reader_profile ran this turn.
+  // Union-deduped patch staged during this turn. The host persists it with the answer.
+  readerProfilePatch?: ReaderProfilePatch;
+  // Backward-compatible convenience flag derived from readerProfilePatch.
   patchedProfile: boolean;
   turns: number;
   toolCalls: number;
@@ -1446,17 +1460,19 @@ export async function runAskAiAgent(options: {
   maxTurns?: number;
   timeoutMs?: number;
   onAnswerDelta?: (chars: string) => void;
-  onProposal?: (payload: StrategyChangeProposal) => void | Promise<void>;
   onTrace?: AgentTraceHandler;
 }): Promise<AskAiOutcome> {
   let turns = 0;
   let toolCalls = 0;
   let limitExceeded = false;
-  let patchedProfile = false;
+  const profileKnowledge = new Set<string>();
+  const profilePreferences = new Set<string>();
   let proposedStrategyChange: StrategyChangeProposal | undefined;
   // The final answer is the text of the last assistant message; intermediate tool-calling
   // turns rarely carry prose, but if one does we keep only the latest non-empty text.
   let lastAssistantText = '';
+  let finalAssistantStopReason: 'stop' | 'length' | 'toolUse' | 'error' | 'aborted' | undefined;
+  let finalAssistantErrorMessage: string | undefined;
   const maxTurns = options.maxTurns ?? 16;
 
   const tools: AgentTool[] = [
@@ -1545,7 +1561,8 @@ export async function runAskAiAgent(options: {
       execute: async (_id, input, signal) => {
         const patch = input as ReaderProfilePatch;
         const result = await options.toolbox.updateReaderProfile(patch, signal);
-        patchedProfile = true;
+        for (const item of patch.knowledge ?? []) profileKnowledge.add(item);
+        for (const item of patch.explanation_preferences ?? []) profilePreferences.add(item);
         return textResult(result);
       },
     },
@@ -1553,14 +1570,13 @@ export async function runAskAiAgent(options: {
       name: 'propose_strategy_change',
       label: 'Propose strategy change',
       description:
-        '当你判断本书当前处理方式需要调整时，提交一个待用户确认的调整建议：public_summary 面向用户说明改什么、为什么，strategy 是完整的新结构化策略。这不会立即生效，用户会看到确认卡；同一会话可多次调用以修订同一建议。这不会打断你的回答。',
+        '当你判断本书当前处理方式需要调整时，提交一个待用户确认的调整建议：public_summary 面向用户说明改什么、为什么；changed_fields 标出变化字段；reason 和 evidence 给出可审计依据；strategy 是完整的新结构化策略。这不会立即生效，用户会看到确认卡；同一会话可多次调用以修订同一建议。这不会打断你的回答。',
       parameters: StrategyChangeProposalSchema,
       executionMode: 'sequential',
       execute: async (_id, input, signal) => {
         const proposal = input as StrategyChangeProposal;
         const result = await options.toolbox.proposeStrategyChange(proposal, signal);
         proposedStrategyChange = proposal;
-        await options.onProposal?.(proposal);
         return textResult(result);
       },
     },
@@ -1589,6 +1605,8 @@ export async function runAskAiAgent(options: {
     } else if (event.type === 'tool_execution_start') {
       toolCalls += 1;
     } else if (event.type === 'message_end' && event.message.role === 'assistant') {
+      finalAssistantStopReason = event.message.stopReason;
+      finalAssistantErrorMessage = event.message.errorMessage;
       const text = extractAssistantText(event.message);
       if (text.trim()) lastAssistantText = text;
     }
@@ -1613,22 +1631,47 @@ export async function runAskAiAgent(options: {
     getToolCalls: () => toolCalls,
     ...(options.onTrace ? { onTrace: options.onTrace } : {}),
   });
-  const timeout = setTimeout(() => agent.abort(), options.timeoutMs ?? 5 * 60_000);
+  const timeoutMs = options.timeoutMs ?? 5 * 60_000;
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    agent.abort();
+  }, timeoutMs);
   try {
     await agent.prompt(options.question);
   } finally {
     clearTimeout(timeout);
   }
 
+  if (finalAssistantStopReason === 'error' || finalAssistantStopReason === 'aborted') {
+    if (limitExceeded) throw new Error(`ask ai agent exceeded the ${maxTurns}-turn limit`);
+    if (timedOut) throw new Error(`ask ai agent timed out after ${timeoutMs}ms`);
+    const detail = finalAssistantErrorMessage?.trim();
+    throw new Error(
+      detail
+        ? `ask ai agent stopped with ${finalAssistantStopReason}: ${detail}`
+        : `ask ai agent stopped with ${finalAssistantStopReason}`,
+    );
+  }
   const answer = lastAssistantText.trim();
   if (!answer) {
     if (limitExceeded) throw new Error(`ask ai agent exceeded the ${maxTurns}-turn limit`);
     throw new Error('ask ai agent stopped without producing an answer');
   }
+  const readerProfilePatch: ReaderProfilePatch | undefined =
+    profileKnowledge.size > 0 || profilePreferences.size > 0
+      ? {
+          ...(profileKnowledge.size > 0 ? { knowledge: [...profileKnowledge] } : {}),
+          ...(profilePreferences.size > 0
+            ? { explanation_preferences: [...profilePreferences] }
+            : {}),
+        }
+      : undefined;
   return {
     answer,
     ...(proposedStrategyChange ? { proposedStrategyChange } : {}),
-    patchedProfile,
+    ...(readerProfilePatch ? { readerProfilePatch } : {}),
+    patchedProfile: readerProfilePatch !== undefined,
     turns,
     toolCalls,
   };

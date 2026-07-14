@@ -1,0 +1,2 @@
+DROP INDEX "node_generations_formal_node_strategy_unique";--> statement-breakpoint
+CREATE UNIQUE INDEX "node_generations_formal_node_strategy_unique" ON "node_generations" USING btree ("user_book_id","strategy_version_id","section_id","segment") WHERE "node_generations"."generation_scope" = 'formal' and "node_generations"."status" <> 'superseded';

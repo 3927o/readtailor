@@ -475,13 +475,30 @@ export type StrategyChangeProposalStatus = Static<typeof StrategyChangeProposalS
 // The anchor a 问 AI question is asked against: either a highlighted selection or the whole
 // on-screen node. Captured once when the thread starts, persisted on qa_sessions and replayed
 // to the agent each turn (get_question_context). `sectionId`/`segment` locate the reader's node.
-export const QaQuestionContextSchema = Type.Object({
-  anchor: Type.Union([Type.Literal('highlight'), Type.Literal('screen')]),
+const QA_CONTEXT_NODE = {
+  nodeOrder: Type.Integer({ minimum: 1 }),
   sectionId: Type.String({ minLength: 1 }),
   segment: Type.Integer({ minimum: 1 }),
-  // Present when anchor === 'highlight': the exact text the reader selected.
-  highlightedText: Type.Optional(Type.String({ minLength: 1, maxLength: 8000 })),
-});
+  manifestVersion: Type.Optional(Type.String({ minLength: 1 })),
+};
+
+export const QaQuestionContextSchema = Type.Union([
+  Type.Object({
+    anchor: Type.Literal('highlight'),
+    precision: Type.Literal('exact'),
+    ...QA_CONTEXT_NODE,
+    range: TextRangeSchema,
+    quoteSnapshot: Type.String({ minLength: 1, maxLength: 12000 }),
+  }),
+  Type.Object({
+    anchor: Type.Literal('screen'),
+    precision: Type.Literal('approximate'),
+    ...QA_CONTEXT_NODE,
+    focus: TextPositionSchema,
+    range: Type.Optional(TextRangeSchema),
+    quoteSnapshot: Type.String({ maxLength: 12000 }),
+  }),
+]);
 export type QaQuestionContext = Static<typeof QaQuestionContextSchema>;
 
 // POST /v1/user-books/:id/qa — start a new question thread (omit `sessionId`; `context`
@@ -504,10 +521,33 @@ export type AskQuestionRequest = Static<typeof AskQuestionRequestSchema>;
 export type QaStreamEvent =
   | { type: 'session'; sessionId: string; conversationVersion: number }
   | { type: 'answer_delta'; chars: string }
-  | { type: 'proposal'; publicSummary: string }
+  | {
+      type: 'proposal';
+      proposalId: string;
+      revisionId: string;
+      revision: number;
+      triggeringMessageId: string;
+      publicSummary: string;
+      status: StrategyChangeProposalStatus;
+    }
   | { type: 'profile_updated' }
   | { type: 'done'; sessionId: string; messageId: string }
   | { type: 'error'; message: string };
+
+export const QaProposalRevisionSummarySchema = Type.Object({
+  id: Type.String(),
+  proposalId: Type.String(),
+  revision: Type.Integer({ minimum: 1 }),
+  triggeringMessageId: Type.String(),
+  strategyDraftVersionId: Type.String(),
+  publicSummary: Type.String(),
+  changedFields: Type.Array(Type.String()),
+  reason: Type.String(),
+  evidence: Type.String(),
+  status: StrategyChangeProposalStatusSchema,
+  createdAt: Type.String(),
+});
+export type QaProposalRevisionSummary = Static<typeof QaProposalRevisionSummarySchema>;
 
 export const QaMessageSchema = Type.Object({
   id: Type.String(),
@@ -516,6 +556,7 @@ export const QaMessageSchema = Type.Object({
   kind: Type.Union([Type.Literal('question'), Type.Literal('answer')]),
   content: Type.String(),
   createdAt: Type.String(),
+  proposalRevision: Type.Union([QaProposalRevisionSummarySchema, Type.Null()]),
 });
 export type QaMessage = Static<typeof QaMessageSchema>;
 
@@ -525,6 +566,11 @@ export const QaProposalSummarySchema = Type.Object({
   id: Type.String(),
   status: StrategyChangeProposalStatusSchema,
   publicSummary: Type.String(),
+  revision: Type.Integer({ minimum: 1 }),
+  currentRevisionId: Type.String(),
+  currentStrategyDraftVersionId: Type.String(),
+  baseStrategyVersionId: Type.String(),
+  resultingStrategyVersionId: Type.Union([Type.String(), Type.Null()]),
   createdAt: Type.String(),
 });
 export type QaProposalSummary = Static<typeof QaProposalSummarySchema>;
@@ -536,10 +582,51 @@ export const QaSessionResponseSchema = Type.Object({
   status: QaSessionStatusSchema,
   conversationVersion: Type.Integer({ minimum: 0 }),
   questionContext: QaQuestionContextSchema,
+  contextPrecision: Type.Union([
+    Type.Literal('exact'),
+    Type.Literal('approximate'),
+    Type.Literal('node'),
+  ]),
   messages: Type.Array(QaMessageSchema),
   proposal: Type.Union([QaProposalSummarySchema, Type.Null()]),
 });
 export type QaSessionResponse = Static<typeof QaSessionResponseSchema>;
+
+export const QaSessionListItemSchema = Type.Object({
+  sessionId: Type.String(),
+  status: QaSessionStatusSchema,
+  question: Type.String(),
+  updatedAt: Type.String(),
+  messageCount: Type.Integer({ minimum: 0 }),
+});
+export type QaSessionListItem = Static<typeof QaSessionListItemSchema>;
+
+export const QaSessionListResponseSchema = Type.Object({
+  sessions: Type.Array(QaSessionListItemSchema),
+  nextCursor: Type.Union([Type.String(), Type.Null()]),
+});
+export type QaSessionListResponse = Static<typeof QaSessionListResponseSchema>;
+
+export const ProposalFeedbackRequestSchema = Type.Object({
+  revisionId: Type.String({ minLength: 1 }),
+  feedback: Type.String({ minLength: 1, maxLength: 4000 }),
+  idempotencyKey: Type.String({ minLength: 1, maxLength: 200 }),
+});
+export type ProposalFeedbackRequest = Static<typeof ProposalFeedbackRequestSchema>;
+
+export const ProposalDecisionRequestSchema = Type.Object({
+  revisionId: Type.String({ minLength: 1 }),
+  idempotencyKey: Type.String({ minLength: 1, maxLength: 200 }),
+});
+export type ProposalDecisionRequest = Static<typeof ProposalDecisionRequestSchema>;
+
+export const ProposalActionResponseSchema = Type.Object({
+  proposalId: Type.String(),
+  revisionId: Type.String(),
+  status: StrategyChangeProposalStatusSchema,
+  resultingStrategyVersionId: Type.Union([Type.String(), Type.Null()]),
+});
+export type ProposalActionResponse = Static<typeof ProposalActionResponseSchema>;
 
 export const StrategyDraftStatusSchema = Type.Union([
   Type.Literal('draft'),
@@ -825,6 +912,7 @@ export type DeleteHighlightResponse = Static<typeof DeleteHighlightResponseSchem
 // (BriefCard sections); `strategySummary` stays a plain string rendered directly.
 export const ReaderBootstrapEnhancementSchema = Type.Object({
   generationId: Type.String(),
+  strategyVersionId: Type.String(),
   sectionId: Type.String({ minLength: 1 }),
   segment: Type.Integer({ minimum: 1 }),
   status: NodeGenerationStatusSchema,
@@ -836,6 +924,8 @@ export const ReaderBootstrapSchema = Type.Object({
   userBookId: Type.String(),
   sharedBookId: Type.String(),
   workflowStatus: Type.Literal('active_reading'),
+  strategyVersionId: Type.String(),
+  strategyVersion: Type.Integer({ minimum: 1 }),
   briefing: BriefingSchema,
   strategySummary: Type.String(),
   enhancements: Type.Array(ReaderBootstrapEnhancementSchema),

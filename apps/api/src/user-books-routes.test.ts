@@ -48,6 +48,8 @@ const item = {
 };
 
 const HIGHLIGHT_ID = '11111111-2222-3333-4444-555555555555';
+const STRATEGY_VERSION_ID = '22222222-3333-4444-8555-666666666666';
+const QA_RANGE = { start: { blockIndex: 1, offset: 0 }, end: { blockIndex: 1, offset: 5 } };
 const HIGHLIGHT = {
   id: HIGHLIGHT_ID,
   sectionId: 'chapter-1',
@@ -86,6 +88,8 @@ function fakeService(overrides: Partial<UserBookUserService> = {}): UserBookServ
         userBookId: USER_BOOK_ID,
         sharedBookId: SHARED_BOOK_ID,
         workflowStatus: 'active_reading',
+        strategyVersionId: STRATEGY_VERSION_ID,
+        strategyVersion: 1,
         briefing: BRIEFING,
         strategySummary: 'Strategy',
         enhancements: [],
@@ -100,6 +104,8 @@ function fakeService(overrides: Partial<UserBookUserService> = {}): UserBookServ
         userBookId: USER_BOOK_ID,
         sharedBookId: SHARED_BOOK_ID,
         workflowStatus: 'active_reading',
+        strategyVersionId: STRATEGY_VERSION_ID,
+        strategyVersion: 1,
         briefing: BRIEFING,
         strategySummary: 'Strategy',
         enhancements: [],
@@ -166,10 +172,12 @@ describe('user book workflow routes', () => {
             userBookId: USER_BOOK_ID,
             sharedBookId: SHARED_BOOK_ID,
             workflowStatus: 'active_reading',
+            strategyVersionId: STRATEGY_VERSION_ID,
+            strategyVersion: 1,
             briefing: BRIEFING,
             strategySummary: 'Strategy',
             enhancements: [
-              { generationId: 'g1', sectionId: 'chapter-3', segment: 1, status: 'queued', result: null },
+              { generationId: 'g1', strategyVersionId: STRATEGY_VERSION_ID, sectionId: 'chapter-3', segment: 1, status: 'queued', result: null },
             ],
             resumePosition: null,
             settings: READER_SETTINGS,
@@ -220,6 +228,8 @@ describe('user book workflow routes', () => {
             userBookId: USER_BOOK_ID,
             sharedBookId: SHARED_BOOK_ID,
             workflowStatus: 'active_reading',
+            strategyVersionId: STRATEGY_VERSION_ID,
+            strategyVersion: 1,
             briefing: BRIEFING,
             strategySummary: 'Strategy',
             enhancements: [],
@@ -648,6 +658,8 @@ describe('user book workflow routes', () => {
 });
 
 const QA_SESSION_ID = 'b7c3f1a2-1111-4a2b-8c3d-4e5f60718293';
+const QA_PROPOSAL_ID = 'c8d4f2b3-2222-4b3c-9d4e-5f60718293a4';
+const QA_REVISION_ID = 'd9e5a3c4-3333-4c4d-8e5f-60718293a4b5';
 
 describe('问 AI QA endpoints', () => {
   it('streams a QA answer as SSE: session first, answer deltas, then done', async () => {
@@ -669,7 +681,10 @@ describe('问 AI QA endpoints', () => {
       headers: { origin: 'http://localhost:5173' },
       payload: {
         question: '这句话什么意思？',
-        context: { anchor: 'highlight', sectionId: 'chap-1', segment: 1, highlightedText: '存在先于本质' },
+        context: {
+          anchor: 'highlight', precision: 'exact', nodeOrder: 1,
+          sectionId: 'chap-1', segment: 1, range: QA_RANGE, quoteSnapshot: '存在先于本质',
+        },
         idempotencyKey: 'qa-1',
       },
     });
@@ -691,7 +706,10 @@ describe('问 AI QA endpoints', () => {
       userBooks: fakeService({
         async *streamQaAnswer() {
           yield { type: 'session', sessionId: QA_SESSION_ID, conversationVersion: 1 };
-          yield { type: 'proposal', publicSummary: '建议加强对术语的解释' };
+          yield {
+            type: 'proposal', proposalId: 'proposal-1', revisionId: 'revision-1', revision: 1,
+            triggeringMessageId: 'msg-2', publicSummary: '建议加强对术语的解释', status: 'pending',
+          };
           yield { type: 'answer_delta', chars: '好的' };
           yield { type: 'done', sessionId: QA_SESSION_ID, messageId: 'msg-2' };
         },
@@ -710,7 +728,8 @@ describe('问 AI QA endpoints', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.body).toContain('data: {"type":"proposal","publicSummary":"建议加强对术语的解释"}');
+    expect(response.body).toContain('"type":"proposal"');
+    expect(response.body).toContain('"revisionId":"revision-1"');
   });
 
   it('surfaces a pre-stream failure as an HTTP status, not an SSE frame', async () => {
@@ -729,7 +748,11 @@ describe('问 AI QA endpoints', () => {
       headers: { origin: 'http://localhost:5173' },
       payload: {
         question: '问题',
-        context: { anchor: 'screen', sectionId: 'chap-1', segment: 1 },
+        context: {
+          anchor: 'screen', precision: 'approximate', nodeOrder: 1,
+          sectionId: 'chap-1', segment: 1, focus: { blockIndex: 1, offset: 0 },
+          range: QA_RANGE, quoteSnapshot: '当前屏幕',
+        },
         idempotencyKey: 'qa-3',
       },
     });
@@ -758,10 +781,14 @@ describe('问 AI QA endpoints', () => {
             sessionId: QA_SESSION_ID,
             status: 'active',
             conversationVersion: 2,
-            questionContext: { anchor: 'highlight', sectionId: 'chap-1', segment: 1, highlightedText: '存在先于本质' },
+            questionContext: {
+              anchor: 'highlight', precision: 'exact', nodeOrder: 1,
+              sectionId: 'chap-1', segment: 1, range: QA_RANGE, quoteSnapshot: '存在先于本质',
+            },
+            contextPrecision: 'exact',
             messages: [
-              { id: 'm1', sequence: 1, role: 'user', kind: 'question', content: '这句话什么意思？', createdAt: '2026-07-15T00:00:00.000Z' },
-              { id: 'm2', sequence: 2, role: 'assistant', kind: 'answer', content: '意思是……', createdAt: '2026-07-15T00:00:01.000Z' },
+              { id: 'm1', sequence: 1, role: 'user', kind: 'question', content: '这句话什么意思？', createdAt: '2026-07-15T00:00:00.000Z', proposalRevision: null },
+              { id: 'm2', sequence: 2, role: 'assistant', kind: 'answer', content: '意思是……', createdAt: '2026-07-15T00:00:01.000Z', proposalRevision: null },
             ],
             proposal: null,
           };
@@ -783,5 +810,62 @@ describe('问 AI QA endpoints', () => {
       messages: [{ id: 'm1', kind: 'question' }, { id: 'm2', kind: 'answer' }],
       proposal: null,
     });
+  });
+
+  it('lists resumable QA sessions', async () => {
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async listQaSessions() {
+          return {
+            sessions: [{
+              sessionId: QA_SESSION_ID,
+              status: 'active',
+              question: '这句话什么意思？',
+              updatedAt: '2026-07-15T00:00:01.000Z',
+              messageCount: 2,
+            }],
+            nextCursor: null,
+          };
+        },
+      }),
+    });
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/user-books/${USER_BOOK_ID}/qa?limit=10`,
+      headers: { origin: 'http://localhost:5173' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().sessions[0]).toMatchObject({ sessionId: QA_SESSION_ID, messageCount: 2 });
+  });
+
+  it('confirms a proposal revision through the guarded command route', async () => {
+    let received: unknown;
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async confirmProposal(_userBookId, proposalId, input) {
+          received = { proposalId, input };
+          return {
+            proposalId,
+            revisionId: input.revisionId,
+            status: 'confirmed',
+            resultingStrategyVersionId: STRATEGY_VERSION_ID,
+          };
+        },
+      }),
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/qa/proposals/${QA_PROPOSAL_ID}/confirm`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { revisionId: QA_REVISION_ID, idempotencyKey: 'confirm-1' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(received).toEqual({
+      proposalId: QA_PROPOSAL_ID,
+      input: { revisionId: QA_REVISION_ID, idempotencyKey: 'confirm-1' },
+    });
+    expect(response.json()).toMatchObject({ status: 'confirmed', resultingStrategyVersionId: STRATEGY_VERSION_ID });
   });
 });
