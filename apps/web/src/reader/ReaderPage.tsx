@@ -70,7 +70,7 @@ interface SelectionDraft {
 // The highlight note editor: composing a note for a brand-new highlight, or viewing/editing an
 // existing one (with delete-note / delete-highlight affordances). §11.7.
 type HighlightEditorState =
-  | { mode: 'create'; sectionId: string; segment: number; range: NodeRange; placement: PopoverPlacement }
+  | { mode: 'create'; sectionId: string; segment: number; range: NodeRange; quote: string; placement: PopoverPlacement }
   | { mode: 'edit'; highlight: Highlight; placement: PopoverPlacement };
 
 interface SearchHit {
@@ -781,6 +781,36 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     return () => observer.disconnect();
   }, [prepared]);
 
+  // Opening the action menu causes a React render. Rebuild the browser selection from the stable
+  // block offsets after that commit so the selected text remains visibly highlighted under the menu.
+  useLayoutEffect(() => {
+    if (!selectionDraft || highlightEditor) return;
+    const root = scrollRoot.current;
+    const node = [...(root?.querySelectorAll<HTMLElement>('[data-node-order]') ?? [])].find(
+      (item) => item.dataset.sectionId === selectionDraft.sectionId
+        && Number(item.dataset.segment) === selectionDraft.segment,
+    );
+    const contentRoot = node?.querySelector<HTMLElement>('.reader-original');
+    if (!contentRoot) return;
+    const blocks = readingBlocks(contentRoot);
+    const startBlock = blocks[selectionDraft.range.start.blockIndex - 1];
+    const endBlock = blocks[selectionDraft.range.end.blockIndex - 1];
+    if (!startBlock || !endBlock) return;
+    const start = domBoundaryForOffset(startBlock, selectionDraft.range.start.offset);
+    const end = domBoundaryForOffset(endBlock, selectionDraft.range.end.offset);
+    if (!start || !end) return;
+    try {
+      const range = window.document.createRange();
+      range.setStart(start.container, start.offset);
+      range.setEnd(end.container, end.offset);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    } catch {
+      // The content may have changed between selection and commit; the action menu still remains usable.
+    }
+  }, [highlightEditor, prepared, selectionDraft]);
+
   // Warm the window for the opening/resumed node even if the reader never scrolls; scroll-driven
   // reports (schedulePositionReport) and jumps take over from here. Suppressed while the restore
   // coordinator still owns the scroll — reportObservation checks the phase (§2.4).
@@ -1092,6 +1122,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       sectionId: selectionDraft.sectionId,
       segment: selectionDraft.segment,
       range: selectionDraft.range,
+      quote: selectionDraft.text,
       placement: selectionDraft.placement,
     });
     setSelectionDraft(null);
@@ -1650,15 +1681,15 @@ function SettingsPanel({ settings, update, close }: {
           options={contentWidthOptions}
         />
       </div>
-      <fieldset className="reader-setting-row">
-        <legend>主题</legend>
+      <div className="reader-setting-row">
+        <span>主题</span>
         <Segmented
           label="阅读主题"
           value={settings.theme}
           onChange={(theme) => update({ theme })}
           options={themeOptions}
         />
-      </fieldset>
+      </div>
     </aside>
   );
 }
@@ -1877,35 +1908,40 @@ function HighlightPopover({ editor, onSubmit, onDeleteNote, onDeleteHighlight, o
   onClose: () => void;
 }) {
   const [note, setNote] = useState(editor.mode === 'edit' ? editor.highlight.note ?? '' : '');
-  const quote = editor.mode === 'edit' ? editor.highlight.quoteSnapshot : null;
+  const quote = editor.mode === 'edit' ? editor.highlight.quoteSnapshot : editor.quote;
+  const isCreating = editor.mode === 'create';
   const hasExistingNote = editor.mode === 'edit' && Boolean(editor.highlight.note);
   return (
-    <div className="note-dialog-wrap" role="presentation" onClick={onClose}>
+    <div className="note-dialog-wrap" role="presentation" data-editor-mode={editor.mode} onClick={onClose}>
       <aside
         className="note-dialog highlight-editor"
         role="dialog"
         aria-label={editor.mode === 'create' ? '新建划线笔记' : '划线笔记'}
-        data-placement={editor.placement.placement}
-        style={{
+        data-editor-mode={editor.mode}
+        data-placement={isCreating ? undefined : editor.placement.placement}
+        style={isCreating ? undefined : {
           left: editor.placement.left,
           ...(editor.placement.placement === 'above' ? { bottom: editor.placement.edge } : { top: editor.placement.edge }),
           '--note-caret-left': `${editor.placement.caretLeft}px`,
         } as React.CSSProperties & { '--note-caret-left': string }}
         onClick={(event) => event.stopPropagation()}
       >
-        <header><span><i aria-hidden="true" />划线 <em>Highlight</em></span></header>
+        <header>
+          <span>{isCreating ? '写想法 · 记在这句话旁边' : <><i aria-hidden="true" />划线 <em>Highlight</em></>}</span>
+        </header>
         {quote ? <p className="highlight-editor-quote">{quote}</p> : null}
         <textarea
           className="highlight-editor-input"
           value={note}
-          placeholder="写一条划线笔记（可留空）"
+          placeholder={isCreating ? '这句让你想到什么？' : '写一条划线笔记（可留空）'}
           rows={3}
           // eslint-disable-next-line jsx-a11y/no-autofocus
           autoFocus
           onChange={(event) => setNote(event.target.value)}
         />
         <div className="highlight-editor-actions">
-          <button type="button" className="highlight-editor-primary" onClick={() => onSubmit(note)}>保存</button>
+          <button type="button" className="highlight-editor-primary" onClick={() => onSubmit(note)}>{isCreating ? '存下想法' : '保存'}</button>
+          {isCreating ? <button type="button" className="highlight-editor-cancel" onClick={onClose}>取消</button> : null}
           {hasExistingNote ? <button type="button" onClick={onDeleteNote}>删除笔记</button> : null}
           {editor.mode === 'edit' ? (
             <button type="button" className="highlight-editor-danger" onClick={onDeleteHighlight}>删除划线</button>
