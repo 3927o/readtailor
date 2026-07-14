@@ -80,6 +80,45 @@ describe('prepareBookContent', () => {
     expect(rendered.querySelector('[data-block-index="2"] mark')).toBeNull();
   });
 
+  it('spans a two-block annotation with one mark per block sharing the id', () => {
+    const html = applyAnnotationMarks('<p>第一段结尾</p><p>第二段开头</p>', [{
+      id: 'note-span',
+      range: {
+        start: { blockIndex: 1, offset: 3 },
+        end: { blockIndex: 2, offset: 3 },
+      },
+      content: '解释',
+    }]);
+    const rendered = fragment(html);
+    const marks = rendered.querySelectorAll<HTMLElement>('[data-annotation-id="note-span"]');
+    const paragraphs = rendered.querySelectorAll('p');
+
+    expect(marks).toHaveLength(2);
+    expect(paragraphs[0]?.querySelector('mark')?.textContent).toBe('结尾');
+    expect(paragraphs[1]?.querySelector('mark')?.textContent).toBe('第二段');
+    expect(rendered.textContent).toBe('第一段结尾第二段开头');
+  });
+
+  it('wraps whole middle blocks when an annotation spans three blocks', () => {
+    const html = applyAnnotationMarks('<p>首块尾</p><p>整块</p><p>末块头</p>', [{
+      id: 'note-three',
+      range: {
+        start: { blockIndex: 1, offset: 2 },
+        end: { blockIndex: 3, offset: 1 },
+      },
+      content: '解释',
+    }]);
+    const rendered = fragment(html);
+    const marks = rendered.querySelectorAll<HTMLElement>('[data-annotation-id="note-three"]');
+    const paragraphs = rendered.querySelectorAll('p');
+
+    expect(marks).toHaveLength(3);
+    expect(paragraphs[0]?.querySelector('mark')?.textContent).toBe('尾');
+    expect(paragraphs[1]?.querySelector('mark')?.textContent).toBe('整块');
+    expect(paragraphs[2]?.querySelector('mark')?.textContent).toBe('末');
+    expect(rendered.textContent).toBe('首块尾整块末块头');
+  });
+
   it('preserves rich heading and note semantics while enhancing scrollable content', () => {
     const rawHtml = `<!doctype html><html lang="zh-CN"><body><main id="book" data-type="book">
       <section id="bodymatter" data-role="bodymatter">

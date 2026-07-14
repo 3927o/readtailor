@@ -289,41 +289,82 @@ function boundaryAt(root: HTMLElement, targetOffset: number, bias: 'start' | 'en
     : null;
 }
 
+function projectionLength(root: HTMLElement): number {
+  // The projected length of a block in the same coordinates boundaryAt walks in,
+  // used to locate the block's end when a cross-block annotation spans through it.
+  // Mirror boundaryAt exactly: <br> counts as one char, and a nested list inside an
+  // <li> is its own block so it is skipped (source.ts textProjection skipNestedLists).
+  const skipNestedLists = root.tagName === 'LI';
+  let count = 0;
+  const visit = (node: Node, isRoot: boolean): void => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      count += (node as Text).data.length;
+      return;
+    }
+    if (skipNestedLists && !isRoot && node instanceof HTMLElement
+      && (node.tagName === 'UL' || node.tagName === 'OL')) {
+      return;
+    }
+    if (node instanceof HTMLBRElement) {
+      count += 1;
+      return;
+    }
+    for (const child of [...node.childNodes]) visit(child, false);
+  };
+  visit(root, true);
+  return count;
+}
+
 export function applyAnnotationMarks(rawHtml: string, annotations: TailoredAnnotation[]): string {
   if (annotations.length === 0) return rawHtml;
   const container = document.createElement('div');
   container.innerHTML = rawHtml;
   const blocks = annotationBlocks(container);
+  const findBlock = (blockIndex: number): HTMLElement | undefined => (
+    blocks.find((candidate) => Number(candidate.dataset.blockIndex) === blockIndex)
+      ?? blocks[blockIndex - 1]
+  );
   const ordered = [...annotations].sort((left, right) => (
     right.range.start.blockIndex - left.range.start.blockIndex
     || right.range.start.offset - left.range.start.offset
   ));
   for (const annotation of ordered) {
-    if (annotation.range.start.blockIndex !== annotation.range.end.blockIndex) continue;
-    const block = blocks.find((candidate) => (
-      Number(candidate.dataset.blockIndex) === annotation.range.start.blockIndex
-    )) ?? blocks[annotation.range.start.blockIndex - 1];
-    if (!block) continue;
-    const parsedSourceOffset = Number(block.dataset.sourceOffset ?? 0);
-    const sourceOffset = Number.isFinite(parsedSourceOffset) ? parsedSourceOffset : 0;
-    const start = boundaryAt(block, annotation.range.start.offset - sourceOffset, 'start');
-    const end = boundaryAt(block, annotation.range.end.offset - sourceOffset, 'end');
-    if (!start || !end) continue;
-    const range = document.createRange();
-    try {
-      range.setStart(start.container, start.offset);
-      range.setEnd(end.container, end.offset);
-      if (range.collapsed) continue;
-      const mark = document.createElement('mark');
-      mark.className = 'tailored-text-anchor';
-      mark.dataset.annotationId = annotation.id;
-      mark.tabIndex = 0;
-      mark.setAttribute('role', 'button');
-      mark.setAttribute('aria-label', '打开对应裁读注');
-      mark.append(range.extractContents());
-      range.insertNode(mark);
-    } catch {
-      // Invalid DOM boundary should not make the original text unreadable.
+    const startBlockIndex = annotation.range.start.blockIndex;
+    const endBlockIndex = annotation.range.end.blockIndex;
+    if (endBlockIndex < startBlockIndex) continue;
+    // A single inline <mark> cannot wrap across a block boundary (a <mark> is phrasing
+    // content and would have to enclose the <p>…</p> break). So an annotation spanning
+    // blocks emits one <mark> per block, all sharing annotation.id: the first block from
+    // its start offset to the block end, whole middle blocks, and the last block up to
+    // its end offset. Walk blocks last-first so a wrap never shifts an earlier boundary.
+    for (let blockIndex = endBlockIndex; blockIndex >= startBlockIndex; blockIndex -= 1) {
+      const block = findBlock(blockIndex);
+      if (!block) continue;
+      const parsedSourceOffset = Number(block.dataset.sourceOffset ?? 0);
+      const sourceOffset = Number.isFinite(parsedSourceOffset) ? parsedSourceOffset : 0;
+      const from = blockIndex === startBlockIndex ? annotation.range.start.offset - sourceOffset : 0;
+      const to = blockIndex === endBlockIndex
+        ? annotation.range.end.offset - sourceOffset
+        : projectionLength(block);
+      const start = boundaryAt(block, from, 'start');
+      const end = boundaryAt(block, to, 'end');
+      if (!start || !end) continue;
+      const range = document.createRange();
+      try {
+        range.setStart(start.container, start.offset);
+        range.setEnd(end.container, end.offset);
+        if (range.collapsed) continue;
+        const mark = document.createElement('mark');
+        mark.className = 'tailored-text-anchor';
+        mark.dataset.annotationId = annotation.id;
+        mark.tabIndex = 0;
+        mark.setAttribute('role', 'button');
+        mark.setAttribute('aria-label', '打开对应裁读注');
+        mark.append(range.extractContents());
+        range.insertNode(mark);
+      } catch {
+        // Invalid DOM boundary should not make the original text unreadable.
+      }
     }
   }
   return container.innerHTML;
