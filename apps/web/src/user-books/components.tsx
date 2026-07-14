@@ -1,6 +1,8 @@
+import { createElement, Fragment } from 'react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import type { Briefing } from '@readtailor/contracts';
+import { parseMarkdown, type InlineToken, type MarkdownBlock } from './markdown';
 import { EmptyState } from '../components/core/EmptyState';
 import { Kicker } from '../components/core/Kicker';
 import { bookCoverUrl } from '../library/api';
@@ -86,20 +88,31 @@ export function BriefCard({ briefing }: { briefing: Briefing }) {
   );
 }
 
+function renderInline(tokens: InlineToken[]): ReactNode[] {
+  return tokens.map((token, index) => {
+    switch (token.type) {
+      case 'strong': return <strong key={index}>{renderInline(token.children)}</strong>;
+      case 'em': return <em key={index}>{renderInline(token.children)}</em>;
+      case 'code': return <code key={index}>{token.value}</code>;
+      case 'text': return <Fragment key={index}>{token.value}</Fragment>;
+    }
+  });
+}
+
+function renderBlock(block: MarkdownBlock, index: number): ReactNode {
+  switch (block.type) {
+    // `#` starts at h3 so body headings sit below the surrounding card's h2/h3 chrome.
+    case 'heading': return createElement(`h${Math.min(6, block.level + 2)}`, { key: index }, renderInline(block.content));
+    case 'list': {
+      const items = block.items.map((item, i) => <li key={i}>{renderInline(item)}</li>);
+      return block.ordered ? <ol key={index}>{items}</ol> : <ul key={index}>{items}</ul>;
+    }
+    case 'paragraph': return <p key={index}>{renderInline(block.content)}</p>;
+  }
+}
+
 export function AssistanceContent({ content }: { content: string }) {
-  const blocks = content.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
-  return (
-    <div className="assistance-content">
-      {(blocks.length ? blocks : [content]).map((block, index) => {
-        const lines = block.split('\n').map((line) => line.trim()).filter(Boolean);
-        const list = lines.length > 1 && lines.every((line) => /^[-*]\s+/.test(line));
-        if (list) {
-          return <ul key={index}>{lines.map((line) => <li key={line}>{line.replace(/^[-*]\s+/, '')}</li>)}</ul>;
-        }
-        return <p key={index}>{block.replace(/^#{1,6}\s+/, '')}</p>;
-      })}
-    </div>
-  );
+  return <div className="assistance-content">{parseMarkdown(content).map(renderBlock)}</div>;
 }
 
 export function AdjustmentForm({ value, onChange, onSubmit, pending, label, placeholder }: {

@@ -2859,7 +2859,8 @@ h1 {
 }
 
 .assistance-content p,
-.assistance-content ul {
+.assistance-content ul,
+.assistance-content ol {
   margin: 0 0 0.8em;
   color: inherit;
   font-family: var(--rt-read);
@@ -2868,7 +2869,56 @@ h1 {
 }
 
 .assistance-content > :last-child { margin-bottom: 0; }
-.assistance-content ul { padding-left: 1.4em; }
+.assistance-content > :first-child { margin-top: 0; }
+.assistance-content ul,
+.assistance-content ol { padding-left: 1.4em; }
+.assistance-content ol { list-style: decimal; }
+.assistance-content ul { list-style: disc; }
+.assistance-content li { margin: 3px 0; }
+/* Tint the markers with the accent — mirrors the .rt-lead reading list in the tailored
+   output, where bullets use green. */
+.assistance-content li::marker { color: var(--rt-green); }
+
+/* **bold**: emphasis is carried by the green accent (weight + colour), matching the
+   tailored reading output, whose markdown <b> renders as green-deep — not a bare bold. */
+.assistance-content strong {
+  font-weight: 700;
+  color: var(--rt-green-deep);
+}
+
+/* *italic*: a lighter emphasis in the same accent. CJK has no true italic and the
+   synthetic slant looks poor, so we drop font-style and lean on colour instead. */
+.assistance-content em {
+  font-style: normal;
+  color: var(--rt-green-deep);
+}
+
+/* `code`: the mono chrome voice on a sunken chip — ported from the tailored output's
+   `.ai-ans code`, minus the uppercase/tracking that mono labels carry. */
+.assistance-content code {
+  font-family: var(--rt-mono);
+  font-size: 0.9em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--rt-bg-2);
+}
+
+/* # headings: the display "letter" voice (Ming), matching the card's own h2/h3 and the
+   part/group dividers in the tailored output. Start at h3, below the surrounding chrome. */
+.assistance-content h3,
+.assistance-content h4,
+.assistance-content h5,
+.assistance-content h6 {
+  margin: 1.2em 0 0.5em;
+  color: var(--rt-ink);
+  font-family: var(--rt-serif);
+  font-weight: 600;
+  line-height: 1.5;
+}
+.assistance-content h3 { font-size: 1.15em; }
+.assistance-content h4 { font-size: 1.02em; }
+.assistance-content h5,
+.assistance-content h6 { font-size: 1em; }
 
 .brief-terms {
   display: grid;
