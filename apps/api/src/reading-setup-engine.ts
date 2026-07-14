@@ -40,6 +40,7 @@ const fakeQuestions: InterviewQuestion[] = [
     id: 'reading-purpose',
     acknowledgment: '',
     prompt: '你最希望通过这本书解决什么问题？',
+    hint: '知道你的目的，我才知道该把你带向哪里。',
     options: [
       { id: 'understand', label: '建立完整理解' },
       { id: 'apply', label: '把关键观点用到实际问题中' },
@@ -53,6 +54,7 @@ const fakeQuestions: InterviewQuestion[] = [
     id: 'prior-knowledge',
     acknowledgment: '明白了，我会围绕这个目标来安排处理方式。',
     prompt: '你对这本书讨论的领域已经熟悉到什么程度？',
+    hint: '我据此决定要不要先替你补背景。',
     options: [
       { id: 'new', label: '基本陌生，需要补充必要背景' },
       { id: 'some', label: '知道一些概念，但没有系统读过' },
@@ -66,6 +68,7 @@ const fakeQuestions: InterviewQuestion[] = [
     id: 'likely-barrier',
     acknowledgment: '好的，这能帮助我判断需要补多少背景。',
     prompt: '什么情况最容易让你在阅读过程中停下来？',
+    hint: '我会把力气优先花在这些地方。',
     options: [
       { id: 'concepts', label: '概念密集，不清楚术语之间的关系' },
       { id: 'context', label: '缺少背景，不知道作者为什么这样说' },
@@ -189,6 +192,7 @@ function emitFakeStream(onStream: (delta: InterviewStreamDelta) => void, outcome
     const question = outcome.question;
     if (question.acknowledgment) onStream({ type: 'ack_delta', chars: question.acknowledgment });
     onStream({ type: 'prompt_delta', chars: question.prompt });
+    if (question.hint) onStream({ type: 'hint_delta', chars: question.hint });
     for (const option of question.options) onStream({ type: 'option_added', id: option.id, label: option.label });
     onStream({ type: 'sufficiency', value: question.sufficiency });
   } else if (outcome.type === 'completed') {

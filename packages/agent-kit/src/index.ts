@@ -511,6 +511,11 @@ export const InterviewQuestionSchema = Type.Object({
   // acknowledgment answers the previous turn and is an empty string on the first question.
   acknowledgment: Type.String({ maxLength: 200 }),
   prompt: Type.String({ minLength: 5, maxLength: 1000 }),
+  // A one-line rationale shown under the question ("why I'm asking this"), matching the
+  // prototype's per-question hint. Optional so legacy/streamed-partial questions stay valid;
+  // the system prompt asks the agent to always supply it. Not token-streamed — it settles in
+  // with the authoritative question_final frame.
+  hint: Type.Optional(Type.String({ maxLength: 300 })),
   options: Type.Array(
     Type.Object({
       id: Type.String({ minLength: 1, maxLength: 100 }),
@@ -532,6 +537,7 @@ export type InterviewQuestion = Static<typeof InterviewQuestionSchema>;
 export type InterviewStreamDelta =
   | { type: 'ack_delta'; chars: string }
   | { type: 'prompt_delta'; chars: string }
+  | { type: 'hint_delta'; chars: string }
   | { type: 'option_added'; id: string; label: string }
   | { type: 'sufficiency'; value: number }
   | { type: 'concluding' };
@@ -594,7 +600,7 @@ export function createInterviewStreamParser(emit: (delta: InterviewStreamDelta) 
   let toolName: string | undefined;
   let buffer = '';
   let concluded = false;
-  const emitted = { ack: 0, prompt: 0, options: 0, sufficiency: undefined as number | undefined };
+  const emitted = { ack: 0, prompt: 0, hint: 0, options: 0, sufficiency: undefined as number | undefined };
 
   const markConcluding = () => {
     if (concluded) return;
@@ -631,6 +637,7 @@ export function createInterviewStreamParser(emit: (delta: InterviewStreamDelta) 
       const obj = parsed as {
         acknowledgment?: unknown;
         prompt?: unknown;
+        hint?: unknown;
         options?: unknown;
         allow_text?: unknown;
         profile_dimension?: unknown;
@@ -643,6 +650,12 @@ export function createInterviewStreamParser(emit: (delta: InterviewStreamDelta) 
       if (typeof obj.prompt === 'string' && obj.prompt.length > emitted.prompt) {
         emit({ type: 'prompt_delta', chars: obj.prompt.slice(emitted.prompt) });
         emitted.prompt = obj.prompt.length;
+      }
+      // `hint` sits between prompt and options in the schema, so it streams here — after the
+      // prompt, before the first option — which is the order the UI reveals them in.
+      if (typeof obj.hint === 'string' && obj.hint.length > emitted.hint) {
+        emit({ type: 'hint_delta', chars: obj.hint.slice(emitted.hint) });
+        emitted.hint = obj.hint.length;
       }
       if (Array.isArray(obj.options)) {
         // The last parsed option may still be streaming; only treat it as complete once a
@@ -765,7 +778,7 @@ export type ReadingSetupOutcome =
     }
   | { type: 'fragments'; fragments: TrialFragmentSelection[] };
 
-const READING_SETUP_SYSTEM_PROMPT = `你是 ReadTailor 的单本书访谈与处理方式 Agent。你只处理当前用户与当前书的阅读准备，不修改原文。每轮必须调用一个宿主工具结束：信息不足时调用 present_interview_question；信息足够或已达到问题上限时调用 finish_interview。问题必须直接服务于本书处理方式，不重复长期画像中的明确信息，每次只问一题，给出 2-5 个清晰选项并允许文字补充。present_interview_question 还需给出 acknowledgment（对用户上一答的真实、具体回应，首问留空串）与 sufficiency（0-100 的信息充足度自评，可随判断诚实回落）。finish_interview 必须提交本书画像、个性化读前简报、用户可读的处理方式和结构化策略。结构化策略要如实产出：整体处理目标 goals、表达原则 expression_principles（说明增强内容如何与原文协作、克制到什么程度）；导读 guide、裁读注 annotations、节后助读 after_reading 三段各自用 enabled 明确决定是否启用——启用时给出对应要点（guide.objectives / annotations.focuses 与 exclusions / after_reading.objectives），认为某段对本书无价值就把该段 enabled 设为 false 并把要点留空，不要为了填满而编造。trial_candidates 从 book profile 候选池中选择恰好三个不同候选，覆盖进入门槛、典型内容和较高难度内容。你没有确认权限，不能批准试读或创建正式策略。`;
+const READING_SETUP_SYSTEM_PROMPT = `你是 ReadTailor 的单本书访谈与处理方式 Agent。你只处理当前用户与当前书的阅读准备，不修改原文。每轮必须调用一个宿主工具结束：信息不足时调用 present_interview_question；信息足够或已达到问题上限时调用 finish_interview。问题必须直接服务于本书处理方式，不重复长期画像中的明确信息，每次只问一题，给出 2-5 个清晰选项并允许文字补充。present_interview_question 还需给出 acknowledgment（对用户上一答的真实、具体回应，首问留空串）、hint（一句话说明你为什么问这道题、它会如何影响本书处理方式，贴着当前问题写，不空泛）与 sufficiency（0-100 的信息充足度自评，可随判断诚实回落）。finish_interview 必须提交本书画像、个性化读前简报、用户可读的处理方式和结构化策略。结构化策略要如实产出：整体处理目标 goals、表达原则 expression_principles（说明增强内容如何与原文协作、克制到什么程度）；导读 guide、裁读注 annotations、节后助读 after_reading 三段各自用 enabled 明确决定是否启用——启用时给出对应要点（guide.objectives / annotations.focuses 与 exclusions / after_reading.objectives），认为某段对本书无价值就把该段 enabled 设为 false 并把要点留空，不要为了填满而编造。trial_candidates 从 book profile 候选池中选择恰好三个不同候选，覆盖进入门槛、典型内容和较高难度内容。你没有确认权限，不能批准试读或创建正式策略。`;
 
 function userTurnMessage(text: string): AgentMessage {
   return { role: 'user', content: text, timestamp: Date.now() };

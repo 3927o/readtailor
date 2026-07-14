@@ -312,6 +312,9 @@ export const InterviewQuestionSchema = Type.Object({
   // sufficiency last. `acknowledgment` may be empty on the first question.
   acknowledgment: Type.String({ maxLength: 200 }),
   prompt: Type.String({ minLength: 1 }),
+  // One-line "why I'm asking" shown under the prompt. Optional so questions persisted before
+  // this field existed still validate.
+  hint: Type.Optional(Type.String({ maxLength: 300 })),
   options: Type.Array(InterviewQuestionOptionSchema, { minItems: 2, maxItems: 5 }),
   allowFreeText: Type.Literal(true),
   profileDimension: Type.String({ minLength: 1 }),
@@ -322,8 +325,12 @@ export type InterviewQuestion = Static<typeof InterviewQuestionSchema>;
 export const InterviewAnswerSchema = Type.Object({
   id: Type.String(),
   questionId: Type.String({ minLength: 1 }),
+  // The question text and the resolved answer (option labels + free text joined), so the
+  // client can render real history rows instead of "第 N 问" + raw option ids.
+  question: Type.String(),
   selectedOptionIds: Type.Array(Type.String({ minLength: 1 }), { maxItems: 5 }),
   freeText: Type.Union([Type.String({ minLength: 1, maxLength: 4000 }), Type.Null()]),
+  answerText: Type.String(),
   createdAt: Type.String(),
 });
 export type InterviewAnswer = Static<typeof InterviewAnswerSchema>;
@@ -360,6 +367,7 @@ export type InterviewStateResponse = Static<typeof InterviewStateResponseSchema>
 export type InterviewStreamEvent =
   | { type: 'ack_delta'; chars: string }
   | { type: 'prompt_delta'; chars: string }
+  | { type: 'hint_delta'; chars: string }
   | { type: 'option_added'; id: string; label: string }
   | { type: 'sufficiency'; value: number }
   | { type: 'concluding' }

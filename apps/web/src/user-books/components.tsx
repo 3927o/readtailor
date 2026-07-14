@@ -9,26 +9,32 @@ import type {
   UserBookSharedBook,
 } from './api';
 
-export function WorkflowPage({ book, kicker, title, children }: {
+export function WorkflowPage({ book, kicker, title, children, hideHeader }: {
   book: UserBookSharedBook;
   kicker: string;
   title: string;
   children: ReactNode;
+  // The interview is an immersive full-screen conversation (prototype screen 05): it carries
+  // its own eyebrow + sticky progress, so it opts out of the book header to avoid a redundant
+  // second title.
+  hideHeader?: boolean;
 }) {
   const cover = bookCoverUrl(book.id, book.coverPath);
   return (
     <LibraryChrome>
-      <main className="workflow-page">
-        <header className="workflow-book-header">
-          <div className="workflow-book-cover" aria-hidden="true">
-            {cover ? <img src={cover} alt="" /> : <><strong>{book.title}</strong><span>{book.authors.join(' · ')}</span></>}
-          </div>
-          <div>
-            <Kicker>{kicker}</Kicker>
-            <h1>{title}</h1>
-            <p>{book.title}{book.authors.length ? ` · ${book.authors.join(' · ')}` : ''}</p>
-          </div>
-        </header>
+      <main className="workflow-page" data-chromeless={hideHeader ? '' : undefined}>
+        {hideHeader ? null : (
+          <header className="workflow-book-header">
+            <div className="workflow-book-cover" aria-hidden="true">
+              {cover ? <img src={cover} alt="" /> : <><strong>{book.title}</strong><span>{book.authors.join(' · ')}</span></>}
+            </div>
+            <div>
+              <Kicker>{kicker}</Kicker>
+              <h1>{title}</h1>
+              <p>{book.title}{book.authors.length ? ` · ${book.authors.join(' · ')}` : ''}</p>
+            </div>
+          </header>
+        )}
         {children}
       </main>
     </LibraryChrome>

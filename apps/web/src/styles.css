@@ -27,6 +27,9 @@ a {
 }
 
 .app-shell {
+  /* Sticky offset for descendants that pin under the masthead (e.g. the interview bar).
+     Kept in sync with .masthead min-height + its 1px border. */
+  --rt-masthead-h: 73px;
   min-height: 100vh;
   background: var(--rt-bg);
 }
@@ -2309,6 +2312,14 @@ h1 {
   padding: 46px 24px 110px;
 }
 
+/* The interview opts out of the book header and runs its eyebrow/progress bar flush under the
+   masthead, so it drops the top padding and widens to its own 620px measure. */
+.workflow-page[data-chromeless] {
+  width: 100%;
+  max-width: none;
+  padding: 0 24px 96px;
+}
+
 .workflow-book-header {
   display: grid;
   grid-template-columns: 70px minmax(0, 1fr);
@@ -2432,6 +2443,9 @@ h1 {
 }
 
 .interview-rule {
+  position: sticky;
+  top: var(--rt-masthead-h);
+  z-index: 21;
   height: 2px;
   overflow: hidden;
   background: var(--rt-rule-2);
@@ -2445,11 +2459,19 @@ h1 {
 }
 
 .interview-head {
+  position: sticky;
+  top: calc(var(--rt-masthead-h) + 2px);
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin: 14px 0 30px;
+  margin: 0 0 28px;
+  padding: 13px 0 12px;
+  background: color-mix(in srgb, var(--rt-bg) 84%, transparent);
+  backdrop-filter: saturate(150%) blur(10px);
+  -webkit-backdrop-filter: saturate(150%) blur(10px);
+  border-bottom: 1px solid var(--rt-rule);
   font-family: var(--rt-mono);
   font-size: 9px;
   letter-spacing: 0.16em;
@@ -2551,6 +2573,19 @@ h1 {
   font-family: var(--rt-serif);
   font-size: 13.5px;
   line-height: 1.8;
+}
+
+/* The per-question hint ("why I'm asking") sits snug under the prompt and fades in just after
+   it settles, echoing the prototype's `rt-q-reveal`. */
+.interview-hint {
+  margin-top: 5px;
+  animation: interviewFade 500ms cubic-bezier(.2, .7, .2, 1) both;
+  animation-delay: 140ms;
+}
+
+@keyframes interviewFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* Per-character blur-up as tokens arrive (prototype `rtChar`). */
@@ -2715,7 +2750,8 @@ h1 {
   .interview-turn,
   .interview-char,
   .interview-option,
-  .interview-compose {
+  .interview-compose,
+  .interview-hint {
     animation: none;
   }
 
@@ -3165,8 +3201,17 @@ h1 {
 }
 
 @media (max-width: 640px) {
+  /* Keep the interview's sticky bar flush under the shorter mobile masthead. */
+  .app-shell {
+    --rt-masthead-h: 65px;
+  }
+
   .workflow-page {
     padding: 34px 18px 84px;
+  }
+
+  .workflow-page[data-chromeless] {
+    padding: 0 18px 84px;
   }
 
   .workflow-book-header {

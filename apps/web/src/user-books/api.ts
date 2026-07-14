@@ -47,6 +47,9 @@ export interface InterviewQuestion {
   ordinal: number;
   maxQuestions: number;
   prompt: string;
+  // One-line "why I'm asking" shown under the prompt (prototype screen 05). Optional: the
+  // agent supplies it, but questions persisted before the field existed won't have it.
+  hint?: string;
   options: InterviewOption[];
   // The agent's reply to the previous answer (empty on the first question) and its
   // self-assessed 0–100 information sufficiency (§3.3).
@@ -55,6 +58,7 @@ export interface InterviewQuestion {
 }
 
 export interface InterviewHistoryItem {
+  questionId: string;
   question: string;
   answer: string;
 }
@@ -183,6 +187,7 @@ interface RawInterviewSnapshot {
     id: string;
     acknowledgment: string;
     prompt: string;
+    hint?: string;
     options: InterviewOption[];
     allowFreeText: true;
     profileDimension: string;
@@ -190,8 +195,11 @@ interface RawInterviewSnapshot {
   } | null;
   sufficiency: number | null;
   answers: Array<{
+    questionId: string;
+    question: string;
     selectedOptionIds: string[];
     freeText: string | null;
+    answerText: string;
   }>;
 }
 
@@ -253,12 +261,14 @@ function mapInterview(raw: RawInterviewSnapshot): InterviewSnapshot {
   return {
     status: raw.status === 'active' ? 'asking' : raw.status === 'completed' ? 'completing' : 'failed',
     history: raw.answers.map((answer, index) => ({
-      question: `第 ${index + 1} 问`,
-      answer: answer.freeText || answer.selectedOptionIds.join(' · '),
+      questionId: answer.questionId,
+      question: answer.question || `第 ${index + 1} 问`,
+      answer: answer.answerText || answer.freeText || answer.selectedOptionIds.join(' · '),
     })),
     currentQuestion: raw.currentQuestion ? {
       id: raw.currentQuestion.id,
       prompt: raw.currentQuestion.prompt,
+      ...(raw.currentQuestion.hint ? { hint: raw.currentQuestion.hint } : {}),
       options: raw.currentQuestion.options,
       ordinal: Math.max(1, Math.min(raw.maxQuestions, raw.questionCount)),
       maxQuestions: raw.maxQuestions,
@@ -333,6 +343,7 @@ export async function getInterview(userBookId: string): Promise<InterviewSnapsho
 export interface InterviewStreamHandlers {
   onAck?(chars: string): void;
   onPrompt?(chars: string): void;
+  onHint?(chars: string): void;
   onOption?(option: InterviewOption): void;
   onSufficiency?(value: number): void;
   onConcluding?(): void;
@@ -355,6 +366,7 @@ function dispatchInterviewFrame(frame: string, handlers: InterviewStreamHandlers
   switch (event.type) {
     case 'ack_delta': handlers.onAck?.(event.chars); break;
     case 'prompt_delta': handlers.onPrompt?.(event.chars); break;
+    case 'hint_delta': handlers.onHint?.(event.chars); break;
     case 'option_added': handlers.onOption?.({ id: event.id, label: event.label }); break;
     case 'sufficiency': handlers.onSufficiency?.(event.value); break;
     case 'concluding': handlers.onConcluding?.(); break;
@@ -362,6 +374,7 @@ function dispatchInterviewFrame(frame: string, handlers: InterviewStreamHandlers
       handlers.onQuestionFinal?.({
         id: event.question.id,
         prompt: event.question.prompt,
+        ...(event.question.hint ? { hint: event.question.hint } : {}),
         options: event.question.options,
         ordinal: event.ordinal,
         maxQuestions: event.maxQuestions,

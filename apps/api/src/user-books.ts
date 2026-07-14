@@ -106,6 +106,7 @@ function mapQuestion(value: {
   id: string;
   acknowledgment: string;
   prompt: string;
+  hint?: string;
   options: Array<{ id: string; label: string }>;
   allow_text: true;
   profile_dimension: string;
@@ -115,6 +116,7 @@ function mapQuestion(value: {
     id: value.id,
     acknowledgment: value.acknowledgment,
     prompt: value.prompt,
+    ...(value.hint ? { hint: value.hint } : {}),
     options: value.options,
     allowFreeText: true,
     profileDimension: value.profile_dimension,
@@ -549,13 +551,24 @@ function createUserBookServiceForUser(options: UserBookServiceOptions, userId: s
       sufficiency: currentMessage
         ? (currentMessage.payload as { sufficiency?: number }).sufficiency ?? null
         : null,
-      answers: answers.map(({ answer, question }) => ({
-        id: answer.id,
-        questionId: String(question.payload.id ?? ''),
-        selectedOptionIds: answer.selectedOptionIds,
-        freeText: answer.freeText,
-        createdAt: answer.createdAt.toISOString(),
-      })),
+      answers: answers.map(({ answer, question }) => {
+        // Resolve the human-readable history row from the joined question payload — the raw
+        // answer only stores option ids and free text, so without this the client can only
+        // show placeholders ("第 N 问") and opaque option slugs ("understand").
+        const payload = question.payload as InterviewQuestion;
+        const labels = answer.selectedOptionIds
+          .map((id) => payload.options?.find((option) => option.id === id)?.label ?? id);
+        const answerText = [...labels, answer.freeText?.trim()].filter(Boolean).join('；');
+        return {
+          id: answer.id,
+          questionId: String(payload.id ?? ''),
+          question: payload.prompt ?? '',
+          selectedOptionIds: answer.selectedOptionIds,
+          freeText: answer.freeText,
+          answerText,
+          createdAt: answer.createdAt.toISOString(),
+        };
+      }),
     };
   };
 

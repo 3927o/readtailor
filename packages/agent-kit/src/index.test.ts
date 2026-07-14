@@ -395,6 +395,7 @@ describe('createInterviewStreamParser', () => {
     id: 'q1',
     acknowledgment: '好，我记下了。',
     prompt: '你更希望先建立整体地图，还是先深入一个具体问题？',
+    hint: '这决定我先带你俯瞰，还是先钻进细节。',
     options: [
       { id: 'map', label: '先建立整体地图' },
       { id: 'deep', label: '先深入一个具体问题' },
@@ -408,15 +409,17 @@ describe('createInterviewStreamParser', () => {
   const reassemble = (events: InterviewStreamDelta[]) => ({
     ack: events.filter((e) => e.type === 'ack_delta').map((e) => (e as { chars: string }).chars).join(''),
     prompt: events.filter((e) => e.type === 'prompt_delta').map((e) => (e as { chars: string }).chars).join(''),
+    hint: events.filter((e) => e.type === 'hint_delta').map((e) => (e as { chars: string }).chars).join(''),
     options: events.filter((e) => e.type === 'option_added').map((e) => (e as { id: string }).id),
     sufficiency: events.filter((e) => e.type === 'sufficiency').map((e) => (e as { value: number }).value),
   });
 
   for (const size of [1, 3, 7, 500]) {
-    it(`reconstructs acknowledgment, prompt, every option and sufficiency at chunk size ${size}`, () => {
+    it(`reconstructs acknowledgment, prompt, hint, every option and sufficiency at chunk size ${size}`, () => {
       const result = reassemble(drainParser(question, size));
       expect(result.ack).toBe('好，我记下了。');
       expect(result.prompt).toBe('你更希望先建立整体地图，还是先深入一个具体问题？');
+      expect(result.hint).toBe('这决定我先带你俯瞰，还是先钻进细节。');
       expect(result.options).toEqual(['map', 'deep', 'mix']);
       expect(result.sufficiency.at(-1)).toBe(72);
     });
@@ -428,6 +431,15 @@ describe('createInterviewStreamParser', () => {
     const lastAck = events.map((e) => e.type).lastIndexOf('ack_delta');
     expect(lastAck).toBeGreaterThanOrEqual(0);
     expect(firstPrompt).toBeGreaterThan(lastAck);
+  });
+
+  it('streams the hint after the prompt and before the first option', () => {
+    const events = drainParser(question, 4);
+    const lastPrompt = events.map((e) => e.type).lastIndexOf('prompt_delta');
+    const firstHint = events.findIndex((e) => e.type === 'hint_delta');
+    const firstOption = events.findIndex((e) => e.type === 'option_added');
+    expect(firstHint).toBeGreaterThan(lastPrompt);
+    expect(firstOption).toBeGreaterThan(firstHint);
   });
 
   it('never emits an option with a truncated label', () => {
