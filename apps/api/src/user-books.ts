@@ -341,13 +341,14 @@ export function resolveReadingSpeed(
 
 // §11.9/§11.10 — whole-node original-text progress at a stable node order (the reader progress-bar 口径:
 // charactersBefore = Σ character_count for nodes strictly before the current order; 只算原文). Returns
-// nulls the caller maps to a 0%/unknown estimate when the manifest carries no char counts.
+// a null remaining count that the caller maps to an unknown estimate when the manifest carries no
+// char counts.
 export function computeBookProgress(
   meta: ManifestMeta,
   nodeOrder: number | null,
-): { totalChars: number | null; charsBefore: number; remainingChars: number; progressPercent: number } {
+): { totalChars: number | null; charsBefore: number; remainingChars: number | null; progressPercent: number } {
   if (meta.bookTotalChars === null) {
-    return { totalChars: null, charsBefore: 0, remainingChars: 0, progressPercent: 0 };
+    return { totalChars: null, charsBefore: 0, remainingChars: null, progressPercent: 0 };
   }
   let charsBefore = 0;
   if (nodeOrder !== null) {
@@ -3113,7 +3114,7 @@ function createUserBookServiceForUser(
       const meta = await getManifestMeta(options.books, owned.sharedBook.id);
       const progress = computeBookProgress(meta, resume?.nodeOrder ?? null);
       const speed = resolveReadingSpeed(meta.language, agg?.forwardSeconds ?? 0, agg?.forwardChars ?? 0);
-      const remaining = progress.totalChars === null
+      const remaining = progress.remainingChars === null
         ? { seconds: null, approximate: true }
         : {
           seconds: speed.charsPerSec > 0 ? Math.round(progress.remainingChars / speed.charsPerSec) : null,
@@ -3123,6 +3124,7 @@ function createUserBookServiceForUser(
         totalEffectiveSeconds: agg?.totalEffective ?? 0,
         lastReadAt: agg?.lastReadAt ? new Date(agg.lastReadAt).toISOString() : null,
         progressPercent: progress.progressPercent,
+        remainingCharacters: progress.remainingChars,
         remaining,
       };
     },
