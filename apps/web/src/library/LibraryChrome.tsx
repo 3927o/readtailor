@@ -1,10 +1,11 @@
 import { useState, type ReactNode } from 'react';
-import { Link } from 'react-router';
+import { Link, NavLink } from 'react-router';
 import { useAuth } from '../auth/AuthProvider';
 
-export function LibraryChrome({ children, service }: {
+export function LibraryChrome({ children, service, showBack = true }: {
   children: ReactNode;
   service?: { connected: boolean; pending: boolean };
+  showBack?: boolean;
 }) {
   const auth = useAuth();
   const [logoutPending, setLogoutPending] = useState(false);
@@ -16,13 +17,19 @@ export function LibraryChrome({ children, service }: {
           <span className="brand-en">READTAILOR</span>
         </Link>
         <div className="masthead-actions">
+          <nav className="masthead-nav" aria-label="主导航">
+            <NavLink to="/" end>书架</NavLink>
+            <NavLink to="/stats">统计</NavLink>
+          </nav>
           {service ? (
             <div className="service-state" data-connected={service.connected}>
               <span className="service-dot" aria-hidden="true" />
               {service.pending ? '正在连接' : service.connected ? '服务正常' : '服务未连接'}
             </div>
-          ) : (
+          ) : showBack ? (
             <Link className="masthead-back" to="/">‹ 返回书架</Link>
+          ) : (
+            <span className="masthead-spacer" aria-hidden="true" />
           )}
           {auth.user ? (
             <div className="account-menu">

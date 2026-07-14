@@ -6,6 +6,7 @@ import { ImportPage } from './library/ImportPage';
 import { ProcessingPage } from './library/ProcessingPage';
 import { ShelfPage } from './library/ShelfPage';
 import { ReaderPage } from './reader/ReaderPage';
+import { StatsPage } from './reading-stats/StatsPage';
 import { InterviewPage } from './user-books/InterviewPage';
 import { StrategyPage } from './user-books/StrategyPage';
 import { TrialPage } from './user-books/TrialPage';
@@ -20,6 +21,7 @@ export function App() {
       />
       <Route element={<ProtectedRoute />}>
         <Route path="/" element={<ShelfPage />} />
+        <Route path="/stats" element={<StatsPage />} />
         <Route path="/books/import" element={<ImportPage />} />
         <Route path="/books/:bookId/processing" element={<ProcessingPage />} />
         <Route path="/user-books/:id/interview" element={<InterviewPage />} />
