@@ -2,8 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import type {
-  AdoptTrialRequest,
-  AdoptTrialResponse,
   AskQuestionRequest,
   CreateHighlightRequest,
   DeleteHighlightResponse,
@@ -86,6 +84,7 @@ import { ADJUSTMENT_LIMIT } from './user-books/domain/reading-setup-state';
 import { UserBookError } from './user-books/errors';
 import { createSetupContextStore } from './user-books/context/setup-context';
 import { createInterviewService } from './user-books/interview/service';
+import { createStrategyAdoptionService } from './user-books/strategy/adoption-service';
 import { createStrategyRevisionService } from './user-books/strategy/revision-service';
 import { createTrialService } from './user-books/trial/service';
 import {
@@ -1272,6 +1271,21 @@ function createUserBookServiceForUser(
     }
   };
 
+  const strategyAdoptionService = createStrategyAdoptionService({
+    db,
+    userId,
+    modelConfigId: options.modelConfigId,
+    formalWindowSize: FORMAL_WINDOW_SIZE,
+    getOwnedBook,
+    loadManifest: async (sharedBookId) => {
+      const manifestValue = await options.books.getManifest(sharedBookId);
+      if (!manifestValue) throw new UserBookError('书籍阅读索引不存在', 409);
+      return asManifest(manifestValue);
+    },
+    ensureFormalWindow,
+    enqueuePendingFormalGenerations,
+  });
+
   // §11.5 — persist the reader's anchor. The anchor's node is the focus node (`order`). Two guards
   // make a bad or stale event a no-op instead of a corruption (fix §2.2/§2.3/§4.3):
   //   1. Validate `order` against the manifest: its section_id/segment must match the position, else
@@ -2172,143 +2186,7 @@ function createUserBookServiceForUser(
 
     streamTrialFeedback: strategyRevisionService.streamTrialFeedback,
 
-    async adoptTrial(userBookId: string, input: AdoptTrialRequest): Promise<AdoptTrialResponse> {
-      const owned = await getOwnedBook(userBookId);
-      if (owned.userBook.workflowStatus === 'active_reading' && owned.userBook.currentStrategyVersionId) {
-        await enqueuePendingFormalGenerations(userBookId);
-        return { userBookId, workflowStatus: 'active_reading', strategyVersionId: owned.userBook.currentStrategyVersionId };
-      }
-      const current = await trialState(userBookId);
-      if (!current.canAdopt || current.trialRevisionId !== input.trialRevisionId || current.strategyDraftVersionId !== input.strategyDraftVersionId) {
-        throw new UserBookError('三个试读片段尚未全部生成，或试读版本已经更新', 409);
-      }
-      const { manifest } = await getManifestAndHtml(owned.sharedBook.id);
-      const formalNodes = manifest.nodes.filter((item) => item.tailoring_eligible).slice(0, FORMAL_WINDOW_SIZE);
-      if (formalNodes.length === 0) throw new UserBookError('书籍没有可生成的正式阅读节点', 409);
-      const result = await db.transaction(async (tx) => {
-        const [bookGate] = await tx
-          .select()
-          .from(userBooks)
-          .where(eq(userBooks.id, userBookId))
-          .limit(1);
-        if (bookGate?.workflowStatus === 'active_reading' && bookGate.currentStrategyVersionId) {
-          const [existing] = await tx
-            .select()
-            .from(strategyVersions)
-            .where(eq(strategyVersions.id, bookGate.currentStrategyVersionId))
-            .limit(1);
-          if (existing) return { strategy: existing, created: false };
-        }
-        if (
-          !bookGate
-          || bookGate.workflowStatus !== 'trial_review'
-          || bookGate.currentTrialRevisionId !== input.trialRevisionId
-          || bookGate.currentStrategyDraftVersionId !== input.strategyDraftVersionId
-        ) {
-          throw new UserBookError('试读状态已经更新', 409);
-        }
-        const [revision] = await tx
-          .select()
-          .from(trialRevisions)
-          .where(and(
-            eq(trialRevisions.id, input.trialRevisionId),
-            eq(trialRevisions.userBookId, userBookId),
-          ))
-          .limit(1);
-        if (
-          !revision
-          || revision.status !== 'published'
-          || revision.strategyDraftVersionId !== input.strategyDraftVersionId
-        ) {
-          throw new UserBookError('试读版本已经失效', 409);
-        }
-        const segments = await tx
-          .select()
-          .from(trialSegments)
-          .where(eq(trialSegments.trialRevisionId, revision.id));
-        if (segments.length !== 3 || segments.some((segment) => segment.status !== 'ready')) {
-          throw new UserBookError('三个试读片段尚未全部生成', 409);
-        }
-        const [draft] = await tx
-          .update(strategyDraftVersions)
-          .set({ status: 'confirmed', confirmedAt: new Date() })
-          .where(and(
-            eq(strategyDraftVersions.id, input.strategyDraftVersionId),
-            eq(strategyDraftVersions.userBookId, userBookId),
-            eq(strategyDraftVersions.status, 'approved_for_trial'),
-          ))
-          .returning();
-        if (!draft) {
-          const [existing] = await tx
-            .select()
-            .from(strategyVersions)
-            .where(eq(strategyVersions.sourceDraftVersionId, input.strategyDraftVersionId))
-            .limit(1);
-          if (existing) return { strategy: existing, created: false };
-          throw new UserBookError('处理方式已经更新', 409);
-        }
-        const [strategy] = await tx.insert(strategyVersions).values({
-          userBookId,
-          sourceDraftVersionId: draft.id,
-          version: 1,
-          userFacingSummary: draft.userFacingSummary,
-          strategy: draft.strategy,
-        }).returning();
-        if (!strategy) throw new Error('failed to create formal strategy');
-        const generationIds: string[] = [];
-        for (const node of formalNodes) {
-          const id = randomUUID();
-          await tx.insert(nodeGenerations).values({
-            id,
-            userBookId,
-            generationScope: 'formal',
-            strategyVersionId: strategy.id,
-            sectionId: node.section_id,
-            segment: node.segment,
-            status: 'queued',
-            modelConfigId: options.modelConfigId,
-            promptVersion: 'tailoring-content-1.0',
-            cacheKey: `pending:${id}`,
-          });
-          generationIds.push(id);
-        }
-        const adopted = await tx
-          .update(trialRevisions)
-          .set({ status: 'adopted', adoptedAt: new Date(), updatedAt: new Date() })
-          .where(and(
-            eq(trialRevisions.id, input.trialRevisionId),
-            eq(trialRevisions.status, 'published'),
-          ))
-          .returning({ id: trialRevisions.id });
-        if (adopted.length !== 1) throw new UserBookError('试读版本已经失效', 409);
-        const activated = await tx
-          .update(userBooks)
-          .set({ workflowStatus: 'active_reading', currentStrategyVersionId: strategy.id, updatedAt: new Date() })
-          .where(and(
-            eq(userBooks.id, userBookId),
-            eq(userBooks.workflowStatus, 'trial_review'),
-            eq(userBooks.currentTrialRevisionId, input.trialRevisionId),
-            eq(userBooks.currentStrategyDraftVersionId, input.strategyDraftVersionId),
-          ))
-          .returning({ id: userBooks.id });
-        if (activated.length !== 1) throw new UserBookError('试读状态已经更新', 409);
-        return { strategy, created: true, generationIds };
-      });
-      if (!result.created) {
-        await enqueuePendingFormalGenerations(userBookId);
-        return { userBookId, workflowStatus: 'active_reading', strategyVersionId: result.strategy.id };
-      }
-      // Seed the initial window (first eligible node + lookahead) at the priority band so the
-      // reader's opening nodes generate first; later scroll/jump 提权 flows through the same helper.
-      // The rows are already committed, so a window failure falls back to the plain background
-      // enqueue rather than introducing a new post-commit failure mode.
-      try {
-        await ensureFormalWindow(userBookId, result.strategy.id, owned.sharedBook.id, formalNodes[0]?.order ?? 1);
-      } catch {
-        await enqueuePendingFormalGenerations(userBookId);
-      }
-      return { userBookId, workflowStatus: 'active_reading', strategyVersionId: result.strategy.id };
-    },
+    adoptTrial: strategyAdoptionService.confirmStrategyAndStartReading,
 
     async reader(userBookId: string): Promise<ReaderBootstrap> {
       const owned = await getOwnedBook(userBookId);
