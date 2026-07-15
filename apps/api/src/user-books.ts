@@ -41,13 +41,10 @@ import type {
   ReadingSetupStreamErrorCode,
   Strategy,
   StrategyReviewResponse,
-  StrategyRevisionStreamEvent,
   TextPosition,
   TextRange,
   UpdateHighlightNoteRequest,
   TrialCandidate,
-  SubmitStrategyFeedbackRequest,
-  SubmitTrialFeedbackRequest,
   TrialReviewResponse,
   TrialSelectionStreamEvent,
   UserBookDetailResponse,
@@ -61,8 +58,6 @@ import {
   bookReaderProfileVersions,
   dailyReadingTotals,
   highlights,
-  interviewMessages,
-  interviewSessions,
   nodeGenerations,
   qaMessages,
   qaSessions,
@@ -100,6 +95,7 @@ import { ADJUSTMENT_LIMIT } from './user-books/domain/reading-setup-state';
 import { UserBookError } from './user-books/errors';
 import { createSetupContextStore } from './user-books/context/setup-context';
 import { createInterviewService } from './user-books/interview/service';
+import { createStrategyRevisionService } from './user-books/strategy/revision-service';
 import {
   createSetupOperationStore,
   ReadingSetupLeaseLostError,
@@ -1074,20 +1070,6 @@ type RequestContext = {
   requestId?: string;
 };
 
-type RevisionTurnStreamDelta =
-  | Extract<ReadingSetupStreamDelta, { type: 'speculative_reset' | 'draft_started' | 'strategy_delta' }>
-  | {
-      type: 'reading_node_added';
-      speculativeEpoch: number;
-      node: ReadingNodePreview;
-    };
-
-type StrategyRevisionStreamPayload = StrategyRevisionStreamEvent extends infer Event
-  ? Event extends StrategyRevisionStreamEvent
-    ? Omit<Event, 'userBookId' | 'operationId' | 'operationAttempt' | 'sequence'>
-    : never
-  : never;
-
 type TrialFragmentStreamValue = Extract<ReadingSetupStreamDelta, { type: 'fragment_added' }>['fragment'];
 
 type TrialSelectionTurnStreamDelta =
@@ -1265,206 +1247,21 @@ function createUserBookServiceForUser(
     ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
   });
 
-  // §6.4 / §10.7 shared revision engine. Runs the revision LLM FIRST (no writes), then applies
-  // the whole change in ONE transaction: supersede the current draft, insert the revised draft,
-  // record the feedback message (carrying the idempotency key) and bump the adjustment count,
-  // landing the book back in strategy_review. When `trialRevisionId` is present (trial feedback,
-  // §6.4) the published trial round and its generations are voided in the SAME transaction — so a
-  // crash before commit leaves the trial intact and the request is simply retried, with no
-  // half-applied state and no double count. Callers do their own phase-specific pre-validation.
-  const reviseFromFeedback = async (
-    userBookId: string,
-    params: {
-      draft: StrategyReviewResponse['draft'];
-      feedback: string;
-      idempotencyKey: string;
-      trialRevisionId?: string;
-      operationClaim: ReadingSetupOperationClaim;
-      assertLeaseActive(): void;
-      onStream?: (delta: RevisionTurnStreamDelta) => void;
-    },
-  ): Promise<string> => {
-    const setup = await getSetupContext(userBookId);
-    const manifestValue = await options.books.getManifest(setup.owned.sharedBook.id);
-    if (!manifestValue) throw new UserBookError('书籍阅读索引不存在', 409);
-    const projectNode = createReadingNodeProjector(
-      asManifest(manifestValue),
-      setup.context.bookProfile,
-    );
-    let streamedEpoch = 0;
-    let streamedNodes = new Set<string>();
-    const outcome = await options.setupEngine.runTurn({
-      sessionId: setup.owned.userBook.currentInterviewSessionId!,
-      phase: 'strategy_review',
-      askedCount: 0,
-      context: { ...setup.context, currentStrategy: params.draft },
-      feedback: params.feedback,
-      ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
-      ...(params.onStream ? {
-        onStream: (delta: ReadingSetupStreamDelta) => {
-          params.assertLeaseActive();
-          if (delta.type === 'speculative_reset') {
-            streamedEpoch = delta.speculativeEpoch;
-            streamedNodes = new Set<string>();
-            params.onStream?.(delta);
-            return;
-          }
-          if (delta.speculativeEpoch < streamedEpoch) return;
-          if (delta.type === 'draft_started' && delta.source === 'revision') {
-            params.onStream?.(delta);
-          } else if (delta.type === 'strategy_delta') {
-            params.onStream?.(delta);
-          } else if (delta.type === 'reading_node_added') {
-            try {
-              params.onStream?.({
-                type: 'reading_node_added',
-                speculativeEpoch: delta.speculativeEpoch,
-                node: projectNode(delta, streamedNodes),
-              });
-            } catch (error) {
-              if (!(error instanceof UserBookError)) throw error;
-            }
-          }
-        },
-      } : {}),
-    });
-    if (outcome.type !== 'revised') throw new UserBookError('处理方式修订失败', 503);
-    const revised = outcome;
-    const finalNodes = new Set<string>();
-    revised.strategy.trial_candidates.forEach((candidate, index) => projectNode({
-      ordinal: index + 1,
-      sectionId: candidate.section_id,
-      segment: candidate.segment,
-      reason: candidate.reason,
-    }, finalNodes));
-    params.assertLeaseActive();
-    try {
-      const resultDraftId = await db.transaction(async (tx) => {
-        const [bookGate] = await tx.select().from(userBooks).where(eq(userBooks.id, userBookId)).limit(1);
-        if (!bookGate || bookGate.currentStrategyDraftVersionId !== params.draft.id || bookGate.adjustmentCount >= 5) {
-          throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
-        }
-        if (params.trialRevisionId) {
-          if (bookGate.workflowStatus !== 'trial_review' || bookGate.currentTrialRevisionId !== params.trialRevisionId) {
-            throw new UserBookError('试读版本已经更新', 409);
-          }
-          const changedRevision = await tx
-            .update(trialRevisions)
-            .set({ status: 'superseded', supersededAt: new Date(), updatedAt: new Date() })
-            .where(and(
-              eq(trialRevisions.id, params.trialRevisionId),
-              eq(trialRevisions.userBookId, userBookId),
-              eq(trialRevisions.status, 'published'),
-            ))
-            .returning({ id: trialRevisions.id });
-          if (changedRevision.length !== 1) throw new UserBookError('试读版本已经更新', 409);
-          const sourceSegments = await tx
-            .select({ id: trialSegments.id })
-            .from(trialSegments)
-            .where(eq(trialSegments.trialRevisionId, params.trialRevisionId));
-          if (sourceSegments.length > 0) {
-            await tx
-              .update(nodeGenerations)
-              .set({ status: 'superseded', result: null, completedAt: new Date(), updatedAt: new Date() })
-              .where(and(
-                eq(nodeGenerations.userBookId, userBookId),
-                eq(nodeGenerations.generationScope, 'trial'),
-                inArray(nodeGenerations.trialSegmentId, sourceSegments.map((segment) => segment.id)),
-                inArray(nodeGenerations.status, ['queued', 'generating', 'retrying', 'ready', 'failed']),
-              ));
-          }
-        } else if (bookGate.workflowStatus !== 'strategy_review' || bookGate.currentTrialRevisionId) {
-          throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
-        }
-        const superseded = await tx
-          .update(strategyDraftVersions)
-          .set({ status: 'superseded', supersededAt: new Date() })
-          .where(and(
-            eq(strategyDraftVersions.id, params.draft.id),
-            eq(strategyDraftVersions.userBookId, userBookId),
-            eq(strategyDraftVersions.status, params.draft.status),
-          ))
-          .returning({ id: strategyDraftVersions.id });
-        if (superseded.length !== 1) throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
-        const profileId = bookGate.currentBookReaderProfileVersionId;
-        if (!profileId) throw new UserBookError('本书画像不存在', 409);
-        const sessionId = bookGate.currentInterviewSessionId;
-        if (sessionId) {
-          const [session] = await tx.select().from(interviewSessions).where(eq(interviewSessions.id, sessionId)).limit(1);
-          if (session) {
-            // The feedback insert is the idempotency gate: a duplicate key collides on the
-            // partial unique index and rolls the whole transaction back (caught below).
-            await tx.insert(interviewMessages).values({
-              interviewSessionId: sessionId,
-              sequence: session.conversationVersion + 1,
-              role: 'user',
-              kind: 'feedback',
-              content: params.feedback.trim(),
-              payload: { strategyDraftVersionId: params.draft.id, feedback: params.feedback },
-              idempotencyKey: params.idempotencyKey,
-            });
-            await tx.update(interviewSessions).set({ conversationVersion: session.conversationVersion + 1, updatedAt: new Date() }).where(eq(interviewSessions.id, sessionId));
-          }
-        }
-        const [draft] = await tx.insert(strategyDraftVersions).values({
-          userBookId,
-          bookReaderProfileVersionId: profileId,
-          version: params.draft.version + 1,
-          status: 'draft',
-          readingBriefing: params.draft.readingBriefing,
-          userFacingSummary: revised.publicStrategy,
-          strategy: mapStrategy(revised.strategy),
-        }).returning();
-        if (!draft) throw new Error('failed to save revised strategy');
-        const updated = await tx
-          .update(userBooks)
-          .set({
-            workflowStatus: 'strategy_review',
-            currentStrategyDraftVersionId: draft.id,
-            currentTrialRevisionId: null,
-            adjustmentCount: sql`${userBooks.adjustmentCount} + 1`,
-            updatedAt: new Date(),
-          })
-          .where(and(
-            eq(userBooks.id, userBookId),
-            eq(userBooks.currentStrategyDraftVersionId, params.draft.id),
-            sql`${userBooks.adjustmentCount} < 5`,
-          ))
-          .returning({ id: userBooks.id });
-        if (updated.length !== 1) throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
-        const completed = await tx
-          .update(readingSetupOperations)
-          .set({
-            status: 'completed',
-            leaseId: null,
-            leaseClaimedAt: null,
-            leaseExpiresAt: null,
-            resultStrategyDraftVersionId: draft.id,
-            resultTrialRevisionId: null,
-            errorSummary: null,
-            completedAt: sql`now()`,
-            updatedAt: sql`now()`,
-          })
-          .where(and(
-            eq(readingSetupOperations.id, params.operationClaim.operationId),
-            eq(readingSetupOperations.status, 'running'),
-            eq(readingSetupOperations.leaseId, params.operationClaim.leaseId),
-            eq(readingSetupOperations.attemptCount, params.operationClaim.attemptCount),
-            sql`${readingSetupOperations.leaseExpiresAt} > now()`,
-            eq(readingSetupOperations.baseStrategyDraftVersionId, params.draft.id),
-            params.trialRevisionId
-              ? eq(readingSetupOperations.baseTrialRevisionId, params.trialRevisionId)
-              : isNull(readingSetupOperations.baseTrialRevisionId),
-          ))
-          .returning({ id: readingSetupOperations.id });
-        if (completed.length !== 1) throw new ReadingSetupLeaseLostError();
-        return draft.id;
-      });
-      return resultDraftId;
-    } catch (error) {
-      throw error;
-    }
-  };
+  const strategyRevisionService = createStrategyRevisionService({
+    db,
+    books: options.books,
+    setupEngine: options.setupEngine,
+    operationStore: setupOperationStore,
+    getOwnedBook,
+    getSetupContext,
+    createReadingNodeProjector: (manifestValue, bookProfile) => (
+      createReadingNodeProjector(asManifest(manifestValue), bookProfile)
+    ),
+    mapStrategy,
+    loadStrategyState: strategyStateByDraftId,
+    ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
+  });
+
 
   const getManifestAndHtml = async (sharedBookId: string) => {
     const [manifestValue, content] = await Promise.all([
@@ -1953,240 +1750,6 @@ function createUserBookServiceForUser(
     return trialStateByRevisionId(userBookId, revisionId);
   };
 
-  const runPreparedRevisionOperation = async (
-    prepared: PreparedReadingSetupOperation,
-    onStream?: (delta: RevisionTurnStreamDelta) => void,
-  ): Promise<string> => {
-    const operation = prepared.operation;
-    if (operation.kind !== 'strategy_revision') {
-      throw new UserBookError('阅读准备操作类型不匹配', 409);
-    }
-    if (operation.status === 'completed') {
-      if (!operation.resultStrategyDraftVersionId) {
-        throw new UserBookError('阅读准备操作结果损坏', 409);
-      }
-      return operation.resultStrategyDraftVersionId;
-    }
-    if (!prepared.claim) {
-      throw new UserBookError(operation.errorSummary ?? '阅读准备操作失败', 503);
-    }
-    if (operation.payload.source === 'strategy_approve') {
-      throw new UserBookError('阅读准备操作载荷不匹配', 409);
-    }
-
-    const claim = prepared.claim;
-    const lease = startOperationLeaseRenewal(claim);
-    try {
-      const current = await strategyStateByDraftId(
-        operation.userBookId,
-        operation.baseStrategyDraftVersionId,
-      );
-      lease.assertActive();
-      return await reviseFromFeedback(operation.userBookId, {
-        draft: current.draft,
-        feedback: operation.payload.feedback,
-        idempotencyKey: operation.idempotencyKey,
-        ...(operation.payload.source === 'trial_feedback'
-          ? { trialRevisionId: operation.payload.trialRevisionId }
-          : {}),
-        operationClaim: claim,
-        assertLeaseActive: () => lease.assertActive(),
-        ...(onStream ? { onStream } : {}),
-      });
-    } catch (error) {
-      if (!(error instanceof ReadingSetupLeaseLostError)) {
-        const failed = await failReadingSetupOperation(claim, error).catch(() => false);
-        if (!failed) throw new ReadingSetupLeaseLostError();
-      }
-      throw error;
-    } finally {
-      lease.stop();
-    }
-  };
-
-  const executeRevisionOperation = async (
-    initialOperation: ReadingSetupOperationRow,
-  ): Promise<void> => {
-    const prepared = await prepareReadingSetupOperationExecution(initialOperation);
-    try {
-      await runPreparedRevisionOperation(prepared);
-    } catch (error) {
-      if (error instanceof ReadingSetupLeaseLostError) {
-        throw new UserBookError('阅读准备操作已由新请求接管，请查询恢复状态', 409);
-      }
-      throw error;
-    }
-  };
-
-  const createStrategyRevisionStreamEmitter = (
-    operation: ReadingSetupOperationRow,
-    operationAttempt: number,
-  ) => {
-    let sequence = 0;
-    return (payload: StrategyRevisionStreamPayload): StrategyRevisionStreamEvent => ({
-      userBookId: operation.userBookId,
-      operationId: operation.id,
-      operationAttempt,
-      sequence: sequence += 1,
-      ...payload,
-    } as StrategyRevisionStreamEvent);
-  };
-
-  const streamRevisionOperation = async function* (
-    initialOperation: ReadingSetupOperationRow,
-  ): AsyncGenerator<StrategyRevisionStreamEvent> {
-    if (initialOperation.status === 'running') {
-      const observed = await observeOperationById(initialOperation.userBookId, initialOperation.id);
-      if (observed && !observed.leaseExpired) {
-        throw new UserBookError('阅读准备操作仍在处理中，请查询恢复状态', 409);
-      }
-    }
-    const prepared = await prepareReadingSetupOperationExecution(initialOperation, false);
-    const operation = prepared.operation;
-    if (operation.kind !== 'strategy_revision' || operation.payload.source === 'strategy_approve') {
-      throw new UserBookError('阅读准备操作类型不匹配', 409);
-    }
-    const operationAttempt = prepared.claim?.attemptCount ?? operation.attemptCount;
-    if (operationAttempt < 1) throw new UserBookError('阅读准备操作尚未开始', 409);
-    const emit = createStrategyRevisionStreamEmitter(operation, operationAttempt);
-    const bridge = createStreamBridge<StrategyRevisionStreamEvent>();
-    let resultDraftId: string | undefined;
-    let operationError: unknown;
-    const running = runPreparedRevisionOperation(prepared, (delta) => {
-      switch (delta.type) {
-        case 'speculative_reset':
-          bridge.push(emit({
-            type: 'speculative_reset',
-            speculativeEpoch: delta.speculativeEpoch,
-            phase: 'strategy_review',
-          }));
-          break;
-        case 'draft_started':
-          bridge.push(emit({
-            type: 'revision_started',
-            speculativeEpoch: delta.speculativeEpoch,
-            source: operation.source,
-            baseDraftId: operation.baseStrategyDraftVersionId,
-            baseTrialRevisionId: operation.baseTrialRevisionId,
-          } as StrategyRevisionStreamPayload));
-          break;
-        case 'strategy_delta':
-          bridge.push(emit({
-            type: 'strategy_delta',
-            speculativeEpoch: delta.speculativeEpoch,
-            chars: delta.chars,
-          }));
-          break;
-        case 'reading_node_added':
-          bridge.push(emit({
-            type: 'reading_node_added',
-            speculativeEpoch: delta.speculativeEpoch,
-            node: delta.node,
-          }));
-          break;
-      }
-    })
-      .then((value) => {
-        resultDraftId = value;
-      })
-      .catch((error: unknown) => {
-        operationError = error;
-      })
-      .finally(() => bridge.end());
-
-    for await (const event of bridge.drain()) yield event;
-    await running;
-    if (operationError) {
-      const code: ReadingSetupStreamErrorCode = operationError instanceof ReadingSetupLeaseLostError
-        ? 'lease_lost'
-        : operationError instanceof UserBookError && operationError.statusCode < 500
-          ? 'validation_failed'
-          : 'agent_failed';
-      yield emit({
-        type: 'error',
-        code,
-        message: operationError instanceof UserBookError
-          ? operationError.message
-          : code === 'lease_lost'
-            ? '阅读准备操作已由新的恢复请求接管。'
-            : '处理方式修订失败，请稍后重试。',
-      });
-      return;
-    }
-    if (!resultDraftId) {
-      yield emit({ type: 'error', code: 'internal_error', message: '处理方式修订结果缺失。' });
-      return;
-    }
-    try {
-      const strategy = await strategyStateByDraftId(operation.userBookId, resultDraftId);
-      yield emit({ type: 'revision_final', strategy });
-    } catch {
-      yield emit({
-        type: 'error',
-        code: 'internal_error',
-        message: '修订已经完成，正在重新读取最终结果。',
-      });
-    }
-  };
-
-  const resolveStrategyFeedbackOperation = async (
-    userBookId: string,
-    input: SubmitStrategyFeedbackRequest,
-  ) => {
-    const strategyDraftVersionId = input.strategyDraftVersionId.toLowerCase();
-    const feedback = input.feedback.trim();
-    const idempotencyKey = input.idempotencyKey.trim();
-    if (!UUID_RE.test(strategyDraftVersionId) || !feedback || !idempotencyKey) {
-      throw new UserBookError('处理方式反馈请求无效', 400);
-    }
-    return resolveReadingSetupOperation(userBookId, {
-      kind: 'strategy_revision',
-      source: 'strategy_feedback',
-      baseStrategyDraftVersionId: strategyDraftVersionId,
-      baseTrialRevisionId: null,
-      idempotencyKey,
-      payload: {
-        source: 'strategy_feedback',
-        strategyDraftVersionId,
-        feedback,
-      },
-    });
-  };
-
-  const resolveTrialFeedbackOperation = async (
-    userBookId: string,
-    input: SubmitTrialFeedbackRequest,
-  ) => {
-    const trialRevisionId = input.trialRevisionId.toLowerCase();
-    const feedback = input.feedback.trim();
-    const idempotencyKey = input.idempotencyKey.trim();
-    if (!UUID_RE.test(trialRevisionId) || !feedback || !idempotencyKey) {
-      throw new UserBookError('试读反馈请求无效', 400);
-    }
-    await getOwnedBook(userBookId);
-    const [revision] = await db
-      .select({ strategyDraftVersionId: trialRevisions.strategyDraftVersionId })
-      .from(trialRevisions)
-      .where(and(
-        eq(trialRevisions.id, trialRevisionId),
-        eq(trialRevisions.userBookId, userBookId),
-      ))
-      .limit(1);
-    if (!revision) throw new UserBookError('试读版本不存在', 404);
-    return resolveReadingSetupOperation(userBookId, {
-      kind: 'strategy_revision',
-      source: 'trial_feedback',
-      baseStrategyDraftVersionId: revision.strategyDraftVersionId,
-      baseTrialRevisionId: trialRevisionId,
-      idempotencyKey,
-      payload: {
-        source: 'trial_feedback',
-        strategyDraftVersionId: revision.strategyDraftVersionId,
-        trialRevisionId,
-        feedback,
-      },
-    });
-  };
 
   const resolveApproveStrategyOperation = async (
     userBookId: string,
@@ -2394,7 +1957,7 @@ function createUserBookServiceForUser(
     const operation = await readOperationById(userBookId, operationId);
     if (!operation) throw new UserBookError('阅读准备操作不存在', 404);
     if (operation.kind === 'strategy_revision') {
-      await executeRevisionOperation(operation);
+      await strategyRevisionService.executeOperation(operation);
     } else {
       await executeTrialSelectionOperation(operation);
     }
@@ -3410,10 +2973,7 @@ function createUserBookServiceForUser(
     strategyState,
     strategyStateByDraftId,
 
-    async *streamStrategyFeedback(userBookId: string, input: SubmitStrategyFeedbackRequest) {
-      const operation = await resolveStrategyFeedbackOperation(userBookId, input);
-      yield* streamRevisionOperation(operation);
-    },
+    streamStrategyFeedback: strategyRevisionService.streamStrategyFeedback,
 
     async *streamApproveStrategy(userBookId: string, input: ApproveStrategyRequest) {
       const operation = await resolveApproveStrategyOperation(userBookId, input);
@@ -3633,10 +3193,7 @@ function createUserBookServiceForUser(
       return trialState(userBookId);
     },
 
-    async *streamTrialFeedback(userBookId: string, input: SubmitTrialFeedbackRequest) {
-      const operation = await resolveTrialFeedbackOperation(userBookId, input);
-      yield* streamRevisionOperation(operation);
-    },
+    streamTrialFeedback: strategyRevisionService.streamTrialFeedback,
 
     async adoptTrial(userBookId: string, input: AdoptTrialRequest): Promise<AdoptTrialResponse> {
       const owned = await getOwnedBook(userBookId);
