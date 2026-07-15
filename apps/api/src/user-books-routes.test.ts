@@ -51,6 +51,7 @@ const interviewState = {
   sessionId: '33333333-4444-4555-8666-777777777777',
   status: 'active' as const,
   turnInProgress: false,
+  completionStarted: false,
   questionCount: 1,
   maxQuestions: 7 as const,
   currentQuestion: null,

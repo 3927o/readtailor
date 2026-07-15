@@ -89,6 +89,10 @@ export function projectInterviewState(input: {
       && session.turnLeaseExpiresAt
       && session.turnLeaseExpiresAt.getTime() > (input.now ?? new Date()).getTime()
     ),
+    completionStarted: messages.some((message) => (
+      message.kind === 'summary'
+      && message.payload.type === 'completion_started'
+    )),
     questionCount: session.questionCount,
     maxQuestions: 7,
     currentQuestion: currentMessage ? currentMessage.payload as InterviewQuestion : null,

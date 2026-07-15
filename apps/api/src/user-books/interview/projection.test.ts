@@ -104,6 +104,7 @@ describe('interview projections', () => {
       now: new Date('2026-07-16T00:03:00.000Z'),
     })).toMatchObject({
       turnInProgress: true,
+      completionStarted: false,
       currentQuestion: { id: 'depth', prompt: '你希望读多深？' },
       sufficiency: 70,
       answers: [{
@@ -111,6 +112,47 @@ describe('interview projections', () => {
         question: '你希望获得什么？',
         answerText: '了解全貌；并形成笔记',
       }],
+    });
+  });
+
+  it('projects durable interview completion state from summary checkpoints', () => {
+    const session = {
+      id: 'session-1',
+      status: 'active',
+      questionCount: 2,
+      conversationVersion: 3,
+      turnLeaseId: null,
+      turnLeaseVersion: 3,
+      turnLeaseClaimedAt: null,
+      turnLeaseExpiresAt: null,
+      completedAt: null,
+      createdAt: new Date('2026-07-16T00:00:00.000Z'),
+      updatedAt: new Date('2026-07-16T00:02:00.000Z'),
+      userBookId: 'book-1',
+    } as SessionRow;
+    const completionStarted = {
+      id: 'checkpoint-1',
+      sequence: 4,
+      role: 'assistant',
+      kind: 'summary',
+      content: '',
+      payload: {
+        type: 'completion_started',
+        completionId: 'completion-1',
+        baseConversationVersion: 3,
+      },
+      interviewSessionId: 'session-1',
+      idempotencyKey: null,
+      createdAt: new Date('2026-07-16T00:03:00.000Z'),
+    } as MessageRow;
+
+    expect(projectInterviewState({
+      session,
+      messages: [completionStarted],
+      answers: [],
+    })).toMatchObject({
+      completionStarted: true,
+      currentQuestion: null,
     });
   });
 });
