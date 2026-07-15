@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
-import type { ReaderProfile, Strategy } from '@readtailor/contracts';
+import { eq, sql } from 'drizzle-orm';
+import { describe, expect, it, vi } from 'vitest';
+import type { ReaderProfile, Strategy, StrategyReviewResponse } from '@readtailor/contracts';
 import type { ReaderProfilePatch, ReadingStrategy } from '@readtailor/agent-kit';
 import {
   bookReaderProfileVersions,
@@ -44,22 +44,28 @@ function mapStrategy(value: ReadingStrategy): Strategy {
   };
 }
 
-function createService() {
+function createService(options: {
+  setupEngine?: ReadingSetupEngine;
+  beforeOwnedRead?(readCount: number): Promise<void>;
+} = {}) {
   const { db } = getTestDatabase();
   const books = {
     async listBooks() { return []; },
     async canAccess() { return false; },
     async getNormalizationStatus() { return null; },
     async getBook() { return null; },
-    async getManifest() { return null; },
+    async getManifest() { return {}; },
     async getProfile() { return null; },
     async getContent() { return null; },
     async getAsset() { return null; },
   } satisfies BookService;
-  const setupEngine = {
+  const setupEngine = options.setupEngine ?? {
     async runTurn() { throw new Error('not used'); },
-  } as ReadingSetupEngine;
+  } satisfies ReadingSetupEngine;
+  let ownedReadCount = 0;
   const getOwnedBook = async (userBookId: string): Promise<OwnedUserBook> => {
+    ownedReadCount += 1;
+    await options.beforeOwnedRead?.(ownedReadCount);
     const [owned] = await db
       .select({ userBook: userBooks, sharedBook: sharedBooks })
       .from(userBooks)
@@ -74,14 +80,69 @@ function createService() {
     books,
     setupEngine,
     getOwnedBook,
-    async getSetupContext() { throw new Error('not used'); },
-    createReadingNodeProjector() { throw new Error('not used'); },
+    async getSetupContext(userBookId) {
+      return {
+        owned: await getOwnedBook(userBookId),
+        context: { bookProfile: {} },
+      };
+    },
+    createReadingNodeProjector() {
+      return (candidate) => ({
+        ordinal: candidate.ordinal,
+        sectionId: candidate.sectionId,
+        segment: candidate.segment,
+        chapterPath: [`Section ${candidate.ordinal}`],
+        reason: candidate.reason,
+      });
+    },
     mapStrategy,
     applyReaderProfilePatch(profile: ReaderProfile, _patch: ReaderProfilePatch) {
       return profile;
     },
-    async loadStrategyState() { throw new Error('not used'); },
+    async loadStrategyState(userBookId, draftId) {
+      const [book] = await db
+        .select()
+        .from(userBooks)
+        .where(eq(userBooks.id, userBookId))
+        .limit(1);
+      const [draft] = await db
+        .select()
+        .from(strategyDraftVersions)
+        .where(eq(strategyDraftVersions.id, draftId))
+        .limit(1);
+      if (!book || !draft) throw new Error('strategy fixture is incomplete');
+      return {
+        userBookId,
+        workflowStatus: book.workflowStatus,
+        draft: {
+          id: draft.id,
+          version: draft.version,
+          status: draft.status,
+          readingBriefing: draft.readingBriefing,
+          userFacingSummary: draft.userFacingSummary,
+          strategy: draft.strategy,
+          createdAt: draft.createdAt.toISOString(),
+          approvedForTrialAt: draft.approvedForTrialAt?.toISOString() ?? null,
+        },
+        trialCandidatePreviews: draft.strategy.trialCandidates.map((candidate, index) => ({
+          ordinal: index + 1,
+          sectionId: candidate.sectionId,
+          segment: candidate.segment,
+          chapterPath: [`Section ${index + 1}`],
+          reason: candidate.reason,
+        })),
+        adjustmentCount: book.adjustmentCount,
+        adjustmentLimit: 5,
+        canAdjust: true,
+      } as StrategyReviewResponse;
+    },
   });
+}
+
+async function collect<T>(stream: AsyncGenerator<T>): Promise<T[]> {
+  const events: T[] = [];
+  for await (const event of stream) events.push(event);
+  return events;
 }
 
 const completedOutcome = {
@@ -115,6 +176,64 @@ const completedOutcome = {
 };
 
 describePostgres(`interview service${skipReason}`, () => {
+  it('replays an answer key through streamAnswer without running the agent twice', async () => {
+    const { db } = getTestDatabase();
+    const graph = await interviewingGraph(db);
+    let releaseAgent!: () => void;
+    const agentGate = new Promise<void>((resolve) => {
+      releaseAgent = resolve;
+    });
+    const runTurn = vi.fn<ReadingSetupEngine['runTurn']>(async () => {
+      await agentGate;
+      return completedOutcome;
+    });
+    const service = createService({
+      setupEngine: { runTurn },
+      async beforeOwnedRead(readCount) {
+        if (readCount !== 4) return;
+        releaseAgent();
+        await vi.waitFor(async () => {
+          const [book] = await db
+            .select({ workflowStatus: userBooks.workflowStatus })
+            .from(userBooks)
+            .where(eq(userBooks.id, graph.userBookId));
+          expect(book?.workflowStatus).toBe('strategy_review');
+        });
+      },
+    });
+    const input = {
+      questionId: 'purpose',
+      selectedOptionIds: ['overview'],
+      freeText: null,
+      idempotencyKey: 'answer-stream-replay',
+    };
+
+    const first = collect(service.streamAnswer(graph.userBookId, input));
+    await vi.waitFor(() => expect(runTurn).toHaveBeenCalledOnce());
+    const replay = collect(service.streamAnswer(graph.userBookId, input));
+    const [firstEvents, replayEvents] = await Promise.all([first, replay]);
+
+    const answers = await db
+      .select()
+      .from(interviewAnswers)
+      .where(eq(interviewAnswers.interviewSessionId, graph.interviewSessionId));
+    const profiles = await db
+      .select()
+      .from(bookReaderProfileVersions)
+      .where(eq(bookReaderProfileVersions.userBookId, graph.userBookId));
+    const drafts = await db
+      .select()
+      .from(strategyDraftVersions)
+      .where(eq(strategyDraftVersions.userBookId, graph.userBookId));
+
+    expect(runTurn).toHaveBeenCalledOnce();
+    expect(firstEvents.map(({ type }) => type)).toEqual(['draft_final', 'done']);
+    expect(replayEvents).toMatchObject([{ type: 'done', workflowStatus: 'strategy_review' }]);
+    expect(answers).toHaveLength(1);
+    expect(profiles).toHaveLength(1);
+    expect(drafts).toHaveLength(1);
+  });
+
   it('commits an answer idempotently and completes the final turn atomically', async () => {
     const { db } = getTestDatabase();
     const graph = await interviewingGraph(db);
@@ -176,6 +295,66 @@ describePostgres(`interview service${skipReason}`, () => {
     expect(messages).toHaveLength(2);
     expect(profiles).toHaveLength(1);
     expect(drafts).toHaveLength(1);
+  });
+
+  it('lets an expired turn lease be reclaimed and fences the old owner', async () => {
+    const { db } = getTestDatabase();
+    const graph = await interviewingGraph(db);
+    const service = createService();
+    const committed = await service.commitAnswer(graph.userBookId, {
+      questionId: 'purpose',
+      selectedOptionIds: ['overview'],
+      freeText: null,
+      idempotencyKey: 'answer-expired-lease',
+    });
+    const oldClaim = committed.claim!;
+    await db
+      .update(interviewSessions)
+      .set({
+        turnLeaseClaimedAt: sql`now() - interval '2 minutes'`,
+        turnLeaseExpiresAt: sql`now() - interval '1 minute'`,
+      })
+      .where(eq(interviewSessions.id, graph.interviewSessionId));
+
+    const newClaim = await service.claimTurn(graph.interviewSessionId);
+
+    expect(newClaim).not.toBeNull();
+    expect(newClaim?.leaseId).not.toBe(oldClaim.leaseId);
+    expect(newClaim).toMatchObject({
+      sessionId: oldClaim.sessionId,
+      questionCount: oldClaim.questionCount,
+      conversationVersion: oldClaim.conversationVersion,
+    });
+    expect(await service.renewTurn(oldClaim)).toBe(false);
+    expect(await service.saveSetupOutcome(
+      graph.userBookId,
+      completedOutcome,
+      oldClaim,
+    )).toEqual({ committed: false });
+    expect(await db
+      .select()
+      .from(bookReaderProfileVersions)
+      .where(eq(bookReaderProfileVersions.userBookId, graph.userBookId))).toHaveLength(0);
+    expect(await db
+      .select()
+      .from(strategyDraftVersions)
+      .where(eq(strategyDraftVersions.userBookId, graph.userBookId))).toHaveLength(0);
+
+    expect(await service.saveSetupOutcome(
+      graph.userBookId,
+      completedOutcome,
+      newClaim!,
+    )).toMatchObject({ committed: true });
+    expect(await db
+      .select()
+      .from(bookReaderProfileVersions)
+      .where(eq(bookReaderProfileVersions.userBookId, graph.userBookId))).toHaveLength(1);
+    expect(await db
+      .select()
+      .from(strategyDraftVersions)
+      .where(eq(strategyDraftVersions.userBookId, graph.userBookId))).toHaveLength(1);
+    const [book] = await db.select().from(userBooks).where(eq(userBooks.id, graph.userBookId));
+    expect(book?.workflowStatus).toBe('strategy_review');
   });
 
   it('rejects a stale finalizer without creating partial setup records', async () => {
