@@ -4,7 +4,7 @@ import {
   httpRequestLogs,
   type Database,
 } from '@readtailor/database';
-import { createPerfSink } from './perf-sink';
+import { createPerfSink, timeAgentCall, type PerfSink } from './perf-sink';
 
 function createFakeDb(options: { fail?: boolean } = {}) {
   const httpRows: Array<Record<string, unknown>> = [];
@@ -74,6 +74,9 @@ describe('createPerfSink', () => {
       durationMs: 12,
       promptChars: 3,
       outputChars: 4,
+      sessionId: 'session-1',
+      conversationVersion: 4,
+      traceEvents: [{ type: 'turn_started', turn: 1 }],
     });
     expect(agentRows).toHaveLength(0);
 
@@ -86,6 +89,9 @@ describe('createPerfSink', () => {
       model: 'test-model',
       promptChars: 3,
       outputChars: 4,
+      sessionId: 'session-1',
+      conversationVersion: 4,
+      traceEvents: [{ type: 'turn_started', turn: 1 }],
     });
   });
 
@@ -139,6 +145,44 @@ describe('createPerfSink', () => {
       status: 'error',
       turnCount: 2,
       errorSummary: 'boom',
+    });
+  });
+
+  it('records trace summary collected before an agent call fails', async () => {
+    const rows: Array<Record<string, unknown>> = [];
+    const sink: PerfSink = {
+      recordHttp() {},
+      recordAgentCall(event) {
+        rows.push(event as unknown as Record<string, unknown>);
+      },
+      async close() {},
+    };
+    const traceEvents: Array<Record<string, unknown>> = [{ type: 'turn_started', turn: 1 }];
+
+    await expect(timeAgentCall(
+      sink,
+      {
+        source: 'api',
+        kind: 'reading_setup.interviewing',
+        model: 'test-model',
+        traceEvents,
+      },
+      async () => {
+        traceEvents.push({ type: 'tool_finished', turn: 1, succeeded: false });
+        throw new Error('agent failed');
+      },
+      { onError: () => ({ turnCount: 1 }) },
+    )).rejects.toThrow('agent failed');
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: 'error',
+      turnCount: 1,
+      errorSummary: 'agent failed',
+      traceEvents: [
+        { type: 'turn_started', turn: 1 },
+        { type: 'tool_finished', turn: 1, succeeded: false },
+      ],
     });
   });
 });

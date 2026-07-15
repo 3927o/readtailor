@@ -99,6 +99,7 @@ export async function executeNormalizationRun(options: NormalizationExecutionOpt
       analysisMaxTurns: options.analysisMaxTurns,
       analysisTimeoutMs: options.analysisTimeoutMs,
       logger: options.logger,
+      ...(options.perfSink ? { perfSink: options.perfSink } : {}),
     });
   } catch (error) {
     const summary = error instanceof Error ? error.message : String(error);

@@ -182,6 +182,7 @@ export async function analyzeBookPackage(options: {
   modelApiBaseUrl: string;
   modelApiKey: string;
   modelName: string;
+  sessionId?: string;
   maxTurns?: number;
   timeoutMs?: number;
   onEvent?: (event: BookAnalysisAgentEvent) => void | Promise<void>;
@@ -193,7 +194,7 @@ export async function analyzeBookPackage(options: {
     apiKey: options.modelApiKey,
     modelName: options.modelName,
     toolbox,
-    sessionId: randomUUID(),
+    sessionId: options.sessionId ?? randomUUID(),
     ...(options.maxTurns ? { maxTurns: options.maxTurns } : {}),
     ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
     ...(options.onEvent ? { onEvent: options.onEvent } : {}),

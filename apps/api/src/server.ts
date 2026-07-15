@@ -129,6 +129,7 @@ const askAiEngine = createAgentAskAiEngine({
   apiBaseUrl: askAiEndpoint.baseUrl,
   apiKey: askAiEndpoint.apiKey,
   modelName: askAiEndpoint.modelName,
+  ...(perfSink ? { perfSink } : {}),
 });
 const userBooks =
   database && books && contentGenerationQueue

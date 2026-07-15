@@ -78,6 +78,8 @@ export const agentCallLogs = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     requestId: text('request_id'),
+    sessionId: text('session_id'),
+    conversationVersion: integer('conversation_version'),
     source: text('source').$type<'api' | 'worker'>().notNull(),
     kind: text('kind').notNull(),
     model: text('model').notNull(),
@@ -87,12 +89,19 @@ export const agentCallLogs = pgTable(
     outputChars: integer('output_chars'),
     turnCount: integer('turn_count'),
     errorSummary: text('error_summary'),
+    traceEvents: jsonb('trace_events').$type<Array<Record<string, unknown>>>().notNull().default([]),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index('agent_call_logs_created_at_idx').on(table.createdAt),
     index('agent_call_logs_kind_created_at_idx').on(table.kind, table.createdAt),
+    index('agent_call_logs_request_id_idx').on(table.requestId),
+    index('agent_call_logs_session_id_created_at_idx').on(table.sessionId, table.createdAt),
     check('agent_call_logs_duration_nonnegative', sql`${table.durationMs} >= 0`),
+    check(
+      'agent_call_logs_conversation_version_nonnegative',
+      sql`${table.conversationVersion} is null or ${table.conversationVersion} >= 0`,
+    ),
     check('agent_call_logs_status_valid', sql`${table.status} in ('ok', 'error')`),
     check('agent_call_logs_source_valid', sql`${table.source} in ('api', 'worker')`),
   ],

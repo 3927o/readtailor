@@ -14,7 +14,12 @@ import {
   validateNormalizedCandidate,
   type HostValidationResult,
 } from '@readtailor/normalized-book';
-import { timeAgentCall, type PerfSink } from '@readtailor/observability';
+import {
+  appendAgentTraceEvent,
+  summarizeAgentTraceEvents,
+  timeAgentCall,
+  type PerfSink,
+} from '@readtailor/observability';
 import type { ObjectStorage } from '@readtailor/storage';
 import { createNormalizationSandbox } from './e2b-sandbox';
 import {
@@ -190,13 +195,16 @@ export async function runFormalNormalization(options: {
       );
 
       const activeSandbox = sandbox;
+      const traceEvents: Array<Record<string, unknown>> = [];
       const agent = await timeAgentCall(
         options.perfSink,
         {
           requestId: options.normalizationRunId,
+          sessionId,
           source: 'worker',
           kind: 'normalization',
           model: options.modelName,
+          traceEvents,
         },
         () => runNormalizationAgent({
           apiBaseUrl: options.modelApiBaseUrl,
@@ -210,13 +218,17 @@ export async function runFormalNormalization(options: {
             await repository.heartbeat(started.id, options.normalizationRunId);
           },
           onTrace: (event) => {
+            appendAgentTraceEvent(traceEvents, event);
             options.logger.info(
               { attemptId: started.id, attemptNo: started.attemptNo, agentTrace: event },
               'agent trace',
             );
           },
         }),
-        { onSuccess: (result) => ({ turnCount: result.turns }) },
+        {
+          onSuccess: (result) => ({ turnCount: result.turns }),
+          onError: () => summarizeAgentTraceEvents(traceEvents),
+        },
       );
       await repository.recordAgentFinish(started.id, agent.finishBinding, {
         turns: agent.turns,

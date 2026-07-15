@@ -1258,6 +1258,7 @@ function createUserBookServiceForUser(
       sessionId,
       phase: 'interviewing',
       askedCount: session.questionCount,
+      conversationVersion: session.conversationVersion,
       context: setup.context,
       ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
       ...(onStream ? { onStream } : {}),
@@ -4150,6 +4151,8 @@ function createUserBookServiceForUser(
         .runTurn({
           sessionId: committed.sessionId,
           question: committed.question,
+          ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
+          conversationVersion: committed.questionSequence,
           context,
           toolbox,
           onAnswerDelta: (chars) => bridge.push({ type: 'answer_delta', chars }),

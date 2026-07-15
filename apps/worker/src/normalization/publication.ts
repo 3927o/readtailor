@@ -22,6 +22,12 @@ import {
   sha256,
 } from '@readtailor/normalized-book';
 import type { ObjectStorage } from '@readtailor/storage';
+import {
+  appendAgentTraceEvent,
+  summarizeAgentTraceEvents,
+  timeAgentCall,
+  type PerfSink,
+} from '@readtailor/observability';
 import { analyzeBookPackage } from './book-analysis';
 import type {
   NormalizationCoordinatorLogger,
@@ -52,6 +58,7 @@ export async function publishValidatedNormalization(options: {
   analysisMaxTurns?: number;
   analysisTimeoutMs?: number;
   logger: NormalizationCoordinatorLogger;
+  perfSink?: PerfSink;
   repository?: NormalizationRepository;
 }): Promise<{
   bookId: string;
@@ -108,26 +115,45 @@ export async function publishValidatedNormalization(options: {
     ]);
 
     await repository.advanceStep(options.normalizationRunId, 'analyzing');
-    const analysis = await analyzeBookPackage({
-      repoRoot: options.repoRoot,
-      packageDirectory,
-      modelApiBaseUrl: options.modelApiBaseUrl,
-      modelApiKey: options.modelApiKey,
-      modelName: options.analysisModelName,
-      ...(options.analysisMaxTurns ? { maxTurns: options.analysisMaxTurns } : {}),
-      ...(options.analysisTimeoutMs ? { timeoutMs: options.analysisTimeoutMs } : {}),
-      onEvent: async () => {
-        // analyze 阶段和 normalize 一样每个 agent 动作打一次心跳，避免长分析被误判为孤儿。
-        // attempt 此时已 succeeded，heartbeat 对 attempt 行是 no-op，只刷新 run 心跳。
-        await repository.heartbeat(options.candidate.attemptId, options.normalizationRunId);
+    const analysisSessionId = randomUUID();
+    const traceEvents: Array<Record<string, unknown>> = [];
+    const analysis = await timeAgentCall(
+      options.perfSink,
+      {
+        requestId: options.normalizationRunId,
+        sessionId: analysisSessionId,
+        source: 'worker',
+        kind: 'book_analysis',
+        model: options.analysisModelName,
+        traceEvents,
       },
-      onTrace: (event) => {
-        options.logger.info(
-          { normalizationRunId: options.normalizationRunId, agentTrace: event },
-          'agent trace',
-        );
+      () => analyzeBookPackage({
+        repoRoot: options.repoRoot,
+        packageDirectory,
+        modelApiBaseUrl: options.modelApiBaseUrl,
+        modelApiKey: options.modelApiKey,
+        modelName: options.analysisModelName,
+        sessionId: analysisSessionId,
+        ...(options.analysisMaxTurns ? { maxTurns: options.analysisMaxTurns } : {}),
+        ...(options.analysisTimeoutMs ? { timeoutMs: options.analysisTimeoutMs } : {}),
+        onEvent: async () => {
+          // analyze 阶段和 normalize 一样每个 agent 动作打一次心跳，避免长分析被误判为孤儿。
+          // attempt 此时已 succeeded，heartbeat 对 attempt 行是 no-op，只刷新 run 心跳。
+          await repository.heartbeat(options.candidate.attemptId, options.normalizationRunId);
+        },
+        onTrace: (event) => {
+          appendAgentTraceEvent(traceEvents, event);
+          options.logger.info(
+            { normalizationRunId: options.normalizationRunId, agentTrace: event },
+            'agent trace',
+          );
+        },
+      }),
+      {
+        onSuccess: (result) => ({ turnCount: result.turns }),
+        onError: () => summarizeAgentTraceEvents(traceEvents),
       },
-    });
+    );
 
     const metadata = await readBookMetadata(packageDirectory);
 

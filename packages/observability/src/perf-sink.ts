@@ -20,6 +20,8 @@ export type HttpRequestPerfEvent = {
 
 export type AgentCallPerfEvent = {
   requestId?: string | null;
+  sessionId?: string | null;
+  conversationVersion?: number | null;
   source: AgentCallSource;
   kind: string;
   model: string;
@@ -29,6 +31,7 @@ export type AgentCallPerfEvent = {
   outputChars?: number | null;
   turnCount?: number | null;
   errorSummary?: string | null;
+  traceEvents?: Array<Record<string, unknown>>;
   createdAt?: Date;
 };
 
@@ -175,6 +178,8 @@ export function createPerfSink(options: {
         type: 'agent',
         event: {
           requestId: event.requestId ?? null,
+          sessionId: event.sessionId ?? null,
+          conversationVersion: optionalInteger(event.conversationVersion),
           source: event.source,
           kind: event.kind,
           model: event.model,
@@ -184,6 +189,7 @@ export function createPerfSink(options: {
           outputChars: optionalInteger(event.outputChars),
           turnCount: optionalInteger(event.turnCount),
           errorSummary: event.errorSummary ?? null,
+          traceEvents: [...(event.traceEvents ?? [])],
           createdAt: event.createdAt ?? new Date(),
         },
       });
@@ -205,6 +211,7 @@ export async function timeAgentCall<T>(
   fn: () => Promise<T>,
   options: {
     onSuccess?: (value: T) => Partial<AgentCallTimingMeta>;
+    onError?: (error: unknown) => Partial<AgentCallTimingMeta>;
   } = {},
 ): Promise<T> {
   const started = performance.now();
@@ -220,6 +227,7 @@ export async function timeAgentCall<T>(
   } catch (error) {
     sink?.recordAgentCall({
       ...meta,
+      ...options.onError?.(error),
       status: 'error',
       durationMs: performance.now() - started,
       errorSummary: errorSummary(error),
