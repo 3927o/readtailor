@@ -10,39 +10,37 @@ import { Kicker } from '../components/core/Kicker';
 import { getBookNormalizationStatus, retryBookNormalization } from './api';
 import { LibraryChrome } from './LibraryChrome';
 
-type Stage = 'uploaded' | 'fingerprinted' | 'queued' | 'normalizing' | 'validating' | 'publishing';
+type Stage = 'received' | 'preparing' | 'checking' | 'finishing';
 
 // 只展示用户可理解的失败类型，不暴露内部报错；技术细节留在服务端日志。
 const failureCopy: Record<NormalizationFailureType, string> = {
-  timeout: '处理超时了，可以重试。',
-  validation_failed: '这本书的结构没能通过校验，可能是排版特殊或包含无法可靠解析的内容。',
-  external_error: '沙箱或模型服务出错了，可以重试。',
-  internal_error: '处理时出现内部错误，可以重试。',
-  stale_worker: '处理进程中断了，可以重试。',
+  timeout: '这次准备花的时间比预期久，请重试。',
+  validation_failed: '这个版本的内容或排版比较特殊，暂时无法完整呈现。你可以重试，或换一个版本上传。',
+  external_error: '准备过程中暂时中断了，请重试。',
+  internal_error: '准备过程中暂时中断了，请重试。',
+  stale_worker: '准备过程中暂时中断了，请重试。',
 };
 
 function failureMessage(failureType: NormalizationFailureType | null): string {
   return failureType
     ? failureCopy[failureType]
-    : '可能是加密、DRM，或文件结构无法可靠解包。';
+    : '这个文件可能已损坏、加密，或采用了暂不支持的格式。你可以换一个版本上传。';
 }
 
-const steps: ReadonlyArray<{ key: Stage; label: string; cn: string; detail: string }> = [
-  { key: 'uploaded', label: 'UPLOADED', cn: '已上传', detail: '文件已经安全写入对象存储。' },
-  { key: 'fingerprinted', label: 'FINGERPRINT', cn: '指纹校验', detail: 'SHA-256 已确认，并检查可复用的书籍包。' },
-  { key: 'queued', label: 'QUEUED', cn: '排队中', detail: '清洗任务已经创建，等待 Worker 接手。' },
-  { key: 'normalizing', label: 'NORMALIZING', cn: '规范化中', detail: 'Agent 正在检查 EPUB，并编写、执行这本书的 normalize.py。' },
-  { key: 'validating', label: 'VALIDATING', cn: '硬校验', detail: 'Worker 独立执行结构、资源与保真检查。' },
-  { key: 'publishing', label: 'PUBLISHING', cn: '整理并发布', detail: '生成阅读节点和书籍画像，再原子发布不可变书籍包。' },
+const steps: ReadonlyArray<{ key: Stage; label: string; detail: string }> = [
+  { key: 'received', label: '已收到书籍', detail: '文件已上传，正在安排后续准备。' },
+  { key: 'preparing', label: '正在准备内容', detail: '正在整理正文、图片和注释，让内容更适合在线阅读。' },
+  { key: 'checking', label: '正在检查阅读体验', detail: '正在确认内容完整、顺序清晰，阅读时不会轻易被打断。' },
+  { key: 'finishing', label: '即将完成', detail: '正在完成最后的准备，很快就可以开始阅读。' },
 ];
 
 const statusRank: Record<SharedBookStatus, number> = {
-  queued: 2,
-  normalizing: 3,
-  validating: 4,
-  indexing: 5,
-  analyzing: 5,
-  ready: 6,
+  queued: 0,
+  normalizing: 1,
+  validating: 2,
+  indexing: 3,
+  analyzing: 3,
+  ready: 4,
   failed: -1,
 };
 
@@ -62,12 +60,12 @@ export function ProcessingPage() {
     <LibraryChrome>
       <main className="processing-page">
         {query.isPending ? (
-          <EmptyState title="正在找到这本书">清洗记录正在从 Worker 汇合过来。</EmptyState>
+          <EmptyState title="正在获取最新进度">请稍候，这本书的准备状态马上就会显示。</EmptyState>
         ) : query.isError ? (
           <EmptyState
-            title="暂时读不到处理进度"
+            title="暂时无法获取进度"
             action={<button className="button button-ghost" type="button" onClick={() => void query.refetch()}>重新连接</button>}
-          >{query.error.message}</EmptyState>
+          >请检查网络后重试。已经完成的进度不会丢失。</EmptyState>
         ) : (
           <ProcessingContent status={query.data} bookId={bookId} />
         )}
@@ -89,14 +87,11 @@ function ProcessingContent({ status, bookId }: { status: BookNormalizationStatus
   const done = book.status === 'ready';
   const failed = book.status === 'failed';
   const currentRank = done ? steps.length : rankFor(book.status, run?.step);
-  const fingerprint = book.epubSha256.slice(0, 12);
-  const attempt = run?.latestAttempt;
 
   return (
     <>
-      <Kicker>BOOK NORMALIZATION · 书籍规范化</Kicker>
+      <Kicker>GETTING READY · 准备阅读</Kicker>
       <h1>《{book.title}》</h1>
-      <div className="book-fingerprint">SHA-256 · {fingerprint}…</div>
 
       <ol className="normalization-steps">
         {steps.map((step, index) => {
@@ -108,13 +103,13 @@ function ProcessingContent({ status, bookId }: { status: BookNormalizationStatus
                 ? 'active'
                 : 'pending';
           return (
-            <li key={step.key} data-state={state}>
+            <li key={step.key} data-state={state} aria-current={state === 'active' ? 'step' : undefined}>
               <div className="step-rail">
                 <span className="step-dot" aria-hidden="true">{state === 'done' ? '✓' : state === 'failed' ? '×' : ''}</span>
                 {index < steps.length - 1 ? <i aria-hidden="true" /> : null}
               </div>
               <div className="step-copy">
-                <div>{String(index + 1).padStart(2, '0')} · {step.label} · {step.cn}</div>
+                <div>{String(index + 1).padStart(2, '0')} · {step.label}</div>
                 <p>{step.detail}</p>
               </div>
             </li>
@@ -122,30 +117,21 @@ function ProcessingContent({ status, bookId }: { status: BookNormalizationStatus
         })}
       </ol>
 
-      {attempt ? (
-        <section className="attempt-summary" aria-label="当前规范化尝试">
-          <div><span>ATTEMPT</span><strong>{attempt.attemptNo}</strong></div>
-          <div><span>AGENT</span><strong>{attempt.turnCount} turns · {attempt.toolCallCount} tools</strong></div>
-          <div><span>ERROR</span><strong data-error={(attempt.blockingErrorCount ?? 0) > 0}>{attempt.blockingErrorCount ?? '—'}</strong></div>
-          <div><span>WARNING</span><strong>{attempt.warningCount ?? '—'}</strong></div>
-        </section>
-      ) : null}
-
       {!done && !failed ? (
-        <p className="processing-note">进度只在站内展示。你可以先离开，处理完后这本书会留在书架。</p>
+        <p className="processing-note">你可以先离开。准备完成后，这本书会留在书架，回来就能继续。</p>
       ) : null}
       {done ? (
         <section className="processing-result" data-result="ready">
-          <h2>规范化完成，硬校验已通过。</h2>
-          <p>这份不可变书籍包已经发布。回到书架后，会从这本书自己的访谈阶段开始。</p>
+          <h2>这本书已经准备好了。</h2>
+          <p>回到书架，先聊几句你的阅读目标，再开始阅读。</p>
           <div><Link className="button button-primary" to="/">回到书架，开始访谈</Link></div>
         </section>
       ) : null}
       {failed ? (
         <section className="processing-result" data-result="failed">
-          <h2>这个版本暂时无法处理。</h2>
+          <h2>这个版本暂时无法准备好。</h2>
           <p>{failureMessage(book.failureType)}</p>
-          {retry.isError ? <p className="processing-error">{retry.error.message}</p> : null}
+          {retry.isError ? <p className="processing-error">暂时没能重新开始，请稍后再试。</p> : null}
           <div>
             <button
               className="button button-primary"
@@ -165,9 +151,9 @@ function ProcessingContent({ status, bookId }: { status: BookNormalizationStatus
 }
 
 function rankFor(status: SharedBookStatus, step?: string): number {
-  if (step === 'publishing' || step === 'analyzing' || step === 'indexing') return 5;
-  if (step === 'validating') return 4;
-  if (step === 'normalizing') return 3;
-  if (step === 'queued') return 2;
+  if (step === 'publishing' || step === 'published' || step === 'analyzing' || step === 'indexing') return 3;
+  if (step === 'validating') return 2;
+  if (step === 'normalizing') return 1;
+  if (step === 'queued') return 0;
   return Math.max(0, statusRank[status]);
 }

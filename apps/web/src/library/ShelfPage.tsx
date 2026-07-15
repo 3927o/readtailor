@@ -10,13 +10,13 @@ import { bookCoverUrl, getHealth } from './api';
 import { LibraryChrome } from './LibraryChrome';
 
 const statusCopy: Record<SharedBookStatus, { label: string; meta: string }> = {
-  queued: { label: '排队中', meta: '已经收下，等待开始处理' },
-  normalizing: { label: '规范化中', meta: '正在整理这个 EPUB 版本' },
-  validating: { label: '校验中', meta: '正在执行结构与保真检查' },
-  indexing: { label: '整理中', meta: '正在生成阅读节点' },
-  analyzing: { label: '分析中', meta: '正在准备全书画像' },
+  queued: { label: '已收到', meta: '正在等待开始准备' },
+  normalizing: { label: '准备中', meta: '正在整理书籍内容' },
+  validating: { label: '准备中', meta: '正在检查阅读体验' },
+  indexing: { label: '即将完成', meta: '正在完成最后准备' },
+  analyzing: { label: '即将完成', meta: '正在完成最后准备' },
   ready: { label: '已就绪', meta: '可以开始阅读' },
-  failed: { label: '处理失败', meta: '这个版本暂时无法处理' },
+  failed: { label: '准备失败', meta: '这个版本暂时无法准备好' },
 };
 
 const workflowCopy: Record<WorkflowStatus, { label: string; meta: string }> = {

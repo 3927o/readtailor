@@ -30,7 +30,7 @@ export function ImportPage() {
       <main className="import-page">
         <Kicker>ADD A BOOK · 上传书籍</Kicker>
         <h1>上传一本 EPUB</h1>
-        <p className="import-lede">如果这个版本已经被整理过，会直接复用；否则我会为它单独规范化。你可以离开，回来时进度还在。</p>
+        <p className="import-lede">上传后，我们会把它准备成适合在线阅读的版本。你可以先离开，回来时进度还在。</p>
 
         <input
           ref={input}
@@ -70,7 +70,7 @@ export function ImportPage() {
             disabled={!file || upload.isPending}
             onClick={() => file && upload.mutate(file)}
           >
-            {upload.isPending ? '正在上传…' : '开始整理这本书'}
+            {upload.isPending ? '正在上传…' : '上传并准备'}
           </button>
           {file ? (
             <button className="text-button" type="button" disabled={upload.isPending} onClick={() => setFile(null)}>重新选择</button>
