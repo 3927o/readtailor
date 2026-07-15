@@ -1,0 +1,189 @@
+// @vitest-environment happy-dom
+import { act, type ReactNode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter, Outlet, Route, Routes } from 'react-router';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { InterviewSnapshot, UserBookDetail } from './api';
+import { InterviewPage } from './InterviewPage';
+import { userBookQueryKeys } from './queryKeys';
+import { useInterviewController } from './useInterviewController';
+
+const apiMocks = vi.hoisted(() => ({
+  getInterview: vi.fn(),
+  startInterview: vi.fn(),
+  streamAnswer: vi.fn(),
+  streamResume: vi.fn(),
+}));
+
+vi.mock('./api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./api')>();
+  return {
+    ...actual,
+    getInterview: apiMocks.getInterview,
+    startInterview: apiMocks.startInterview,
+    streamInterviewAnswer: apiMocks.streamAnswer,
+    streamResumeInterview: apiMocks.streamResume,
+  };
+});
+
+vi.mock('./components', () => ({
+  WorkflowPage: ({ children }: { children: ReactNode }) => <main>{children}</main>,
+  WorkflowMessage: ({
+    title,
+    children,
+    action,
+  }: {
+    title: string;
+    children: ReactNode;
+    action?: ReactNode;
+  }) => <section><h2>{title}</h2>{children}{action}</section>,
+}));
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const roots: Array<ReturnType<typeof createRoot>> = [];
+
+beforeEach(() => {
+  apiMocks.getInterview.mockReset();
+  apiMocks.startInterview.mockReset();
+  apiMocks.streamAnswer.mockReset();
+  apiMocks.streamResume.mockReset();
+});
+
+afterEach(() => {
+  for (const root of roots.splice(0)) act(() => root.unmount());
+});
+
+function snapshot(questionOrdinal = 1): InterviewSnapshot {
+  return {
+    status: 'asking',
+    turnInProgress: false,
+    canResume: false,
+    history: [],
+    currentQuestion: {
+      id: `question-${questionOrdinal}`,
+      ordinal: questionOrdinal,
+      maxQuestions: 7,
+      prompt: `问题 ${questionOrdinal}`,
+      options: [{ id: `option-${questionOrdinal}`, label: `选项 ${questionOrdinal}` }],
+      acknowledgment: questionOrdinal > 1 ? '收到' : '',
+      sufficiency: questionOrdinal * 20,
+    },
+    errorSummary: null,
+  };
+}
+
+function pendingSnapshot(): InterviewSnapshot {
+  return {
+    status: 'generating',
+    turnInProgress: false,
+    canResume: true,
+    history: [],
+    currentQuestion: null,
+    errorSummary: null,
+  };
+}
+
+async function waitFor(assertion: () => void | Promise<void>) {
+  await act(async () => {
+    await vi.waitFor(assertion);
+  });
+}
+
+describe('useInterviewController', () => {
+  it('owns the optimistic answer, turn sequence, and streamed next question', async () => {
+    apiMocks.getInterview.mockResolvedValue(snapshot(1));
+    apiMocks.streamAnswer.mockImplementation(async (_id, _input, handlers) => {
+      handlers.onEvent({
+        userBookId: 'book-1',
+        streamId: 'stream-1',
+        sequence: 1,
+        type: 'question_final',
+        ordinal: 2,
+        maxQuestions: 7,
+        question: snapshot(2).currentQuestion!,
+      });
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let controller: ReturnType<typeof useInterviewController> | null = null;
+    const value = () => controller!;
+
+    function Harness() {
+      controller = useInterviewController({ userBookId: 'book-1', shouldStart: false });
+      return null;
+    }
+
+    const root = createRoot(document.createElement('div'));
+    roots.push(root);
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><Harness /></QueryClientProvider>);
+    });
+    await waitFor(() => expect(value().question?.id).toBe('question-1'));
+
+    act(() => {
+      expect(value().submit({ optionId: 'option-1' })).toBe(true);
+    });
+
+    await waitFor(() => expect(value().question?.id).toBe('question-2'));
+    expect(value().turnSeq).toBe(1);
+    expect(value().history).toContainEqual({
+      questionId: 'question-1',
+      question: '问题 1',
+      answer: '选项 1',
+    });
+  });
+});
+
+describe('InterviewPage recovery', () => {
+  it('leaves recovering and restores the answer form after a successful current-question snapshot', async () => {
+    apiMocks.getInterview.mockResolvedValue(pendingSnapshot());
+    apiMocks.streamResume.mockImplementation(() => new Promise<void>(() => {}));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const userBook: UserBookDetail = {
+      id: 'book-1',
+      workflowStatus: 'interviewing',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+      sharedBook: {
+        id: 'shared-1',
+        status: 'ready',
+        title: 'Book',
+        authors: [],
+        coverPath: null,
+        errorSummary: null,
+      },
+      readingProgress: null,
+      currentStrategyDraftVersionId: null,
+      currentStrategyVersionId: null,
+      currentTrialRevisionId: null,
+    };
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    roots.push(root);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/user-books/book-1/interview']}>
+            <Routes>
+              <Route path="/user-books/:id" element={<Outlet context={{ userBook }} />}>
+                <Route path="interview" element={<InterviewPage />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await waitFor(() => expect(apiMocks.streamResume).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(host.textContent).toContain('连接正在恢复'));
+
+    await act(async () => {
+      queryClient.setQueryData(userBookQueryKeys.interview('book-1'), snapshot(2));
+    });
+
+    await waitFor(() => expect(host.textContent).toContain('信息充足度 40%'));
+    await waitFor(() => expect(host.textContent).toContain('问题 2'));
+    expect(host.querySelector('textarea[aria-label="自己补充"]')).not.toBeNull();
+    expect(host.textContent).not.toContain('连接正在恢复');
+  });
+});

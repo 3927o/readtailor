@@ -1,0 +1,226 @@
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  ApiError,
+  getInterview,
+  startInterview,
+  streamInterviewAnswer,
+  streamResumeInterview,
+  type InterviewClientStreamEvent,
+  type InterviewQuestion,
+} from './api';
+import { IDLE_INTERVIEW_STREAM, interviewStreamReducer } from './interviewStreamState';
+import { userBookQueryKeys } from './queryKeys';
+import { applyTransition } from './transitions';
+
+export interface InterviewChoice {
+  optionId?: string;
+  text?: string;
+}
+
+interface LocalTurn {
+  questionId: string;
+  question: string;
+  answer: string;
+}
+
+function eventQuestion(event: Extract<InterviewClientStreamEvent, { type: 'question_final' }>): InterviewQuestion {
+  return {
+    id: event.question.id,
+    prompt: event.question.prompt,
+    ...(event.question.hint ? { hint: event.question.hint } : {}),
+    options: event.question.options,
+    ordinal: event.ordinal,
+    maxQuestions: event.maxQuestions,
+    acknowledgment: event.question.acknowledgment,
+    sufficiency: event.question.sufficiency,
+  };
+}
+
+export function useInterviewController(options: {
+  userBookId: string;
+  shouldStart: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [stream, dispatchStream] = useReducer(interviewStreamReducer, IDLE_INTERVIEW_STREAM);
+  const [turnSeq, setTurnSeq] = useState(0);
+  const [activeQuestion, setActiveQuestion] = useState<InterviewQuestion | null>(null);
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const [localHistory, setLocalHistory] = useState<LocalTurn[]>([]);
+  const startRequested = useRef(false);
+  const resumeRequested = useRef(false);
+
+  const start = useMutation({
+    mutationFn: () => startInterview(options.userBookId),
+    onSuccess: (snapshot) => {
+      void applyTransition(queryClient, options.userBookId, {
+        type: 'interview_started',
+        interview: snapshot,
+      });
+    },
+  });
+  const interview = useQuery({
+    queryKey: userBookQueryKeys.interview(options.userBookId),
+    queryFn: () => getInterview(options.userBookId),
+    enabled: !options.shouldStart,
+    refetchInterval: (current) => current.state.data?.status === 'generating' ? 1800 : false,
+  });
+
+  useEffect(() => {
+    if (!options.shouldStart) {
+      startRequested.current = false;
+      return;
+    }
+    if (startRequested.current || !start.isIdle) return;
+    startRequested.current = true;
+    start.mutate();
+  }, [options.shouldStart, start]);
+
+  const handleStreamEvent = useCallback((event: InterviewClientStreamEvent) => {
+    dispatchStream({ type: 'event', event });
+    if (event.type === 'question_final') {
+      setActiveQuestion(eventQuestion(event));
+      void queryClient.invalidateQueries({
+        queryKey: userBookQueryKeys.interview(options.userBookId),
+      });
+    } else if (event.type === 'draft_final') {
+      void applyTransition(queryClient, options.userBookId, {
+        type: 'strategy_committed',
+        strategy: event.strategy,
+      });
+    } else if (event.type === 'done') {
+      if (event.workflowStatus === 'interviewing') {
+        void interview.refetch();
+      } else {
+        void queryClient.invalidateQueries({
+          queryKey: userBookQueryKeys.detail(options.userBookId),
+        });
+      }
+    } else if (event.type === 'error') {
+      void interview.refetch();
+    }
+  }, [interview, options.userBookId, queryClient]);
+
+  const resume = useMutation({
+    mutationFn: () => streamResumeInterview(options.userBookId, { onEvent: handleStreamEvent }),
+    onMutate: () => dispatchStream({ type: 'recover' }),
+    onError: (error) => {
+      const message = error instanceof ApiError ? error.message : '恢复访谈失败，请稍后重试。';
+      setStreamError(message);
+      dispatchStream({ type: 'transport_error', message });
+    },
+  });
+
+  useEffect(() => {
+    if (!interview.data?.canResume) {
+      resumeRequested.current = false;
+      return;
+    }
+    if (resumeRequested.current || resume.isPending) return;
+    resumeRequested.current = true;
+    resume.mutate();
+  }, [interview.data?.canResume, resume]);
+
+  useEffect(() => {
+    const snapshot = interview.data;
+    if (!snapshot) return;
+    dispatchStream({ type: 'reconcile', snapshot });
+    if (snapshot.currentQuestion) {
+      setStreamError(null);
+      setActiveQuestion((current) => (
+        !current || snapshot.currentQuestion!.ordinal >= current.ordinal ? null : current
+      ));
+    }
+    if (snapshot.history.length > 0) {
+      const persisted = new Set(snapshot.history.map((turn) => turn.questionId));
+      setLocalHistory((history) => history.filter((turn) => !persisted.has(turn.questionId)));
+    }
+  }, [interview.data]);
+
+  const question = activeQuestion ?? interview.data?.currentQuestion ?? null;
+  const answer = useMutation<void, Error, { questionId: string; optionId?: string; text?: string }>({
+    mutationFn: (input) => streamInterviewAnswer(options.userBookId, input, {
+      onEvent: handleStreamEvent,
+    }),
+    onError: (error) => {
+      const message = error instanceof ApiError ? error.message : '提交失败，请稍后再试。';
+      setStreamError(message);
+      dispatchStream({ type: 'transport_error', message });
+      void interview.refetch();
+    },
+  });
+
+  const submit = (choice: InterviewChoice): boolean => {
+    if (!question || answer.isPending) return false;
+    resume.reset();
+    resumeRequested.current = false;
+    const answerLabel = choice.optionId
+      ? (question.options.find((option) => option.id === choice.optionId)?.label ?? choice.optionId)
+      : (choice.text ?? '');
+    setLocalHistory((history) => [
+      ...history.filter((turn) => turn.questionId !== question.id),
+      { questionId: question.id, question: question.prompt, answer: answerLabel },
+    ]);
+    setStreamError(null);
+    setActiveQuestion(null);
+    setTurnSeq((value) => value + 1);
+    dispatchStream({ type: 'begin', sufficiency: question.sufficiency });
+    answer.mutate({ questionId: question.id, ...choice });
+    return true;
+  };
+
+  const snapshot = interview.data ?? null;
+  const questionStreaming = stream.mode === 'question_streaming';
+  const draftView = Boolean(snapshot) && (
+    stream.mode === 'draft_streaming'
+    || stream.mode === 'recovering'
+    || (snapshot?.status === 'generating' && !question)
+  );
+  const failedView = Boolean(snapshot) && (snapshot?.status === 'failed' || stream.mode === 'error');
+  const interactive = Boolean(
+    snapshot
+    && stream.mode === 'idle'
+    && snapshot.status === 'asking'
+    && question,
+  );
+  const history = useMemo(() => {
+    if (!snapshot) return [];
+    const localByQuestion = new Map(localHistory.map((turn) => [turn.questionId, turn]));
+    const covered = new Set<string>();
+    const merged = snapshot.history.map((item) => {
+      if (item.questionId) covered.add(item.questionId);
+      return (item.questionId && localByQuestion.get(item.questionId)) || item;
+    });
+    for (const turn of localHistory) {
+      if (!covered.has(turn.questionId)) merged.push(turn);
+    }
+    return merged;
+  }, [localHistory, snapshot]);
+
+  return {
+    shouldStart: options.shouldStart,
+    startError: start.error,
+    retryStart: () => start.mutate(),
+    loading: interview.isPending,
+    loadError: interview.error,
+    retryLoad: () => void interview.refetch(),
+    isFetching: interview.isFetching,
+    snapshot,
+    stream,
+    streamError,
+    question,
+    turnSeq,
+    history,
+    draftView,
+    failedView,
+    interactive,
+    answerPending: answer.isPending,
+    submit,
+    turnAck: questionStreaming ? stream.ack : (question?.acknowledgment ?? ''),
+    turnPrompt: questionStreaming ? stream.prompt : (question?.prompt ?? ''),
+    turnHint: questionStreaming ? stream.hint : (question?.hint ?? ''),
+    turnOptions: questionStreaming ? stream.options : (question?.options ?? []),
+    sufficiency: questionStreaming ? stream.sufficiency : (question?.sufficiency ?? null),
+    thinking: questionStreaming && !stream.prompt,
+  };
+}
