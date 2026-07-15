@@ -1,0 +1,98 @@
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it } from 'vitest';
+import type { InterviewClientStreamEvent, StrategySnapshot } from './api';
+import { ProgressiveStrategyView } from './ProgressiveStrategyView';
+import { IDLE_INTERVIEW_STREAM, interviewStreamReducer } from './interviewStreamState';
+
+const userBookId = '10000000-0000-0000-0000-000000000001';
+const streamId = '10000000-0000-0000-0000-000000000002';
+
+function event<T extends Omit<InterviewClientStreamEvent, 'userBookId' | 'streamId' | 'sequence'>>(
+  sequence: number,
+  value: T,
+): InterviewClientStreamEvent {
+  return { userBookId, streamId, sequence, ...value } as unknown as InterviewClientStreamEvent;
+}
+
+const nodes = [1, 2, 3].map((ordinal) => ({
+  ordinal,
+  sectionId: `section-${ordinal}`,
+  segment: ordinal,
+  chapterPath: [`章节 ${ordinal}`],
+  reason: `原因 ${ordinal}`,
+}));
+
+const finalStrategy: StrategySnapshot = {
+  draftId: '10000000-0000-0000-0000-000000000003',
+  draftVersion: 1,
+  readingBriefing: {
+    bookIdentity: '最终定位',
+    arc: '最终脉络',
+    assumedKnowledge: '最终前提',
+    readingAdvice: '最终读法',
+  },
+  userFacingSummary: '最终 **处理方式**',
+  trialCandidatePreviews: nodes,
+  adjustmentCount: 0,
+  adjustmentLimit: 5,
+  canAdjust: true,
+};
+
+describe('interview progressive stream reducer', () => {
+  it('reassembles draft fields and lets final snapshot correct provisional content', () => {
+    let state = interviewStreamReducer(IDLE_INTERVIEW_STREAM, { type: 'begin', sufficiency: 80 });
+    state = interviewStreamReducer(state, { type: 'event', event: event(1, { type: 'speculative_reset', phase: 'interviewing', speculativeEpoch: 1 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(2, { type: 'draft_started', conversationVersion: 6, speculativeEpoch: 1 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(3, { type: 'briefing_delta', field: 'book_identity', chars: '临时定位', speculativeEpoch: 1 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(4, { type: 'strategy_delta', chars: '临时方式', speculativeEpoch: 1 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(5, { type: 'reading_node_added', node: nodes[0]!, speculativeEpoch: 1 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(6, { type: 'draft_final', strategy: finalStrategy }) });
+
+    expect(state.mode).toBe('draft_streaming');
+    expect(state.briefing).toEqual(finalStrategy.readingBriefing);
+    expect(state.strategySummary).toBe(finalStrategy.userFacingSummary);
+    expect(state.nodes).toEqual(nodes);
+    expect(state.finalStrategy).toEqual(finalStrategy);
+  });
+
+  it('drops duplicate sequence and clears stale provisional output on a newer epoch', () => {
+    let state = interviewStreamReducer(IDLE_INTERVIEW_STREAM, { type: 'begin', sufficiency: 60 });
+    state = interviewStreamReducer(state, { type: 'event', event: event(1, { type: 'prompt_delta', chars: '旧问题', speculativeEpoch: 1 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(1, { type: 'prompt_delta', chars: '重复', speculativeEpoch: 1 }) });
+    expect(state.prompt).toBe('旧问题');
+
+    state = interviewStreamReducer(state, { type: 'event', event: event(2, { type: 'speculative_reset', phase: 'interviewing', speculativeEpoch: 2 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(3, { type: 'strategy_delta', chars: '旧 epoch', speculativeEpoch: 1 }) });
+    expect(state.prompt).toBe('');
+    expect(state.strategySummary).toBe('');
+  });
+});
+
+describe('ProgressiveStrategyView', () => {
+  it('keeps four briefing slots stable and renders streaming summary as plain text', () => {
+    const html = renderToStaticMarkup(<ProgressiveStrategyView model={{
+      mode: 'streaming',
+      source: 'interview',
+      briefing: { bookIdentity: '一本系统书' },
+      strategySummary: '半截 **Markdown',
+      nodes: [nodes[0]!],
+    }} />);
+    expect(html.match(/brief-section/g)).toHaveLength(4);
+    expect(html).toContain('半截 **Markdown');
+    expect(html).not.toContain('<strong>Markdown</strong>');
+    expect(html).toContain('正在选择位置');
+  });
+
+  it('uses authoritative Markdown and node previews in committed mode', () => {
+    const html = renderToStaticMarkup(<ProgressiveStrategyView model={{
+      mode: 'committed',
+      source: 'interview',
+      briefing: finalStrategy.readingBriefing,
+      strategySummary: finalStrategy.userFacingSummary,
+      nodes,
+      draftVersion: 1,
+    }} />);
+    expect(html).toContain('<strong>处理方式</strong>');
+    expect(html).toContain('章节 3');
+  });
+});

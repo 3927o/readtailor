@@ -365,6 +365,7 @@ export async function resumeInterview(userBookId: string): Promise<InterviewSnap
 // next question; `onDone` fires when the interview finished (with the new workflow status);
 // `onError` reports an in-band failure after the stream opened.
 export interface InterviewStreamHandlers {
+  onEvent?(event: InterviewClientStreamEvent): void;
   onAck?(chars: string): void;
   onPrompt?(chars: string): void;
   onHint?(chars: string): void;
@@ -375,6 +376,11 @@ export interface InterviewStreamHandlers {
   onDone?(workflowStatus: WorkflowStatus): void;
   onError?(message: string): void;
 }
+
+type InterviewDraftFinalEvent = Extract<InterviewStreamEvent, { type: 'draft_final' }>;
+export type InterviewClientStreamEvent =
+  | Exclude<InterviewStreamEvent, InterviewDraftFinalEvent>
+  | (Omit<InterviewDraftFinalEvent, 'strategy'> & { strategy: StrategySnapshot });
 
 function dispatchInterviewFrame(frame: string, handlers: InterviewStreamHandlers): void {
   const dataLine = frame.split('\n').find((line) => line.startsWith('data:'));
@@ -387,6 +393,10 @@ function dispatchInterviewFrame(frame: string, handlers: InterviewStreamHandlers
   } catch {
     return;
   }
+  const clientEvent: InterviewClientStreamEvent = event.type === 'draft_final'
+    ? { ...event, strategy: mapStrategy(event.strategy) }
+    : event;
+  handlers.onEvent?.(clientEvent);
   switch (event.type) {
     case 'ack_delta': handlers.onAck?.(event.chars); break;
     case 'prompt_delta': handlers.onPrompt?.(event.chars); break;
@@ -394,6 +404,13 @@ function dispatchInterviewFrame(frame: string, handlers: InterviewStreamHandlers
     case 'option_added': handlers.onOption?.({ id: event.id, label: event.label }); break;
     case 'sufficiency': handlers.onSufficiency?.(event.value); break;
     case 'concluding': handlers.onConcluding?.(); break;
+    case 'speculative_reset':
+    case 'draft_started':
+    case 'briefing_delta':
+    case 'strategy_delta':
+    case 'reading_node_added':
+    case 'draft_final':
+      break;
     case 'question_final':
       handlers.onQuestionFinal?.({
         id: event.question.id,
@@ -408,6 +425,54 @@ function dispatchInterviewFrame(frame: string, handlers: InterviewStreamHandlers
       break;
     case 'done': handlers.onDone?.(event.workflowStatus as WorkflowStatus); break;
     case 'error': handlers.onError?.(event.message); break;
+  }
+}
+
+async function consumeInterviewStream(
+  response: Response,
+  handlers: InterviewStreamHandlers,
+): Promise<void> {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!response.ok || !contentType.includes('text/event-stream') || !response.body) {
+    const body = await response.json().catch(() => null) as { error?: unknown } | null;
+    throw new ApiError(
+      typeof body?.error === 'string' ? body.error : `请求失败（${response.status}）`,
+      response.status,
+    );
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let terminal = false;
+  const dispatchHandlers: InterviewStreamHandlers = {
+    ...handlers,
+    onEvent(event) {
+      if (
+        event.type === 'question_final'
+        || event.type === 'draft_final'
+        || event.type === 'done'
+        || event.type === 'error'
+      ) {
+        terminal = true;
+      }
+      handlers.onEvent?.(event);
+    },
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        dispatchInterviewFrame(buffer.slice(0, boundary), dispatchHandlers);
+        buffer = buffer.slice(boundary + 2);
+        boundary = buffer.indexOf('\n\n');
+      }
+    }
+    if (!terminal) throw new ApiError('连接中断，正在恢复访谈。', 0);
+  } finally {
+    reader.releaseLock();
   }
 }
 
@@ -432,32 +497,22 @@ export async function streamInterviewAnswer(
     }),
     ...(signal ? { signal } : {}),
   });
-  const contentType = response.headers.get('content-type') ?? '';
-  if (!response.ok || !contentType.includes('text/event-stream') || !response.body) {
-    const body = await response.json().catch(() => null) as { error?: unknown } | null;
-    throw new ApiError(
-      typeof body?.error === 'string' ? body.error : `请求失败（${response.status}）`,
-      response.status,
-    );
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let boundary = buffer.indexOf('\n\n');
-      while (boundary >= 0) {
-        dispatchInterviewFrame(buffer.slice(0, boundary), handlers);
-        buffer = buffer.slice(boundary + 2);
-        boundary = buffer.indexOf('\n\n');
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
+  await consumeInterviewStream(response, handlers);
+}
+
+export async function streamResumeInterview(
+  userBookId: string,
+  handlers: InterviewStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${userBookRoot(userBookId)}/interview/resume/stream`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+    ...(signal ? { signal } : {}),
+  });
+  await consumeInterviewStream(response, handlers);
 }
 
 export async function getStrategy(userBookId: string, draftId?: string): Promise<StrategySnapshot> {

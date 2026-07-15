@@ -1,15 +1,17 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useReducer, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router';
 import {
   ApiError,
   getInterview,
-  resumeInterview,
   startInterview,
   streamInterviewAnswer,
+  streamResumeInterview,
 } from './api';
-import type { InterviewOption, InterviewQuestion } from './api';
+import type { InterviewClientStreamEvent, InterviewQuestion, UserBookDetail } from './api';
 import { WorkflowFallback, WorkflowMessage, WorkflowPage } from './components';
+import { ProgressiveStrategyView } from './ProgressiveStrategyView';
+import { IDLE_INTERVIEW_STREAM, interviewStreamReducer } from './interviewStreamState';
 import { userBookQueryKeys } from './queryKeys';
 import { useWorkflowGate } from './useWorkflowGate';
 
@@ -18,18 +20,6 @@ import { useWorkflowGate } from './useWorkflowGate';
 // sufficiency. The interaction form follows the prototype's interview screen
 // (design/prototypes/readtailor-mvp.dc.html, screen 05): a conversation that materializes
 // token by token, where the agent decides when it has heard enough.
-interface StreamState {
-  active: boolean;
-  concluding: boolean;
-  ack: string;
-  prompt: string;
-  hint: string;
-  options: InterviewOption[];
-  sufficiency: number | null;
-}
-
-const IDLE_STREAM: StreamState = { active: false, concluding: false, ack: '', prompt: '', hint: '', options: [], sufficiency: null };
-
 // A turn the reader just answered, recorded locally so it appears in the history immediately
 // (and with the option label / text we already hold) instead of waiting for the server refetch.
 interface LocalTurn {
@@ -78,7 +68,7 @@ export function InterviewPage() {
     refetchInterval: (current) => ['generating', 'completing'].includes(current.state.data?.status ?? '') ? 1800 : false,
   });
   const [text, setText] = useState('');
-  const [stream, setStream] = useState<StreamState>(IDLE_STREAM);
+  const [stream, dispatchStream] = useReducer(interviewStreamReducer, IDLE_INTERVIEW_STREAM);
   // A monotonic turn counter keys the current-turn container. It changes only when the reader
   // sends an answer, so the streamed prompt stays mounted as it settles into the final
   // question (no re-animation), while each new turn re-materializes from scratch.
@@ -95,16 +85,44 @@ export function InterviewPage() {
     if (shouldStart && start.isIdle) start.mutate();
   }, [shouldStart, start]);
 
+  const handleStreamEvent = (event: InterviewClientStreamEvent) => {
+    dispatchStream({ type: 'event', event });
+    if (event.type === 'question_final') {
+      setActiveQuestion({
+        id: event.question.id,
+        prompt: event.question.prompt,
+        ...(event.question.hint ? { hint: event.question.hint } : {}),
+        options: event.question.options,
+        ordinal: event.ordinal,
+        maxQuestions: event.maxQuestions,
+        acknowledgment: event.question.acknowledgment,
+        sufficiency: event.question.sufficiency,
+      });
+      void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.interview(id) });
+    } else if (event.type === 'draft_final') {
+      const strategy = event.strategy;
+      queryClient.setQueryData(userBookQueryKeys.strategy(id, strategy.draftId), strategy);
+      queryClient.setQueryData<UserBookDetail>(userBookQueryKeys.detail(id), (current) => current ? {
+        ...current,
+        workflowStatus: 'strategy_review',
+        currentStrategyDraftVersionId: strategy.draftId,
+      } : current);
+      void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
+    } else if (event.type === 'done') {
+      if (event.workflowStatus === 'interviewing') void interview.refetch();
+      else void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
+    } else if (event.type === 'error') {
+      void interview.refetch();
+    }
+  };
+
   const resume = useMutation({
-    mutationFn: () => resumeInterview(id),
-    onSuccess: (snapshot) => {
-      queryClient.setQueryData(userBookQueryKeys.interview(id), snapshot);
-      if (snapshot.status === 'completing') {
-        void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
-      }
-    },
+    mutationFn: () => streamResumeInterview(id, { onEvent: handleStreamEvent }),
+    onMutate: () => dispatchStream({ type: 'recover' }),
     onError: (error) => {
-      setStreamError(error instanceof ApiError ? error.message : '恢复访谈失败，请稍后重试。');
+      const message = error instanceof ApiError ? error.message : '恢复访谈失败，请稍后重试。';
+      setStreamError(message);
+      dispatchStream({ type: 'transport_error', message });
     },
   });
 
@@ -120,35 +138,12 @@ export function InterviewPage() {
 
   const answer = useMutation<void, Error, { questionId: string; optionId?: string; text?: string }>({
     mutationFn: (input) => streamInterviewAnswer(id, input, {
-      onAck: (chars) => setStream((s) => ({ ...s, ack: s.ack + chars })),
-      onPrompt: (chars) => setStream((s) => ({ ...s, prompt: s.prompt + chars })),
-      onHint: (chars) => setStream((s) => ({ ...s, hint: s.hint + chars })),
-      onOption: (option) => setStream((s) => ({ ...s, options: [...s.options, option] })),
-      onSufficiency: (value) => setStream((s) => ({ ...s, sufficiency: value })),
-      onConcluding: () => setStream((s) => ({ ...s, concluding: true })),
-      onQuestionFinal: (next) => {
-        setActiveQuestion(next);
-        setStream(IDLE_STREAM);
-        void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.interview(id) });
-      },
-      onDone: (workflowStatus) => {
-        setStream(IDLE_STREAM);
-        if (workflowStatus === 'interviewing') {
-          void interview.refetch();
-        } else {
-          // Interview finished — let the workflow gate navigate to the next step.
-          void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
-        }
-      },
-      onError: (message) => {
-        setStream(IDLE_STREAM);
-        setStreamError(message);
-        void interview.refetch();
-      },
+      onEvent: handleStreamEvent,
     }),
     onError: (error) => {
-      setStream(IDLE_STREAM);
-      setStreamError(error instanceof ApiError ? error.message : '提交失败，请稍后再试。');
+      const message = error instanceof ApiError ? error.message : '提交失败，请稍后再试。';
+      setStreamError(message);
+      dispatchStream({ type: 'transport_error', message });
       void interview.refetch();
     },
   });
@@ -167,7 +162,7 @@ export function InterviewPage() {
     setText('');
     setActiveQuestion(null);
     setTurnSeq((n) => n + 1);
-    setStream({ ...IDLE_STREAM, active: true, sufficiency: question.sufficiency });
+    dispatchStream({ type: 'begin', sufficiency: question.sufficiency });
     answer.mutate({ questionId: question.id, ...choice });
   };
 
@@ -191,22 +186,23 @@ export function InterviewPage() {
   }
   const snapshot = interview.data;
 
-  const streaming = stream.active;
-  const concludingView = stream.concluding || snapshot.status === 'completing';
-  const generatingView = snapshot.status === 'generating' && !streaming;
-  const failedView = snapshot.status === 'failed' && !streaming;
-  const interactive = !streaming && snapshot.status === 'asking' && !!question;
+  const questionStreaming = stream.mode === 'question_streaming';
+  const draftView = stream.mode === 'draft_streaming'
+    || stream.mode === 'recovering'
+    || (snapshot.status === 'generating' && !question);
+  const failedView = snapshot.status === 'failed' || stream.mode === 'error';
+  const interactive = stream.mode === 'idle' && snapshot.status === 'asking' && !!question;
 
   // A single turn draws its text from the live stream while streaming, then from the
   // authoritative question once it settles — the same markup, so nothing re-animates.
-  const turnAck = streaming ? stream.ack : (question?.acknowledgment ?? '');
-  const turnPrompt = streaming ? stream.prompt : (question?.prompt ?? '');
+  const turnAck = questionStreaming ? stream.ack : (question?.acknowledgment ?? '');
+  const turnPrompt = questionStreaming ? stream.prompt : (question?.prompt ?? '');
   // The hint streams in right after the prompt and before the options (prototype screen 05),
   // so it reveals in place rather than popping in after everything settles.
-  const turnHint = streaming ? stream.hint : (question?.hint ?? '');
-  const turnOptions = streaming ? stream.options : (question?.options ?? []);
-  const sufficiency = streaming ? stream.sufficiency : (question?.sufficiency ?? null);
-  const thinking = streaming && !stream.concluding && !turnPrompt;
+  const turnHint = questionStreaming ? stream.hint : (question?.hint ?? '');
+  const turnOptions = questionStreaming ? stream.options : (question?.options ?? []);
+  const sufficiency = questionStreaming ? stream.sufficiency : (question?.sufficiency ?? null);
+  const thinking = questionStreaming && !turnPrompt;
 
   // History prefers the local record for turns answered this session (instant, no refetch flash),
   // keeping the server snapshot for turns from a resumed session it doesn't yet cover.
@@ -229,7 +225,7 @@ export function InterviewPage() {
           <span className="interview-suff">信息充足度 {sufficiency === null ? '—' : `${clampPercent(sufficiency)}%`}</span>
         </div>
 
-        {history.length ? (
+        {!draftView && history.length ? (
           <div className="interview-history" aria-label="之前的回答">
             {history.map((item, index) => (
               <div className="interview-hist" key={item.questionId ?? `${index}:${item.answer}`}>
@@ -244,25 +240,23 @@ export function InterviewPage() {
           <WorkflowMessage
             title="整理暂时停住了"
             action={<button className="button button-primary" type="button" disabled={interview.isFetching} onClick={() => void interview.refetch()}>{interview.isFetching ? '正在重新读取…' : '重新读取'}</button>}
-          >{snapshot.errorSummary || '已经提交的回答都还在，可以从这里继续。'}</WorkflowMessage>
-        ) : generatingView ? (
-          <div className="interview-turn" key="generating">
-            <div className="interview-generating">
-              <div className="workflow-typing" aria-hidden="true"><span /><span /><span /></div>
-              <span>{resume.isPending ? '正在恢复访谈' : '正在生成下一问'}</span>
-            </div>
-            {streamError ? <div className="form-error" role="alert">{streamError}</div> : null}
-            {resume.isError ? <button className="button button-ghost" type="button" onClick={() => resume.mutate()}>重新继续</button> : null}
-          </div>
-        ) : concludingView ? (
-          <div className="interview-turn" key="concluding">
-            <h2 className="interview-prompt"><Typeset text="好，我心里有数了——就问到这里。" /></h2>
-            <p className="interview-sub">再问下去就是负担了。接下来交给我。</p>
-            <div className="interview-generating">
-              <div className="workflow-typing" aria-hidden="true"><span /><span /><span /></div>
-              <span>正在生成读前简报 · Brief</span>
-            </div>
-          </div>
+          >{stream.error || snapshot.errorSummary || '已经提交的回答都还在，可以从这里继续。'}</WorkflowMessage>
+        ) : draftView ? (
+          <ProgressiveStrategyView model={{
+            mode: stream.finalStrategy
+              ? 'committed'
+              : stream.mode === 'error'
+                ? 'failed'
+                : stream.mode === 'recovering' || snapshot.status === 'generating'
+                  ? 'recovering'
+                  : 'streaming',
+            source: 'interview',
+            briefing: stream.briefing,
+            strategySummary: stream.strategySummary,
+            nodes: stream.nodes,
+            ...(stream.finalStrategy ? { draftVersion: stream.finalStrategy.draftVersion } : {}),
+            ...(stream.error ? { error: stream.error } : {}),
+          }} />
         ) : (
           <div className="interview-turn" key={`turn-${turnSeq}`}>
             {turnAck ? <p className="interview-ack"><Typeset text={turnAck} /></p> : null}
@@ -313,7 +307,7 @@ export function InterviewPage() {
           </div>
         )}
 
-        {!concludingView && !generatingView && !failedView ? (
+        {!draftView && !failedView ? (
           <p className="interview-note">问几个由我判断——信息够了，我就不再多问。</p>
         ) : null}
       </section>

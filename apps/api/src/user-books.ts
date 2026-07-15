@@ -42,7 +42,9 @@ import type {
   ReadingStatsGlobal,
   ReadingStatsPerBook,
   ReadingStatsQuery,
+  ReadingNodePreview,
   ReadingSetupOperationResponse,
+  ReadingSetupStreamErrorCode,
   Strategy,
   StrategyReviewResponse,
   TextPosition,
@@ -93,6 +95,7 @@ import {
 import type {
   AskAiOutcome,
   AskAiToolbox,
+  ReadingSetupStreamDelta,
 } from '@readtailor/agent-kit';
 import { extractNodeSourceFromHtml, extractNodeTexts, sliceNodeSource } from '@readtailor/tailoring';
 import type { AskAiEngine } from './ask-ai-engine';
@@ -456,6 +459,13 @@ class ReadingSetupClaimConflictError extends Error {
   constructor() {
     super('reading setup operation claim conflict');
     this.name = 'ReadingSetupClaimConflictError';
+  }
+}
+
+class InterviewTurnLeaseLostError extends Error {
+  constructor() {
+    super('interview turn lease lost');
+    this.name = 'InterviewTurnLeaseLostError';
   }
 }
 
@@ -1070,6 +1080,20 @@ type InterviewTurnClaim = {
   conversationVersion: number;
 };
 
+type InterviewTurnStreamDelta =
+  | Exclude<ReadingSetupStreamDelta, { type: 'reading_node_added' }>
+  | {
+      type: 'reading_node_added';
+      speculativeEpoch: number;
+      node: ReadingNodePreview;
+    };
+
+type InterviewStreamPayload = InterviewStreamEvent extends infer Event
+  ? Event extends InterviewStreamEvent
+    ? Omit<Event, 'userBookId' | 'streamId' | 'sequence'>
+    : never
+  : never;
+
 type ReadingSetupOperationClaim = {
   operationId: string;
   leaseId: string;
@@ -1134,6 +1158,7 @@ export function readingSetupOperationRequestHash(
 }
 
 const INTERVIEW_TURN_LEASE_SQL = sql`interval '6 minutes'`;
+const INTERVIEW_TURN_RENEW_INTERVAL_MS = 60_000;
 
 export function createUserBookService(options: UserBookServiceOptions) {
   return {
@@ -1809,13 +1834,59 @@ function createUserBookServiceForUser(
       ));
   };
 
+  const renewInterviewTurn = async (claim: InterviewTurnClaim) => {
+    const [renewed] = await db
+      .update(interviewSessions)
+      .set({
+        turnLeaseExpiresAt: sql`now() + ${INTERVIEW_TURN_LEASE_SQL}`,
+        updatedAt: sql`now()`,
+      })
+      .where(and(
+        eq(interviewSessions.id, claim.sessionId),
+        eq(interviewSessions.status, 'active'),
+        eq(interviewSessions.turnLeaseId, claim.leaseId),
+        eq(interviewSessions.turnLeaseVersion, claim.conversationVersion),
+        sql`${interviewSessions.turnLeaseExpiresAt} > now()`,
+      ))
+      .returning({ id: interviewSessions.id });
+    return Boolean(renewed);
+  };
+
+  const startInterviewTurnLeaseRenewal = (claim: InterviewTurnClaim) => {
+    let stopped = false;
+    let lost = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      timer = setTimeout(async () => {
+        if (stopped) return;
+        try {
+          lost = !(await renewInterviewTurn(claim));
+        } catch {
+          lost = true;
+        }
+        if (!lost && !stopped) schedule();
+      }, INTERVIEW_TURN_RENEW_INTERVAL_MS);
+      timer.unref?.();
+    };
+    schedule();
+    return {
+      assertActive() {
+        if (lost) throw new InterviewTurnLeaseLostError();
+      },
+      stop() {
+        stopped = true;
+        if (timer) clearTimeout(timer);
+      },
+    };
+  };
+
   const saveSetupOutcome = async (
     userBookId: string,
     outcome: Awaited<ReturnType<ReadingSetupEngine['runTurn']>>,
     claim: InterviewTurnClaim,
   ) => {
     if (outcome.type === 'question') {
-      return db.transaction(async (tx) => {
+      const committed = await db.transaction(async (tx) => {
         const sequence = claim.conversationVersion + 1;
         const advanced = await tx
           .update(interviewSessions)
@@ -1832,6 +1903,7 @@ function createUserBookServiceForUser(
             eq(interviewSessions.conversationVersion, claim.conversationVersion),
             eq(interviewSessions.turnLeaseId, claim.leaseId),
             eq(interviewSessions.turnLeaseVersion, claim.conversationVersion),
+            sql`${interviewSessions.turnLeaseExpiresAt} > now()`,
           ))
           .returning({ id: interviewSessions.id });
         if (advanced.length !== 1) return false;
@@ -1845,9 +1917,10 @@ function createUserBookServiceForUser(
         });
         return true;
       });
+      return { committed };
     }
     if (outcome.type !== 'completed') throw new Error('unexpected reading setup outcome during interview');
-    return db.transaction(async (tx) => {
+    const draftId = await db.transaction(async (tx) => {
       const completed = await tx
         .update(interviewSessions)
         .set({
@@ -1863,9 +1936,10 @@ function createUserBookServiceForUser(
           eq(interviewSessions.conversationVersion, claim.conversationVersion),
           eq(interviewSessions.turnLeaseId, claim.leaseId),
           eq(interviewSessions.turnLeaseVersion, claim.conversationVersion),
+          sql`${interviewSessions.turnLeaseExpiresAt} > now()`,
         ))
         .returning({ id: interviewSessions.id });
-      if (completed.length !== 1) return false;
+      if (completed.length !== 1) return null;
       const [profile] = await tx
         .insert(bookReaderProfileVersions)
         .values({
@@ -1923,8 +1997,46 @@ function createUserBookServiceForUser(
         .where(and(eq(userBooks.id, userBookId), eq(userBooks.workflowStatus, 'interviewing')))
         .returning({ id: userBooks.id });
       if (activated.length !== 1) throw new UserBookError('访谈状态已经变化', 409);
-      return true;
+      return draft.id;
     });
+    return { committed: draftId !== null, ...(draftId ? { draftId } : {}) };
+  };
+
+  const createInterviewNodeProjector = (
+    manifest: ReadingManifest,
+    bookProfileValue: unknown,
+  ) => {
+    const allowedCandidates = new Set(
+      ((bookProfileValue as { trial_candidates?: Array<{ section_id: string; segment: number }> } | null)
+        ?.trial_candidates ?? [])
+        .map((candidate) => `${candidate.section_id}:${candidate.segment}`),
+    );
+    return (
+      candidate: { ordinal: number; sectionId: string; segment: number; reason: string },
+      seen: Set<string>,
+    ): ReadingNodePreview => {
+      const key = `${candidate.sectionId}:${candidate.segment}`;
+      const node = manifest.nodes.find(
+        (item) => item.section_id === candidate.sectionId && item.segment === candidate.segment,
+      );
+      if (
+        candidate.ordinal < 1
+        || candidate.ordinal > 3
+        || !node?.tailoring_eligible
+        || !allowedCandidates.has(key)
+        || seen.has(key)
+      ) {
+        throw new UserBookError('访谈生成了无效的试读候选', 409);
+      }
+      seen.add(key);
+      return {
+        ordinal: candidate.ordinal,
+        sectionId: candidate.sectionId,
+        segment: candidate.segment,
+        chapterPath: chapterPath(node, manifest.outline),
+        reason: candidate.reason,
+      };
+    };
   };
 
   // Runs one claimed interviewing turn (agent → next question or finish) and fences the
@@ -1932,10 +2044,17 @@ function createUserBookServiceForUser(
   const generateNextQuestion = async (
     userBookId: string,
     claim: InterviewTurnClaim,
-    onStream?: (delta: InterviewStreamEvent) => void,
+    onStream?: (delta: InterviewTurnStreamDelta) => void,
   ) => {
+    const lease = startInterviewTurnLeaseRenewal(claim);
     try {
       const setup = await getSetupContext(userBookId);
+      const manifestValue = await options.books.getManifest(setup.owned.sharedBook.id);
+      if (!manifestValue) throw new UserBookError('书籍阅读索引不存在', 409);
+      const manifest = asManifest(manifestValue);
+      const projectNode = createInterviewNodeProjector(manifest, setup.context.bookProfile);
+      let streamedEpoch = 0;
+      let streamedNodes = new Set<string>();
       const outcome = await options.setupEngine.runTurn({
         sessionId: claim.sessionId,
         phase: 'interviewing',
@@ -1944,15 +2063,46 @@ function createUserBookServiceForUser(
         context: setup.context,
         ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
         ...(onStream ? {
-          onStream: (delta: InterviewStreamEvent) => {
-            // finish_interview is still speculative until the session/profile/draft CAS commits.
-            if (delta.type !== 'concluding') onStream(delta);
+          onStream: (delta: ReadingSetupStreamDelta) => {
+            lease.assertActive();
+            // `concluding` is held until the authoritative transaction commits.
+            if (delta.type === 'concluding') return;
+            if (delta.type === 'speculative_reset') {
+              streamedEpoch = delta.speculativeEpoch;
+              streamedNodes = new Set<string>();
+              onStream(delta);
+              return;
+            }
+            if (delta.speculativeEpoch < streamedEpoch) return;
+            if (delta.type === 'reading_node_added') {
+              try {
+                onStream({
+                  type: 'reading_node_added',
+                  speculativeEpoch: delta.speculativeEpoch,
+                  node: projectNode(delta, streamedNodes),
+                });
+              } catch (error) {
+                if (!(error instanceof UserBookError)) throw error;
+              }
+              return;
+            }
+            onStream(delta);
           },
         } : {}),
       });
-      const committed = await saveSetupOutcome(userBookId, outcome, claim);
-      if (committed && outcome.type === 'completed') onStream?.({ type: 'concluding' });
-      return { outcome, committed };
+      lease.assertActive();
+      if (outcome.type === 'completed') {
+        const finalNodes = new Set<string>();
+        outcome.strategy.trial_candidates.forEach((candidate, index) => projectNode({
+          ordinal: index + 1,
+          sectionId: candidate.section_id,
+          segment: candidate.segment,
+          reason: candidate.reason,
+        }, finalNodes));
+      }
+      const saved = await saveSetupOutcome(userBookId, outcome, claim);
+      if (!saved.committed) throw new InterviewTurnLeaseLostError();
+      return { outcome, ...saved };
     } catch (error) {
       try {
         await releaseInterviewTurn(claim);
@@ -1960,6 +2110,8 @@ function createUserBookServiceForUser(
         // The lease expiry is the crash-safe fallback when an explicit release also fails.
       }
       throw error;
+    } finally {
+      lease.stop();
     }
   };
 
@@ -2172,27 +2324,38 @@ function createUserBookServiceForUser(
     });
   };
 
-  // Closes a streamed turn (§4.2): once the turn is committed, emit the authoritative next
-  // question, or `done` with the new workflow status when the interview finished. Reads from
-  // persisted state (not this turn's outcome) so it stays correct under a concurrent turn.
-  const terminalInterviewEvents = async function* (userBookId: string): AsyncGenerator<InterviewStreamEvent> {
+  const createInterviewStreamEmitter = (userBookId: string, streamId: string) => {
+    let sequence = 0;
+    return (payload: InterviewStreamPayload): InterviewStreamEvent => ({
+      userBookId,
+      streamId,
+      sequence: sequence += 1,
+      ...payload,
+    } as InterviewStreamEvent);
+  };
+
+  // Closes a streamed turn from persisted state so question/final pointers remain authoritative.
+  const terminalInterviewEvents = async function* (
+    userBookId: string,
+    emit: (payload: InterviewStreamPayload) => InterviewStreamEvent,
+  ): AsyncGenerator<InterviewStreamEvent> {
     const owned = await getOwnedBook(userBookId);
     if (owned.userBook.workflowStatus !== 'interviewing') {
-      yield { type: 'done', workflowStatus: owned.userBook.workflowStatus };
+      yield emit({ type: 'done', workflowStatus: owned.userBook.workflowStatus });
       return;
     }
     const state = await readInterviewState(userBookId);
     if (state.currentQuestion) {
-      yield {
+      yield emit({
         type: 'question_final',
         question: state.currentQuestion,
         ordinal: Math.max(1, Math.min(state.maxQuestions, state.questionCount)),
         maxQuestions: state.maxQuestions,
-      };
+      });
     } else {
       // No question yet (a concurrent turn, or a turn that produced nothing) — tell the client
       // to fall back to GET /interview.
-      yield { type: 'done', workflowStatus: owned.userBook.workflowStatus };
+      yield emit({ type: 'done', workflowStatus: owned.userBook.workflowStatus });
     }
   };
 
@@ -2256,6 +2419,123 @@ function createUserBookServiceForUser(
     const draftId = owned.userBook.currentStrategyDraftVersionId;
     if (!draftId) throw new UserBookError('当前处理方式不存在', 409);
     return strategyStateByDraftId(userBookId, draftId);
+  };
+
+  const streamClaimedInterviewTurn = async function* (
+    userBookId: string,
+    claim: InterviewTurnClaim,
+  ): AsyncGenerator<InterviewStreamEvent> {
+    const emit = createInterviewStreamEmitter(userBookId, claim.leaseId);
+    const bridge = createStreamBridge<InterviewStreamEvent>();
+    let latestEpoch = 1;
+    let result: Awaited<ReturnType<typeof generateNextQuestion>> | undefined;
+    let turnError: unknown;
+    const running = generateNextQuestion(userBookId, claim, (delta) => {
+      latestEpoch = Math.max(latestEpoch, delta.speculativeEpoch);
+      switch (delta.type) {
+        case 'speculative_reset':
+          bridge.push(emit({
+            type: 'speculative_reset',
+            speculativeEpoch: delta.speculativeEpoch,
+            phase: 'interviewing',
+          }));
+          break;
+        case 'ack_delta':
+        case 'prompt_delta':
+        case 'hint_delta':
+        case 'strategy_delta':
+          bridge.push(emit({
+            type: delta.type,
+            speculativeEpoch: delta.speculativeEpoch,
+            chars: delta.chars,
+          }));
+          break;
+        case 'option_added':
+          bridge.push(emit({
+            type: delta.type,
+            speculativeEpoch: delta.speculativeEpoch,
+            id: delta.id,
+            label: delta.label,
+          }));
+          break;
+        case 'sufficiency':
+          bridge.push(emit({
+            type: delta.type,
+            speculativeEpoch: delta.speculativeEpoch,
+            value: delta.value,
+          }));
+          break;
+        case 'draft_started':
+          if (delta.source === 'interview') {
+            bridge.push(emit({
+              type: delta.type,
+              speculativeEpoch: delta.speculativeEpoch,
+              conversationVersion: claim.conversationVersion,
+            }));
+          }
+          break;
+        case 'briefing_delta':
+          bridge.push(emit({
+            type: delta.type,
+            speculativeEpoch: delta.speculativeEpoch,
+            field: delta.field,
+            chars: delta.chars,
+          }));
+          break;
+        case 'reading_node_added':
+          bridge.push(emit({
+            type: delta.type,
+            speculativeEpoch: delta.speculativeEpoch,
+            node: delta.node,
+          }));
+          break;
+        case 'concluding':
+        case 'selection_started':
+        case 'fragment_added':
+          break;
+      }
+    })
+      .then((value) => {
+        result = value;
+      })
+      .catch((error: unknown) => {
+        turnError = error;
+      })
+      .finally(() => bridge.end());
+
+    for await (const event of bridge.drain()) yield event;
+    await running;
+    if (turnError) {
+      const code: ReadingSetupStreamErrorCode = turnError instanceof InterviewTurnLeaseLostError
+        ? 'lease_lost'
+        : turnError instanceof UserBookError
+          ? 'validation_failed'
+          : 'agent_failed';
+      yield emit({
+        type: 'error',
+        code,
+        message: turnError instanceof UserBookError
+          ? turnError.message
+          : code === 'lease_lost'
+            ? '访谈处理已由新的恢复请求接管。'
+            : '生成下一步时出错，请稍后重试。',
+      });
+      return;
+    }
+    if (!result) {
+      yield emit({ type: 'error', code: 'internal_error', message: '访谈处理结果缺失。' });
+      return;
+    }
+    if (result.outcome.type === 'completed') {
+      if (!result.draftId) {
+        yield emit({ type: 'error', code: 'internal_error', message: '处理方式草稿结果缺失。' });
+        return;
+      }
+      yield emit({ type: 'concluding', speculativeEpoch: latestEpoch });
+      const strategy = await strategyStateByDraftId(userBookId, result.draftId);
+      yield emit({ type: 'draft_final', strategy });
+    }
+    yield* terminalInterviewEvents(userBookId, emit);
   };
 
   // §6.4 / §10.7 shared revision engine. Runs the revision LLM FIRST (no writes), then applies
@@ -3870,6 +4150,17 @@ function createUserBookServiceForUser(
       return readInterviewState(userBookId);
     },
 
+    async *streamResumeInterview(userBookId: string): AsyncGenerator<InterviewStreamEvent> {
+      const owned = await getOwnedBook(userBookId);
+      const sessionId = owned.userBook.currentInterviewSessionId;
+      if (owned.userBook.workflowStatus !== 'interviewing' || !sessionId) {
+        throw new UserBookError('当前访谈不需要恢复', 409);
+      }
+      const claim = await claimInterviewTurn(sessionId);
+      if (!claim) throw new UserBookError('访谈仍在处理中', 409);
+      yield* streamClaimedInterviewTurn(userBookId, claim);
+    },
+
     // Streaming answer endpoint (§4). Commits the answer, then runs the interviewing turn,
     // yielding token-level deltas as the model streams the next question — or `concluding`
     // then `done` when it finishes the interview. Validation errors are thrown before the
@@ -3882,24 +4173,13 @@ function createUserBookServiceForUser(
       const committed = await commitInterviewAnswer(userBookId, input);
       const claim = committed.claim ?? await claimInterviewTurn(committed.sessionId);
       if (claim) {
-        const bridge = createStreamBridge<InterviewStreamEvent>();
-        let turnError: unknown;
-        const running = generateNextQuestion(userBookId, claim, (delta) => bridge.push(delta))
-          .catch((error: unknown) => {
-            turnError = error;
-          })
-          .finally(() => bridge.end());
-        for await (const delta of bridge.drain()) yield delta;
-        await running;
-        if (turnError) {
-          yield {
-            type: 'error',
-            message: turnError instanceof UserBookError ? turnError.message : '生成下一步时出错，请稍后重试。',
-          };
-          return;
-        }
+        yield* streamClaimedInterviewTurn(userBookId, claim);
+        return;
       }
-      yield* terminalInterviewEvents(userBookId);
+      yield* terminalInterviewEvents(
+        userBookId,
+        createInterviewStreamEmitter(userBookId, randomUUID()),
+      );
     },
 
     strategyState,

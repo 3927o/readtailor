@@ -10,6 +10,7 @@ import {
   HealthResponseSchema,
   ImportBookResponseSchema,
   InterviewQuestionSchema,
+  InterviewStreamEventSchema,
   PasswordLoginRequestSchema,
   PasswordRegisterRequestSchema,
   ProvisionalTrialSampleSchema,
@@ -483,6 +484,7 @@ describe('progressive reading setup contracts', () => {
     operation: '10000000-0000-0000-0000-000000000002',
     draft: '10000000-0000-0000-0000-000000000003',
     trial: '10000000-0000-0000-0000-000000000004',
+    stream: '10000000-0000-0000-0000-000000000005',
   };
 
   const range = {
@@ -710,6 +712,37 @@ describe('progressive reading setup contracts', () => {
       trialRevisionId: 'not-a-uuid',
       feedback: 'Use a more representative sample.',
       idempotencyKey: 'command-1',
+    })).toBe(false);
+  });
+
+  it('validates interview question and progressive draft stream events', () => {
+    const interviewEnvelope = {
+      userBookId: ids.userBook,
+      streamId: ids.stream,
+      sequence: 1,
+    };
+    const events = [
+      { ...interviewEnvelope, type: 'speculative_reset', speculativeEpoch: 1, phase: 'interviewing' },
+      { ...interviewEnvelope, type: 'draft_started', speculativeEpoch: 1, conversationVersion: 6 },
+      { ...interviewEnvelope, type: 'briefing_delta', speculativeEpoch: 1, field: 'book_identity', chars: 'A systems book.' },
+      { ...interviewEnvelope, type: 'strategy_delta', speculativeEpoch: 1, chars: 'Read for the argument.' },
+      { ...interviewEnvelope, type: 'reading_node_added', speculativeEpoch: 1, node: previews[0] },
+      { ...interviewEnvelope, type: 'draft_final', strategy },
+      { ...interviewEnvelope, type: 'done', workflowStatus: 'strategy_review' },
+      { ...interviewEnvelope, type: 'error', code: 'lease_lost', message: 'Lease lost.' },
+    ];
+    for (const event of events) expect(Value.Check(InterviewStreamEventSchema, event)).toBe(true);
+    expect(Value.Check(InterviewStreamEventSchema, {
+      ...events[2],
+      field: 'unknown',
+    })).toBe(false);
+    expect(Value.Check(InterviewStreamEventSchema, {
+      ...events[3],
+      sequence: 0,
+    })).toBe(false);
+    expect(Value.Check(InterviewStreamEventSchema, {
+      ...events[4],
+      speculativeEpoch: 0,
     })).toBe(false);
   });
 

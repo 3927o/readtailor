@@ -9,6 +9,7 @@ import {
   resumeInterview,
   resumeReadingSetupOperation,
   startInterview,
+  streamResumeInterview,
   submitStrategyFeedback,
   submitTrialFeedback,
 } from './api';
@@ -102,11 +103,45 @@ describe('user book detail', () => {
 });
 
 const briefing = {
-  coreQuestion: '核心问题',
-  knowledgeMap: '知识地图',
-  difficultyWarnings: '难点',
-  readingApproach: '阅读方式',
+  bookIdentity: '核心问题',
+  arc: '知识地图',
+  assumedKnowledge: '难点',
+  readingAdvice: '阅读方式',
 };
+
+describe('interview progressive stream', () => {
+  it('decodes chunked resume events and maps draft_final to the Web snapshot', async () => {
+    const streamId = '10000000-0000-0000-0000-000000000002';
+    const frames = [
+      { userBookId: '10000000-0000-0000-0000-000000000001', streamId, sequence: 1, speculativeEpoch: 1, type: 'draft_started', conversationVersion: 6 },
+      { userBookId: '10000000-0000-0000-0000-000000000001', streamId, sequence: 2, speculativeEpoch: 1, type: 'strategy_delta', chars: '逐步形成' },
+      { userBookId: '10000000-0000-0000-0000-000000000001', streamId, sequence: 3, type: 'draft_final', strategy: strategyResponse('draft-2') },
+      { userBookId: '10000000-0000-0000-0000-000000000001', streamId, sequence: 4, type: 'done', workflowStatus: 'strategy_review' },
+    ].map((item) => `data: ${JSON.stringify(item)}\n\n`).join('');
+    const bytes = new TextEncoder().encode(frames);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.slice(0, 37));
+        controller.enqueue(bytes.slice(37));
+        controller.close();
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, {
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const events: Array<{ type: string; strategy?: { draftId: string } }> = [];
+
+    await streamResumeInterview('book/1', { onEvent: (event) => events.push(event) });
+
+    expect(events.map((event) => event.type)).toEqual(['draft_started', 'strategy_delta', 'draft_final', 'done']);
+    expect(events[2]?.strategy?.draftId).toBe('draft-2');
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/interview\/resume\/stream$/),
+      expect.objectContaining({ method: 'POST', body: '{}' }),
+    );
+  });
+});
 
 function strategyResponse(draftId = 'draft-1') {
   return {

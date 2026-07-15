@@ -617,16 +617,20 @@ describe('user book workflow routes', () => {
   });
 
   it('streams interview deltas as SSE and closes with question_final', async () => {
+    const streamId = '77777777-8888-4999-8aaa-bbbbbbbbbbbb';
     const app = await buildApiApp(config, {
       auth: fakeAuth,
       userBooks: fakeService({
         async *streamInterviewAnswer() {
-          yield { type: 'ack_delta', chars: '好，' };
-          yield { type: 'ack_delta', chars: '我记下了。' };
-          yield { type: 'prompt_delta', chars: '下一个问题？' };
-          yield { type: 'option_added', id: 'a', label: '甲' };
-          yield { type: 'sufficiency', value: 60 };
+          yield { userBookId: USER_BOOK_ID, streamId, sequence: 1, speculativeEpoch: 1, type: 'ack_delta', chars: '好，' };
+          yield { userBookId: USER_BOOK_ID, streamId, sequence: 2, speculativeEpoch: 1, type: 'ack_delta', chars: '我记下了。' };
+          yield { userBookId: USER_BOOK_ID, streamId, sequence: 3, speculativeEpoch: 1, type: 'prompt_delta', chars: '下一个问题？' };
+          yield { userBookId: USER_BOOK_ID, streamId, sequence: 4, speculativeEpoch: 1, type: 'option_added', id: 'a', label: '甲' };
+          yield { userBookId: USER_BOOK_ID, streamId, sequence: 5, speculativeEpoch: 1, type: 'sufficiency', value: 60 };
           yield {
+            userBookId: USER_BOOK_ID,
+            streamId,
+            sequence: 6,
             type: 'question_final',
             question: {
               id: 'q2',
@@ -654,9 +658,10 @@ describe('user book workflow routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/event-stream');
     const body = response.body;
-    expect(body).toContain('data: {"type":"ack_delta","chars":"好，"}');
-    expect(body).toContain('data: {"type":"prompt_delta","chars":"下一个问题？"}');
-    expect(body).toContain('data: {"type":"option_added","id":"a","label":"甲"}');
+    expect(body).toContain('"type":"ack_delta"');
+    expect(body).toContain('"chars":"好，"');
+    expect(body).toContain('"type":"prompt_delta"');
+    expect(body).toContain('"type":"option_added"');
     expect(body).toContain('"type":"question_final"');
     expect(body).toContain('"id":"q2"');
     // The authoritative question is the last frame, after the deltas.
@@ -683,6 +688,45 @@ describe('user book workflow routes', () => {
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ error: '问题已经更新，请刷新后继续' });
+  });
+
+  it('streams an expired interview turn through the additive resume endpoint', async () => {
+    const streamId = '77777777-8888-4999-8aaa-bbbbbbbbbbbb';
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async *streamResumeInterview() {
+          yield {
+            userBookId: USER_BOOK_ID,
+            streamId,
+            sequence: 1,
+            speculativeEpoch: 1,
+            type: 'draft_started',
+            conversationVersion: 6,
+          };
+          yield {
+            userBookId: USER_BOOK_ID,
+            streamId,
+            sequence: 2,
+            type: 'done',
+            workflowStatus: 'strategy_review',
+          };
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/interview/resume/stream`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/event-stream');
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    expect(response.body).toContain('"type":"draft_started"');
+    expect(response.body).toContain('"workflowStatus":"strategy_review"');
   });
 
   it('serves the reader bootstrap with a highlights array', async () => {

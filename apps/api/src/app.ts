@@ -704,6 +704,56 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
   );
 
   app.post(
+    '/v1/user-books/:id/interview/resume/stream',
+    {
+      schema: {
+        params: userBookIdParams,
+        body: Type.Object({}, { additionalProperties: false }),
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      const events = deps.userBooks
+        .forUser(request.authUser!.id, { requestId: request.id })
+        .streamResumeInterview(request.params.id);
+      let first: IteratorResult<InterviewStreamEvent>;
+      try {
+        first = await events.next();
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+      const encode = (event: InterviewStreamEvent) => `data: ${JSON.stringify(event)}\n\n`;
+      const toSse = async function* (): AsyncGenerator<string> {
+        let last = first.done ? undefined : first.value;
+        try {
+          if (last) yield encode(last);
+          for await (const event of events) {
+            last = event;
+            yield encode(event);
+          }
+        } catch (error) {
+          request.log.error({ err: error }, 'interview resume stream failed');
+          if (last) {
+            yield encode({
+              userBookId: last.userBookId,
+              streamId: last.streamId,
+              sequence: last.sequence + 1,
+              type: 'error',
+              code: 'internal_error',
+              message: '访谈恢复失败',
+            });
+          }
+        }
+      };
+      return reply
+        .type('text/event-stream')
+        .header('cache-control', 'private, no-store')
+        .header('x-accel-buffering', 'no')
+        .send(Readable.from(withHeartbeat(toSse(), 15_000)));
+    },
+  );
+
+  app.post(
     '/v1/user-books/:id/interview/answers',
     {
       // 响应是 SSE 流（§4）：逐字致谢/问题、逐个选项、充足度，最后 question_final 或 done。
@@ -730,18 +780,31 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
 
       const encode = (event: InterviewStreamEvent) => `data: ${JSON.stringify(event)}\n\n`;
       const toSse = async function* (): AsyncGenerator<string> {
+        let last = first.done ? undefined : first.value;
         try {
-          if (!first.done) yield encode(first.value);
-          for await (const event of events) yield encode(event);
+          if (last) yield encode(last);
+          for await (const event of events) {
+            last = event;
+            yield encode(event);
+          }
         } catch (error) {
           request.log.error({ err: error }, 'interview answer stream failed');
-          yield encode({ type: 'error', message: '访谈处理失败' });
+          if (last) {
+            yield encode({
+              userBookId: last.userBookId,
+              streamId: last.streamId,
+              sequence: last.sequence + 1,
+              type: 'error',
+              code: 'internal_error',
+              message: '访谈处理失败',
+            });
+          }
         }
       };
 
       return reply
         .type('text/event-stream')
-        .header('cache-control', 'no-cache')
+        .header('cache-control', 'private, no-store')
         .header('x-accel-buffering', 'no')
         .send(Readable.from(withHeartbeat(toSse(), 15_000)));
     },

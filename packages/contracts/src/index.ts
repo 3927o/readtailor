@@ -367,23 +367,6 @@ export const InterviewStateResponseSchema = Type.Object({
 });
 export type InterviewStateResponse = Static<typeof InterviewStateResponseSchema>;
 
-// SSE wire events for the streaming interview endpoint (§4.2). Each frame is
-// `data: <json>\n\n` with the discriminator in `type`, mirroring the system-chat stream.
-// The stream bypasses Fastify serialization, so this is a hand-maintained union rather than
-// a validated TypeBox schema. ack/prompt/option/sufficiency/concluding are token-level
-// deltas; question_final delivers the authoritative next question; done ends the turn;
-// error reports an in-band failure after the stream has opened.
-export type InterviewStreamEvent =
-  | { type: 'ack_delta'; chars: string }
-  | { type: 'prompt_delta'; chars: string }
-  | { type: 'hint_delta'; chars: string }
-  | { type: 'option_added'; id: string; label: string }
-  | { type: 'sufficiency'; value: number }
-  | { type: 'concluding' }
-  | { type: 'question_final'; question: InterviewQuestion; ordinal: number; maxQuestions: number }
-  | { type: 'done'; workflowStatus: UserBookWorkflowStatus }
-  | { type: 'error'; message: string };
-
 export const TextPositionSchema = Type.Object({
   blockIndex: Type.Integer({ minimum: 1 }),
   offset: Type.Integer({ minimum: 0 }),
@@ -1008,6 +991,92 @@ export const ReadingSetupStreamErrorCodeSchema = Type.Union([
   Type.Literal('internal_error'),
 ]);
 export type ReadingSetupStreamErrorCode = Static<typeof ReadingSetupStreamErrorCodeSchema>;
+
+export const ReadingBriefingFieldSchema = Type.Union([
+  Type.Literal('book_identity'),
+  Type.Literal('arc'),
+  Type.Literal('assumed_knowledge'),
+  Type.Literal('reading_advice'),
+]);
+export type ReadingBriefingField = Static<typeof ReadingBriefingFieldSchema>;
+
+const INTERVIEW_STREAM_ENVELOPE = {
+  userBookId: UuidSchema,
+  streamId: UuidSchema,
+  sequence: Type.Integer({ minimum: 1 }),
+};
+
+const INTERVIEW_SPECULATIVE_STREAM_ENVELOPE = {
+  ...INTERVIEW_STREAM_ENVELOPE,
+  speculativeEpoch: Type.Integer({ minimum: 1 }),
+};
+
+// SSE wire contract shared by answer and resume streams. Every frame is tied to one stream
+// and ordered by sequence; provisional tool-call output additionally carries an epoch so a
+// restarted tool call cannot append to stale text from an earlier attempt.
+export const InterviewStreamEventSchema = Type.Union([
+  Type.Object({
+    ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
+    type: Type.Literal('speculative_reset'),
+    phase: Type.Literal('interviewing'),
+  }),
+  Type.Object({ ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE, type: Type.Literal('ack_delta'), chars: Type.String({ minLength: 1 }) }),
+  Type.Object({ ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE, type: Type.Literal('prompt_delta'), chars: Type.String({ minLength: 1 }) }),
+  Type.Object({ ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE, type: Type.Literal('hint_delta'), chars: Type.String({ minLength: 1 }) }),
+  Type.Object({
+    ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
+    type: Type.Literal('option_added'),
+    id: Type.String({ minLength: 1 }),
+    label: Type.String({ minLength: 1 }),
+  }),
+  Type.Object({
+    ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
+    type: Type.Literal('sufficiency'),
+    value: Type.Integer({ minimum: 0, maximum: 100 }),
+  }),
+  Type.Object({ ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE, type: Type.Literal('concluding') }),
+  Type.Object({
+    ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
+    type: Type.Literal('draft_started'),
+    conversationVersion: Type.Integer({ minimum: 0 }),
+  }),
+  Type.Object({
+    ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
+    type: Type.Literal('briefing_delta'),
+    field: ReadingBriefingFieldSchema,
+    chars: Type.String({ minLength: 1 }),
+  }),
+  Type.Object({ ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE, type: Type.Literal('strategy_delta'), chars: Type.String({ minLength: 1 }) }),
+  Type.Object({
+    ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
+    type: Type.Literal('reading_node_added'),
+    node: ReadingNodePreviewSchema,
+  }),
+  Type.Object({
+    ...INTERVIEW_STREAM_ENVELOPE,
+    type: Type.Literal('question_final'),
+    question: InterviewQuestionSchema,
+    ordinal: Type.Integer({ minimum: 1, maximum: 7 }),
+    maxQuestions: Type.Literal(7),
+  }),
+  Type.Object({
+    ...INTERVIEW_STREAM_ENVELOPE,
+    type: Type.Literal('draft_final'),
+    strategy: StrategyReviewResponseSchema,
+  }),
+  Type.Object({
+    ...INTERVIEW_STREAM_ENVELOPE,
+    type: Type.Literal('done'),
+    workflowStatus: UserBookWorkflowStatusSchema,
+  }),
+  Type.Object({
+    ...INTERVIEW_STREAM_ENVELOPE,
+    type: Type.Literal('error'),
+    code: ReadingSetupStreamErrorCodeSchema,
+    message: Type.String({ minLength: 1 }),
+  }),
+]);
+export type InterviewStreamEvent = Static<typeof InterviewStreamEventSchema>;
 
 const READING_SETUP_OPERATION_STREAM_ENVELOPE = {
   userBookId: UuidSchema,

@@ -3294,6 +3294,69 @@ h1 {
   line-height: 2;
 }
 
+.progressive-strategy {
+  width: min(100%, 620px);
+  margin: 0 auto;
+}
+
+.progressive-brief .strategy-version {
+  margin-bottom: 0;
+}
+
+.progressive-placeholder {
+  color: var(--rt-ink-3);
+}
+
+.progressive-strategy-text {
+  white-space: pre-wrap;
+}
+
+.reading-node-selection ol {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--rt-rule);
+}
+
+.reading-node-selection li {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  min-height: 72px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--rt-rule);
+  color: var(--rt-ink-3);
+}
+
+.reading-node-selection li[data-ready] {
+  color: var(--rt-ink);
+}
+
+.reading-node-selection li > span {
+  padding-top: 2px;
+  color: var(--rt-green-deep);
+  font-family: var(--rt-mono);
+  font-size: 10px;
+}
+
+.reading-node-selection strong {
+  display: block;
+  overflow-wrap: anywhere;
+  font-family: var(--rt-serif);
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.reading-node-selection p {
+  margin: 5px 0 0;
+  color: var(--rt-ink-3);
+  font-family: var(--rt-read);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 .adjustment-form {
   display: grid;
   gap: 12px;

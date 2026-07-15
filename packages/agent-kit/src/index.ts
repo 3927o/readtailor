@@ -1296,11 +1296,11 @@ export async function runReadingSetupAgent(options: {
       label: 'Finish interview',
       description: '信息已经足够或问题达到上限时，提交完整的阅读准备结果。',
       parameters: Type.Object({
-        book_reader_profile: BookReaderProfileSchema,
-        reader_profile_patch: Type.Optional(ReaderProfilePatchSchema),
         briefing: ReadingBriefingSchema,
         public_strategy: Type.String({ minLength: 50, maxLength: 8000 }),
         strategy: ReadingStrategySchema,
+        book_reader_profile: BookReaderProfileSchema,
+        reader_profile_patch: Type.Optional(ReaderProfilePatchSchema),
       }),
       executionMode: 'sequential',
       execute: async (_id, input) => {

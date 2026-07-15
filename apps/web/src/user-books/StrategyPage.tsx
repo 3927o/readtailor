@@ -10,13 +10,12 @@ import {
 import type { StrategySnapshot } from './api';
 import {
   AdjustmentForm,
-  AssistanceContent,
   BackToShelf,
-  BriefCard,
   WorkflowFallback,
   WorkflowMessage,
   WorkflowPage,
 } from './components';
+import { ProgressiveStrategyView } from './ProgressiveStrategyView';
 import { userBookQueryKeys } from './queryKeys';
 import { useWorkflowGate } from './useWorkflowGate';
 
@@ -114,12 +113,14 @@ export function StrategyPage() {
   return (
     <WorkflowPage book={book} kicker="BEFORE YOU READ · 读前准备" title="读之前，先看地图">
       <div className="strategy-review">
-        <BriefCard briefing={snapshot.readingBriefing} />
-        <section className="strategy-copy">
-          <div className="strategy-version">处理方式 · 草稿 V{snapshot.draftVersion}</div>
-          <h2>我们会怎样陪你读这本书</h2>
-          <AssistanceContent content={snapshot.userFacingSummary} />
-        </section>
+        <ProgressiveStrategyView model={{
+          mode: 'committed',
+          source: 'interview',
+          briefing: snapshot.readingBriefing,
+          strategySummary: snapshot.userFacingSummary,
+          nodes: snapshot.trialCandidatePreviews,
+          draftVersion: snapshot.draftVersion,
+        }} />
         {snapshot.canAdjust ? (
           <AdjustmentForm
             value={feedback}

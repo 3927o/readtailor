@@ -63,6 +63,7 @@ describe('createAgentReadingSetupEngine', () => {
     };
     let requestNo = 0;
     let providerPromptChars = 0;
+    let finishPropertyOrder: string[] = [];
     const server = createServer(async (request, response) => {
       let body = '';
       for await (const chunk of request) body += String(chunk);
@@ -70,6 +71,11 @@ describe('createAgentReadingSetupEngine', () => {
       const promptPayload: Record<string, unknown> = {};
       if (payload.messages !== undefined) promptPayload.messages = payload.messages;
       if (payload.tools !== undefined) promptPayload.tools = payload.tools;
+      const tools = Array.isArray(payload.tools) ? payload.tools as Array<{
+        function?: { name?: string; parameters?: { properties?: Record<string, unknown> } };
+      }> : [];
+      const finishTool = tools.find((tool) => tool.function?.name === 'finish_interview');
+      finishPropertyOrder = Object.keys(finishTool?.function?.parameters?.properties ?? {});
       providerPromptChars += JSON.stringify(promptPayload).length;
       requestNo += 1;
       if (requestNo === 1) {
@@ -121,6 +127,13 @@ describe('createAgentReadingSetupEngine', () => {
 
     expect(result).toEqual({ type: 'question', question });
     expect(streamEventTypes).not.toContain('concluding');
+    expect(finishPropertyOrder).toEqual([
+      'briefing',
+      'public_strategy',
+      'strategy',
+      'book_reader_profile',
+      'reader_profile_patch',
+    ]);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       requestId: 'request-1',
