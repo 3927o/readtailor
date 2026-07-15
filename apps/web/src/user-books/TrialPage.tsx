@@ -330,7 +330,7 @@ export function TrialPage() {
                 <button
                   className="button button-primary"
                   type="button"
-                  disabled={adopt.isPending || !snapshot.allViewed}
+                  disabled={adopt.isPending || !snapshot.canAdopt}
                   onClick={() => adopt.mutate()}
                 >
                   {adopt.isPending ? '正在采用…' : '采用这个处理方式并开始阅读'}

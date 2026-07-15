@@ -66,6 +66,48 @@ describe('interview progressive stream reducer', () => {
     expect(state.prompt).toBe('');
     expect(state.strategySummary).toBe('');
   });
+
+  it('leaves recovering when an authoritative snapshot contains the current question', () => {
+    let state = interviewStreamReducer(IDLE_INTERVIEW_STREAM, { type: 'recover' });
+    state = interviewStreamReducer(state, {
+      type: 'reconcile',
+      snapshot: {
+        status: 'asking',
+        turnInProgress: false,
+        canResume: false,
+        history: [],
+        currentQuestion: {
+          id: 'question-2',
+          ordinal: 2,
+          maxQuestions: 7,
+          prompt: '恢复后的问题',
+          options: [],
+          acknowledgment: '',
+          sufficiency: 50,
+        },
+        errorSummary: null,
+      },
+    });
+
+    expect(state).toEqual(IDLE_INTERVIEW_STREAM);
+  });
+
+  it('keeps recovering while the authoritative snapshot is still generating', () => {
+    const recovering = interviewStreamReducer(IDLE_INTERVIEW_STREAM, { type: 'recover' });
+    const state = interviewStreamReducer(recovering, {
+      type: 'reconcile',
+      snapshot: {
+        status: 'generating',
+        turnInProgress: true,
+        canResume: false,
+        history: [],
+        currentQuestion: null,
+        errorSummary: null,
+      },
+    });
+
+    expect(state.mode).toBe('recovering');
+  });
 });
 
 describe('ProgressiveStrategyView', () => {

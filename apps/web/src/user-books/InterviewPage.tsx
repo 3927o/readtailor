@@ -130,6 +130,12 @@ export function InterviewPage() {
     if (interview.data?.canResume && resume.isIdle) resume.mutate();
   }, [interview.data?.canResume, resume]);
 
+  useEffect(() => {
+    if (!interview.data) return;
+    dispatchStream({ type: 'reconcile', snapshot: interview.data });
+    if (interview.data.currentQuestion) setStreamError(null);
+  }, [interview.data]);
+
   const question = activeQuestion ?? interview.data?.currentQuestion ?? null;
 
   useEffect(() => {

@@ -213,6 +213,7 @@ describe('versioned setup resources', () => {
 
     const trial = await getTrial('book/1', 'trial/1');
     expect(trial.revisionId).toBe('trial-1');
+    expect(trial.canAdopt).toBe(false);
     expect(trial.samples[0]).toMatchObject({
       status: 'pending',
       tailoredContent: null,

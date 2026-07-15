@@ -1,12 +1,12 @@
 import { useEffect } from 'react';
+import type { UserBookWorkflowStatus } from '@readtailor/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { getUserBook } from './api';
-import type { WorkflowStatus } from './api';
 import { userBookQueryKeys } from './queryKeys';
 import { routeForUserBook } from './routes';
 
-export function useWorkflowGate(userBookId: string, allowed: readonly WorkflowStatus[]) {
+export function useWorkflowGate(userBookId: string, allowed: readonly UserBookWorkflowStatus[]) {
   const navigate = useNavigate();
   const query = useQuery({
     queryKey: userBookQueryKeys.detail(userBookId),
