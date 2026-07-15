@@ -84,7 +84,7 @@ async function provisionTestDatabase(): Promise<TestDatabaseContext> {
   }
 
   const client = postgres(databaseUrl, {
-    max: 1,
+    max: 5,
     onnotice: () => {},
     connection: {
       application_name: `readtailor-test-${schemaName}`,

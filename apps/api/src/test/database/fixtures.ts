@@ -7,6 +7,8 @@ import {
   interviewMessages,
   interviewSessions,
   nodeGenerations,
+  readerProfiles,
+  readerProfileVersions,
   sharedBooks,
   strategyDraftVersions,
   trialRevisions,
@@ -47,6 +49,8 @@ const strategy: Strategy = {
 
 export interface OnShelfGraph {
   userId: string;
+  readerProfileId: string;
+  readerProfileVersionId: string;
   sharedBookId: string;
   packageId: string;
   userBookId: string;
@@ -71,12 +75,30 @@ export interface TrialReviewGraph extends StrategyReviewGraph {
 
 export async function onShelfGraph(db: Database): Promise<OnShelfGraph> {
   const userId = randomUUID();
+  const readerProfileId = randomUUID();
+  const readerProfileVersionId = randomUUID();
   const sharedBookId = randomUUID();
   const packageId = randomUUID();
   const userBookId = randomUUID();
   const uniqueHash = createHash('sha256').update(sharedBookId).digest('hex');
 
   await db.insert(users).values({ id: userId, displayName: '数据库测试读者' });
+  await db.insert(readerProfiles).values({ id: readerProfileId, userId });
+  await db.insert(readerProfileVersions).values({
+    id: readerProfileVersionId,
+    readerProfileId,
+    version: 1,
+    profile: {
+      summary: '希望建立结构化理解',
+      knowledge: ['具备基础背景'],
+      explanationPreferences: ['先讲主线，再补细节'],
+    },
+    changeSource: 'onboarding',
+  });
+  await db
+    .update(readerProfiles)
+    .set({ currentVersionId: readerProfileVersionId })
+    .where(eq(readerProfiles.id, readerProfileId));
   await db.insert(sharedBooks).values({
     id: sharedBookId,
     epubSha256: uniqueHash,
@@ -103,7 +125,14 @@ export async function onShelfGraph(db: Database): Promise<OnShelfGraph> {
     .where(eq(sharedBooks.id, sharedBookId));
   await db.insert(userBooks).values({ id: userBookId, userId, sharedBookId });
 
-  return { userId, sharedBookId, packageId, userBookId };
+  return {
+    userId,
+    readerProfileId,
+    readerProfileVersionId,
+    sharedBookId,
+    packageId,
+    userBookId,
+  };
 }
 
 export async function interviewingGraph(db: Database): Promise<InterviewingGraph> {
