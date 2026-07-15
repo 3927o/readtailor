@@ -636,7 +636,11 @@ describe('runAskAiAgent', () => {
       {
         kind: 'tool',
         name: 'update_reader_profile',
-        arguments: JSON.stringify({ knowledge: ['类型系统', '编译器'] }),
+        arguments: JSON.stringify({
+          knowledge: ['类型系统', '编译器'],
+          remove_knowledge: ['计算机与互联网'],
+          remove_explanation_preferences: ['多补互联网背景'],
+        }),
       },
       { kind: 'text', chunks: ['我会按这个背景继续解释。'] },
     ]);
@@ -660,7 +664,9 @@ describe('runAskAiAgent', () => {
     expect(acknowledged).toHaveLength(2);
     expect(outcome.readerProfilePatch).toEqual({
       knowledge: ['类型系统', '编译器'],
+      remove_knowledge: ['计算机与互联网'],
       explanation_preferences: ['先举例'],
+      remove_explanation_preferences: ['多补互联网背景'],
     });
     expect(outcome.patchedProfile).toBe(true);
   });

@@ -475,6 +475,39 @@ export function proposalActionPayloadMatches(
   return isDeepStrictEqual(stored, incoming);
 }
 
+type ReaderProfilePatch = NonNullable<AskAiOutcome['readerProfilePatch']>;
+
+function mergeProfileList(
+  current: string[],
+  additions: string[] = [],
+  removals: string[] = [],
+): string[] {
+  const removeSet = new Set(removals);
+  return [...new Set([
+    ...current.filter((item) => !removeSet.has(item)),
+    ...additions,
+  ])];
+}
+
+export function applyReaderProfilePatch(
+  profile: ReaderProfile,
+  patch: ReaderProfilePatch,
+): ReaderProfile {
+  return {
+    ...profile,
+    knowledge: mergeProfileList(
+      profile.knowledge,
+      patch.knowledge,
+      patch.remove_knowledge,
+    ),
+    explanationPreferences: mergeProfileList(
+      profile.explanationPreferences,
+      patch.explanation_preferences,
+      patch.remove_explanation_preferences,
+    ),
+  };
+}
+
 // A concurrent duplicate feedback (same idempotency key) loses the race on the partial unique
 // index `interview_messages_feedback_idempotency_unique`. Surfacing that as an idempotent
 // success — rather than a 500 — is the DB-level backstop behind the fast-path pre-check (§6.5).
@@ -1182,17 +1215,7 @@ function createUserBookServiceForUser(
           .where(eq(readerProfiles.userId, (await tx.select({ userId: userBooks.userId }).from(userBooks).where(eq(userBooks.id, userBookId)).limit(1))[0]!.userId))
           .limit(1);
         if (reader) {
-          const nextProfile: ReaderProfile = {
-            ...reader.version.profile,
-            knowledge: [...new Set([
-              ...reader.version.profile.knowledge,
-              ...(outcome.readerProfilePatch.knowledge ?? []),
-            ])],
-            explanationPreferences: [...new Set([
-              ...reader.version.profile.explanationPreferences,
-              ...(outcome.readerProfilePatch.explanation_preferences ?? []),
-            ])],
-          };
+          const nextProfile = applyReaderProfilePatch(reader.version.profile, outcome.readerProfilePatch);
           const [nextVersion] = await tx.insert(readerProfileVersions).values({
             readerProfileId: reader.profile.id,
             version: reader.version.version + 1,
@@ -2258,7 +2281,12 @@ function createUserBookServiceForUser(
         };
       },
       async updateReaderProfile(patch) {
-        if (!patch.knowledge?.length && !patch.explanation_preferences?.length) {
+        if (
+          !patch.knowledge?.length
+          && !patch.remove_knowledge?.length
+          && !patch.explanation_preferences?.length
+          && !patch.remove_explanation_preferences?.length
+        ) {
           return { text: '画像补丁为空，未记录更新。' };
         }
         return { text: '已暂存长期画像更新，将在本次回答成功后统一保存。' };
@@ -2534,17 +2562,7 @@ function createUserBookServiceForUser(
               .where(eq(readerProfileVersions.id, profileRow.currentVersionId))
               .limit(1);
             if (currentProfile) {
-              const nextProfile: ReaderProfile = {
-                ...currentProfile.profile,
-                knowledge: [...new Set([
-                  ...currentProfile.profile.knowledge,
-                  ...(outcome.readerProfilePatch.knowledge ?? []),
-                ])],
-                explanationPreferences: [...new Set([
-                  ...currentProfile.profile.explanationPreferences,
-                  ...(outcome.readerProfilePatch.explanation_preferences ?? []),
-                ])],
-              };
+              const nextProfile = applyReaderProfilePatch(currentProfile.profile, outcome.readerProfilePatch);
               profileUpdated =
                 JSON.stringify(nextProfile.knowledge) !== JSON.stringify(currentProfile.profile.knowledge)
                 || JSON.stringify(nextProfile.explanationPreferences)
