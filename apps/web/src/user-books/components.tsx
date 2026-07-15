@@ -7,7 +7,7 @@ import { EmptyState } from '../components/core/EmptyState';
 import { Kicker } from '../components/core/Kicker';
 import { bookCoverUrl } from '../library/api';
 import { LibraryChrome } from '../library/LibraryChrome';
-import type { UserBookSharedBook } from './api';
+import type { UserBookSharedBook } from './api/http';
 
 export function WorkflowPage({ book, kicker, title, children, hideHeader }: {
   book: UserBookSharedBook;
@@ -66,13 +66,19 @@ const BRIEFING_SECTIONS: Array<{ key: keyof Briefing; label: string; prep?: bool
   { key: 'readingAdvice', label: '建议你的读法', prep: true },
 ];
 
-export function BriefCard({ briefing }: { briefing: Briefing }) {
+export function BriefCard({
+  briefing,
+  pending = false,
+}: {
+  briefing: Partial<Briefing>;
+  pending?: boolean;
+}) {
   // Only render sections that actually carry text, so a briefing migrated from the legacy
   // free-text column (everything in bookIdentity, the rest empty) degrades to a single section
   // instead of showing three blank headings.
   const sections = BRIEFING_SECTIONS
     .map((section) => ({ ...section, text: briefing[section.key]?.trim() ?? '' }))
-    .filter((section) => section.text.length > 0);
+    .filter((section) => pending || section.text.length > 0);
   if (sections.length === 0) return null;
   return (
     <section className="brief-card">
@@ -81,7 +87,7 @@ export function BriefCard({ briefing }: { briefing: Briefing }) {
       {sections.map((section) => (
         <div className="brief-section" key={section.key} data-personalized={section.prep ? 'true' : undefined}>
           <h3>{section.label}</h3>
-          <p>{section.text}</p>
+          <p>{section.text || <span className="progressive-placeholder">正在整理…</span>}</p>
         </div>
       ))}
     </section>

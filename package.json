@@ -16,6 +16,7 @@
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",
     "test:ts": "vitest run",
+    "test:db": "vitest run --config apps/api/vitest.database.config.ts",
     "test:python": "python3 -m unittest discover -s tests -v",
     "test": "pnpm test:ts && pnpm test:python",
     "check": "pnpm typecheck && pnpm test && pnpm build"

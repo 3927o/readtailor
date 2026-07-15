@@ -80,6 +80,41 @@ describe('createAgentReadingSetupEngine', () => {
     ]);
   });
 
+  it('streams interview completion as briefing, strategy, then trial candidates', async () => {
+    const engine = createFakeReadingSetupEngine();
+    const eventTypes: string[] = [];
+    const outcome = await engine.runTurn({
+      sessionId: 'session-fake',
+      phase: 'interviewing',
+      askedCount: 99,
+      context: {
+        book: { title: 'Book' },
+        bookProfile: {
+          trial_candidates: [1, 2, 3].map((segment) => ({
+            section_id: 'chapter-1',
+            segment,
+            reason: `reason-${segment}`,
+          })),
+        },
+      },
+      onStream: (event) => eventTypes.push(event.type),
+    });
+
+    expect(outcome.type).toBe('completed');
+    expect(eventTypes).toEqual([
+      'speculative_reset',
+      'draft_started',
+      'briefing_delta',
+      'briefing_delta',
+      'briefing_delta',
+      'briefing_delta',
+      'strategy_delta',
+      'reading_node_added',
+      'reading_node_added',
+      'reading_node_added',
+    ]);
+  });
+
   it('streams all three trial fragments in fake mode', async () => {
     const engine = createFakeReadingSetupEngine();
     const events: Array<{ type: string; speculativeEpoch: number }> = [];

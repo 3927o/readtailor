@@ -2,8 +2,9 @@ import type { Briefing } from '@readtailor/contracts';
 import type {
   InterviewClientStreamEvent,
   InterviewOption,
-  StrategySnapshot,
-} from './api';
+  InterviewSnapshot,
+} from './api/interview';
+import type { StrategySnapshot } from './api/strategy';
 
 export interface InterviewStreamState {
   mode: 'idle' | 'question_streaming' | 'draft_streaming' | 'recovering' | 'error';
@@ -42,6 +43,7 @@ export const IDLE_INTERVIEW_STREAM: InterviewStreamState = {
 export type InterviewStreamAction =
   | { type: 'begin'; sufficiency: number | null }
   | { type: 'recover' }
+  | { type: 'reconcile'; snapshot: InterviewSnapshot }
   | { type: 'transport_error'; message: string }
   | { type: 'reset' }
   | { type: 'event'; event: InterviewClientStreamEvent };
@@ -74,6 +76,13 @@ export function interviewStreamReducer(
     return { ...IDLE_INTERVIEW_STREAM, mode: 'question_streaming', sufficiency: action.sufficiency };
   }
   if (action.type === 'recover') return { ...state, mode: 'recovering', error: null };
+  if (action.type === 'reconcile') {
+    if (action.snapshot.currentQuestion) return IDLE_INTERVIEW_STREAM;
+    if (action.snapshot.status === 'failed') {
+      return { ...state, mode: 'error', error: action.snapshot.errorSummary };
+    }
+    return state;
+  }
   if (action.type === 'transport_error') {
     return { ...state, mode: 'recovering', error: action.message };
   }

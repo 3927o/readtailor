@@ -49,7 +49,7 @@ const finalTrial: TrialSnapshot = {
   adjustmentCount: 0,
   adjustmentLimit: 5,
   canAdjust: false,
-  allViewed: false,
+  canAdopt: false,
   samples: [1, 2, 3].map((ordinal) => ({
     id: `segment-${ordinal}`,
     ordinal,

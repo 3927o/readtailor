@@ -12,6 +12,10 @@ import {
   BookCatalogResponseSchema,
   BookNormalizationStatusSchema,
   CurrentReadingSetupOperationResponseSchema,
+  type CurrentStrategyReviewResponse,
+  CurrentStrategyReviewResponseSchema,
+  type CurrentTrialReviewResponse,
+  CurrentTrialReviewResponseSchema,
   AdoptTrialRequestSchema,
   AdoptTrialResponseSchema,
   ApproveStrategyRequestSchema,
@@ -53,7 +57,7 @@ import {
   ReadingStatsQuerySchema,
   ReadingSetupOperationResponseSchema,
   SharedBookSchema,
-  StrategyReviewResponseSchema,
+  StrategyReviewSnapshotSchema,
   type StrategyRevisionStreamEvent,
   SubmitInterviewAnswerRequestSchema,
   SubmitStrategyFeedbackRequestSchema,
@@ -61,7 +65,7 @@ import {
   UpdateHighlightNoteRequestSchema,
   SystemChatRequestSchema,
   SystemJobSchema,
-  TrialReviewResponseSchema,
+  TrialReviewSnapshotSchema,
   type TrialSelectionStreamEvent,
   UserBookDetailResponseSchema,
   UserBookShelfResponseSchema,
@@ -1151,13 +1155,15 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     {
       schema: {
         params: userBookIdParams,
-        response: { 200: StrategyReviewResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+        response: { 200: CurrentStrategyReviewResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
       },
     },
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).strategyState(request.params.id);
+        return await deps.userBooks
+          .forUser(request.authUser!.id, { requestId: request.id })
+          .strategyState(request.params.id) as CurrentStrategyReviewResponse;
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -1169,7 +1175,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     {
       schema: {
         params: userBookStrategyVersionParams,
-        response: { 200: StrategyReviewResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+        response: { 200: StrategyReviewSnapshotSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
       },
     },
     async (request, reply) => {
@@ -1232,13 +1238,15 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     {
       schema: {
         params: userBookIdParams,
-        response: { 200: TrialReviewResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+        response: { 200: CurrentTrialReviewResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
       },
     },
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).trialState(request.params.id);
+        return await deps.userBooks
+          .forUser(request.authUser!.id, { requestId: request.id })
+          .trialState(request.params.id) as CurrentTrialReviewResponse;
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -1250,7 +1258,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     {
       schema: {
         params: userBookTrialRevisionParams,
-        response: { 200: TrialReviewResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+        response: { 200: TrialReviewSnapshotSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
       },
     },
     async (request, reply) => {
@@ -1272,13 +1280,15 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       schema: {
         params: userBookIdParams,
         body: Type.Object({}),
-        response: { 200: TrialReviewResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+        response: { 200: CurrentTrialReviewResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
       },
     },
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).retryTrial(request.params.id);
+        return await deps.userBooks
+          .forUser(request.authUser!.id, { requestId: request.id })
+          .retryTrial(request.params.id) as CurrentTrialReviewResponse;
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -1291,13 +1301,15 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       schema: {
         params: userBookIdParams,
         body: MarkTrialSegmentViewedRequestSchema,
-        response: { 200: TrialReviewResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+        response: { 200: CurrentTrialReviewResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
       },
     },
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).markTrialViewed(request.params.id, request.body);
+        return await deps.userBooks
+          .forUser(request.authUser!.id, { requestId: request.id })
+          .markTrialViewed(request.params.id, request.body) as CurrentTrialReviewResponse;
       } catch (error) {
         return userBookFailure(error, reply);
       }

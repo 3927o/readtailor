@@ -1,7 +1,7 @@
 import { useId } from 'react';
 import type { ProvisionalTrialSample } from '@readtailor/contracts';
 import { prepareStandaloneContent } from '../reader/content';
-import type { TrialSample } from './api';
+import type { TrialSample } from './api/trial';
 import { AssistanceContent } from './components';
 import type { TrialOrdinal, TrialSelectionMode } from './trialSelectionStreamState';
 

@@ -397,13 +397,15 @@ export const TrialCandidateSchema = Type.Object({
 });
 export type TrialCandidate = Static<typeof TrialCandidateSchema>;
 
-export const ReadingNodePreviewSchema = Type.Object({
+const READING_NODE_PREVIEW_FIELDS = {
   ordinal: Type.Integer({ minimum: 1, maximum: 3 }),
   sectionId: Type.String({ minLength: 1 }),
   segment: Type.Integer({ minimum: 1 }),
   chapterPath: Type.Array(Type.String({ minLength: 1 })),
   reason: Type.String({ minLength: 1 }),
-});
+};
+
+export const ReadingNodePreviewSchema = Type.Object(READING_NODE_PREVIEW_FIELDS);
 export type ReadingNodePreview = Static<typeof ReadingNodePreviewSchema>;
 
 // The tailoring core shared by the full setup Strategy (which adds trialCandidates) and the
@@ -645,7 +647,7 @@ export const StrategyDraftStatusSchema = Type.Union([
 ]);
 export type StrategyDraftStatus = Static<typeof StrategyDraftStatusSchema>;
 
-export const StrategyDraftSchema = Type.Object({
+const STRATEGY_DRAFT_FIELDS = {
   id: Type.String(),
   version: Type.Integer({ minimum: 1 }),
   status: StrategyDraftStatusSchema,
@@ -654,19 +656,124 @@ export const StrategyDraftSchema = Type.Object({
   strategy: StrategySchema,
   createdAt: Type.String(),
   approvedForTrialAt: Type.Union([Type.String(), Type.Null()]),
-});
+};
+
+export const StrategyDraftSchema = Type.Object(STRATEGY_DRAFT_FIELDS);
 export type StrategyDraft = Static<typeof StrategyDraftSchema>;
+
+function readingNodePreviewAtOrdinal<const Ordinal extends 1 | 2 | 3>(ordinal: Ordinal) {
+  return Type.Object({
+    ...READING_NODE_PREVIEW_FIELDS,
+    ordinal: Type.Literal(ordinal),
+  });
+}
+
+const ORDERED_READING_NODE_PREVIEWS_SCHEMA = Type.Tuple([
+  readingNodePreviewAtOrdinal(1),
+  readingNodePreviewAtOrdinal(2),
+  readingNodePreviewAtOrdinal(3),
+]);
 
 export const StrategyReviewResponseSchema = Type.Object({
   userBookId: Type.String(),
   workflowStatus: UserBookWorkflowStatusSchema,
   draft: StrategyDraftSchema,
-  trialCandidatePreviews: Type.Array(ReadingNodePreviewSchema, { minItems: 3, maxItems: 3 }),
+  trialCandidatePreviews: Type.Unsafe<ReadingNodePreview[]>(ORDERED_READING_NODE_PREVIEWS_SCHEMA),
   adjustmentCount: Type.Integer({ minimum: 0, maximum: 5 }),
   adjustmentLimit: Type.Integer({ minimum: 1 }),
   canAdjust: Type.Boolean(),
 });
 export type StrategyReviewResponse = Static<typeof StrategyReviewResponseSchema>;
+
+// Exact-version reads intentionally retain the broad historical projection: an old draft can be
+// superseded while the book has already moved to a later workflow stage. Current reads and stream
+// terminal events use the discriminated schema below instead.
+export const StrategyReviewSnapshotSchema = StrategyReviewResponseSchema;
+export type StrategyReviewSnapshot = StrategyReviewResponse;
+
+const CURRENT_STRATEGY_REVIEW_FIELDS = {
+  userBookId: Type.String(),
+  trialCandidatePreviews: ORDERED_READING_NODE_PREVIEWS_SCHEMA,
+};
+
+const CURRENT_ADJUSTABLE_REVIEW_FIELDS = {
+  adjustmentCount: Type.Integer({ minimum: 0, maximum: 4 }),
+  adjustmentLimit: Type.Literal(5),
+  canAdjust: Type.Literal(true),
+};
+
+const CURRENT_EXHAUSTED_REVIEW_FIELDS = {
+  adjustmentCount: Type.Literal(5),
+  adjustmentLimit: Type.Literal(5),
+  canAdjust: Type.Literal(false),
+};
+
+const CURRENT_NON_ADJUSTABLE_REVIEW_FIELDS = {
+  adjustmentCount: Type.Integer({ minimum: 0, maximum: 5 }),
+  adjustmentLimit: Type.Literal(5),
+  canAdjust: Type.Literal(false),
+};
+
+const CURRENT_DRAFT_STRATEGY_SCHEMA = Type.Object({
+  ...STRATEGY_DRAFT_FIELDS,
+  status: Type.Literal('draft'),
+  approvedForTrialAt: Type.Null(),
+});
+
+const CURRENT_APPROVED_STRATEGY_SCHEMA = Type.Object({
+  ...STRATEGY_DRAFT_FIELDS,
+  status: Type.Literal('approved_for_trial'),
+  approvedForTrialAt: Type.String(),
+});
+
+const CURRENT_CONFIRMED_STRATEGY_SCHEMA = Type.Object({
+  ...STRATEGY_DRAFT_FIELDS,
+  status: Type.Literal('confirmed'),
+  approvedForTrialAt: Type.String(),
+});
+
+const CURRENT_STRATEGY_REVIEW_RESPONSE_SCHEMA = Type.Union([
+  Type.Object({
+    ...CURRENT_STRATEGY_REVIEW_FIELDS,
+    ...CURRENT_ADJUSTABLE_REVIEW_FIELDS,
+    workflowStatus: Type.Literal('strategy_review'),
+    draft: CURRENT_DRAFT_STRATEGY_SCHEMA,
+  }),
+  Type.Object({
+    ...CURRENT_STRATEGY_REVIEW_FIELDS,
+    ...CURRENT_EXHAUSTED_REVIEW_FIELDS,
+    workflowStatus: Type.Literal('strategy_review'),
+    draft: CURRENT_DRAFT_STRATEGY_SCHEMA,
+  }),
+  Type.Object({
+    ...CURRENT_STRATEGY_REVIEW_FIELDS,
+    ...CURRENT_NON_ADJUSTABLE_REVIEW_FIELDS,
+    workflowStatus: Type.Literal('trial_generating'),
+    draft: CURRENT_APPROVED_STRATEGY_SCHEMA,
+  }),
+  Type.Object({
+    ...CURRENT_STRATEGY_REVIEW_FIELDS,
+    ...CURRENT_NON_ADJUSTABLE_REVIEW_FIELDS,
+    workflowStatus: Type.Literal('trial_generation_failed'),
+    draft: CURRENT_APPROVED_STRATEGY_SCHEMA,
+  }),
+  Type.Object({
+    ...CURRENT_STRATEGY_REVIEW_FIELDS,
+    ...CURRENT_NON_ADJUSTABLE_REVIEW_FIELDS,
+    workflowStatus: Type.Literal('trial_review'),
+    draft: CURRENT_APPROVED_STRATEGY_SCHEMA,
+  }),
+  Type.Object({
+    ...CURRENT_STRATEGY_REVIEW_FIELDS,
+    ...CURRENT_NON_ADJUSTABLE_REVIEW_FIELDS,
+    workflowStatus: Type.Literal('active_reading'),
+    draft: CURRENT_CONFIRMED_STRATEGY_SCHEMA,
+  }),
+]);
+export type CurrentStrategyReviewResponse = Static<
+  typeof CURRENT_STRATEGY_REVIEW_RESPONSE_SCHEMA
+>;
+export const CurrentStrategyReviewResponseSchema = CURRENT_STRATEGY_REVIEW_RESPONSE_SCHEMA;
 
 export const SubmitStrategyFeedbackRequestSchema = Type.Object({
   strategyDraftVersionId: UuidSchema,
@@ -744,29 +851,62 @@ const TRIAL_SEGMENT_FIELDS = {
   viewedAt: Type.Union([Type.String(), Type.Null()]),
 };
 
+const PENDING_TRIAL_SEGMENT_SCHEMA = Type.Object({
+  ...TRIAL_SEGMENT_FIELDS,
+  status: Type.Literal('pending'),
+  result: Type.Null(),
+});
+const GENERATING_TRIAL_SEGMENT_SCHEMA = Type.Object({
+  ...TRIAL_SEGMENT_FIELDS,
+  status: Type.Literal('generating'),
+  result: Type.Null(),
+});
+const READY_TRIAL_SEGMENT_SCHEMA = Type.Object({
+  ...TRIAL_SEGMENT_FIELDS,
+  status: Type.Literal('ready'),
+  result: GenerationResultSchema,
+});
+const FAILED_TRIAL_SEGMENT_SCHEMA = Type.Object({
+  ...TRIAL_SEGMENT_FIELDS,
+  status: Type.Literal('failed'),
+  result: Type.Null(),
+});
+
 export const TrialSegmentSchema = Type.Union([
-  Type.Object({
-    ...TRIAL_SEGMENT_FIELDS,
-    status: Type.Literal('pending'),
-    result: Type.Null(),
-  }),
-  Type.Object({
-    ...TRIAL_SEGMENT_FIELDS,
-    status: Type.Literal('generating'),
-    result: Type.Null(),
-  }),
-  Type.Object({
-    ...TRIAL_SEGMENT_FIELDS,
-    status: Type.Literal('ready'),
-    result: GenerationResultSchema,
-  }),
-  Type.Object({
-    ...TRIAL_SEGMENT_FIELDS,
-    status: Type.Literal('failed'),
-    result: Type.Null(),
-  }),
+  PENDING_TRIAL_SEGMENT_SCHEMA,
+  GENERATING_TRIAL_SEGMENT_SCHEMA,
+  READY_TRIAL_SEGMENT_SCHEMA,
+  FAILED_TRIAL_SEGMENT_SCHEMA,
 ]);
 export type TrialSegment = Static<typeof TrialSegmentSchema>;
+
+function trialSegmentAtOrdinal<const Ordinal extends 1 | 2 | 3>(ordinal: Ordinal) {
+  const fields = { ...TRIAL_SEGMENT_FIELDS, ordinal: Type.Literal(ordinal) };
+  return Type.Union([
+    Type.Object({ ...fields, status: Type.Literal('pending'), result: Type.Null() }),
+    Type.Object({ ...fields, status: Type.Literal('generating'), result: Type.Null() }),
+    Type.Object({ ...fields, status: Type.Literal('ready'), result: GenerationResultSchema }),
+    Type.Object({ ...fields, status: Type.Literal('failed'), result: Type.Null() }),
+  ], {
+    // fast-json-stringify requires tuple items to expose their top-level JSON type.
+    type: 'object',
+  });
+}
+
+function readyTrialSegmentAtOrdinal<const Ordinal extends 1 | 2 | 3>(ordinal: Ordinal) {
+  return Type.Object({
+    ...TRIAL_SEGMENT_FIELDS,
+    ordinal: Type.Literal(ordinal),
+    status: Type.Literal('ready'),
+    result: GenerationResultSchema,
+  });
+}
+
+const ORDERED_TRIAL_SEGMENTS_SCHEMA = Type.Tuple([
+  trialSegmentAtOrdinal(1),
+  trialSegmentAtOrdinal(2),
+  trialSegmentAtOrdinal(3),
+]);
 
 export const TrialReviewResponseSchema = Type.Object({
   userBookId: Type.String(),
@@ -775,13 +915,74 @@ export const TrialReviewResponseSchema = Type.Object({
   revision: Type.Integer({ minimum: 1 }),
   status: TrialRevisionStatusSchema,
   strategyDraftVersionId: Type.String(),
-  segments: Type.Array(TrialSegmentSchema, { minItems: 3, maxItems: 3 }),
+  segments: Type.Unsafe<TrialSegment[]>(ORDERED_TRIAL_SEGMENTS_SCHEMA),
   adjustmentCount: Type.Integer({ minimum: 0, maximum: 5 }),
   adjustmentLimit: Type.Integer({ minimum: 1 }),
   canAdjust: Type.Boolean(),
   canAdopt: Type.Boolean(),
 });
 export type TrialReviewResponse = Static<typeof TrialReviewResponseSchema>;
+
+export const TrialReviewSnapshotSchema = TrialReviewResponseSchema;
+export type TrialReviewSnapshot = TrialReviewResponse;
+
+const ORDERED_READY_TRIAL_SEGMENTS_SCHEMA = Type.Tuple([
+  readyTrialSegmentAtOrdinal(1),
+  readyTrialSegmentAtOrdinal(2),
+  readyTrialSegmentAtOrdinal(3),
+]);
+
+const CURRENT_TRIAL_REVIEW_FIELDS = {
+  userBookId: Type.String(),
+  trialRevisionId: Type.String(),
+  revision: Type.Integer({ minimum: 1 }),
+  strategyDraftVersionId: Type.String(),
+};
+
+const CURRENT_TRIAL_REVIEW_RESPONSE_SCHEMA = Type.Union([
+  Type.Object({
+    ...CURRENT_TRIAL_REVIEW_FIELDS,
+    ...CURRENT_NON_ADJUSTABLE_REVIEW_FIELDS,
+    workflowStatus: Type.Literal('trial_generating'),
+    status: Type.Literal('generating'),
+    segments: ORDERED_TRIAL_SEGMENTS_SCHEMA,
+    canAdopt: Type.Literal(false),
+  }),
+  Type.Object({
+    ...CURRENT_TRIAL_REVIEW_FIELDS,
+    ...CURRENT_NON_ADJUSTABLE_REVIEW_FIELDS,
+    workflowStatus: Type.Literal('trial_generation_failed'),
+    status: Type.Literal('failed'),
+    segments: ORDERED_TRIAL_SEGMENTS_SCHEMA,
+    canAdopt: Type.Literal(false),
+  }),
+  Type.Object({
+    ...CURRENT_TRIAL_REVIEW_FIELDS,
+    ...CURRENT_ADJUSTABLE_REVIEW_FIELDS,
+    workflowStatus: Type.Literal('trial_review'),
+    status: Type.Literal('published'),
+    segments: ORDERED_READY_TRIAL_SEGMENTS_SCHEMA,
+    canAdopt: Type.Literal(true),
+  }),
+  Type.Object({
+    ...CURRENT_TRIAL_REVIEW_FIELDS,
+    ...CURRENT_EXHAUSTED_REVIEW_FIELDS,
+    workflowStatus: Type.Literal('trial_review'),
+    status: Type.Literal('published'),
+    segments: ORDERED_READY_TRIAL_SEGMENTS_SCHEMA,
+    canAdopt: Type.Literal(true),
+  }),
+  Type.Object({
+    ...CURRENT_TRIAL_REVIEW_FIELDS,
+    ...CURRENT_NON_ADJUSTABLE_REVIEW_FIELDS,
+    workflowStatus: Type.Literal('active_reading'),
+    status: Type.Literal('adopted'),
+    segments: ORDERED_READY_TRIAL_SEGMENTS_SCHEMA,
+    canAdopt: Type.Literal(false),
+  }),
+]);
+export type CurrentTrialReviewResponse = Static<typeof CURRENT_TRIAL_REVIEW_RESPONSE_SCHEMA>;
+export const CurrentTrialReviewResponseSchema = CURRENT_TRIAL_REVIEW_RESPONSE_SCHEMA;
 
 export const ProvisionalTrialSampleSchema = Type.Union([
   Type.Object({
@@ -1053,7 +1254,7 @@ export const InterviewStreamEventSchema = Type.Union([
   Type.Object({
     ...INTERVIEW_STREAM_ENVELOPE,
     type: Type.Literal('draft_final'),
-    strategy: StrategyReviewResponseSchema,
+    strategy: Type.Unsafe<StrategyReviewResponse>(CurrentStrategyReviewResponseSchema),
   }),
   Type.Object({
     ...INTERVIEW_STREAM_ENVELOPE,
@@ -1114,7 +1315,7 @@ export const StrategyRevisionStreamEventSchema = Type.Union([
   Type.Object({
     ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
     type: Type.Literal('revision_final'),
-    strategy: StrategyReviewResponseSchema,
+    strategy: Type.Unsafe<StrategyReviewResponse>(CurrentStrategyReviewResponseSchema),
   }),
   Type.Object({
     ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
@@ -1161,7 +1362,7 @@ export const TrialSelectionStreamEventSchema = Type.Union([
     ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
     type: Type.Literal('trial_created'),
     draftId: UuidSchema,
-    trial: TrialReviewResponseSchema,
+    trial: Type.Unsafe<TrialReviewResponse>(CurrentTrialReviewResponseSchema),
   }),
   Type.Object({
     ...READING_SETUP_OPERATION_STREAM_ENVELOPE,

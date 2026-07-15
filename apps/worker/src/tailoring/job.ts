@@ -378,6 +378,105 @@ export async function discardUnexpectedFormalGeneration(
   return discarded.length > 0;
 }
 
+type ReadyGenerationResult = NonNullable<(typeof nodeGenerations.$inferSelect)['result']>;
+
+export async function finalizeContentGeneration(options: {
+  db: Database;
+  generation: typeof nodeGenerations.$inferSelect;
+  trialSegment?: typeof trialSegments.$inferSelect;
+  claimedAttempt: number;
+  result: ReadyGenerationResult;
+}): Promise<void> {
+  await options.db.transaction(async (tx) => {
+    if (options.generation.generationScope === 'formal') {
+      if (await discardUnexpectedFormalGeneration(tx, options.generation)) return;
+      await tx
+        .update(nodeGenerations)
+        .set({
+          status: 'ready',
+          result: options.result,
+          completedAt: new Date(),
+          errorSummary: null,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(nodeGenerations.id, options.generation.id),
+          eq(nodeGenerations.status, 'generating'),
+          eq(nodeGenerations.attemptCount, options.claimedAttempt),
+        ));
+      return;
+    }
+    if (!options.trialSegment) return;
+    const graph = await lockTrialGenerationGraph(tx, options.generation, {
+      id: options.trialSegment.id,
+      trialRevisionId: options.trialSegment.trialRevisionId,
+    });
+    if (!graphIsCurrent(graph)) {
+      await supersedeStaleTrialGeneration(
+        tx,
+        options.generation.id,
+        options.claimedAttempt,
+      );
+      return;
+    }
+    if (
+      graph.generation.status !== 'generating'
+      || graph.generation.attemptCount !== options.claimedAttempt
+      || graph.segment.status !== 'generating'
+    ) return;
+    const [current] = await tx
+      .update(nodeGenerations)
+      .set({
+        status: 'ready',
+        result: options.result,
+        completedAt: new Date(),
+        errorSummary: null,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(nodeGenerations.id, graph.generation.id),
+        eq(nodeGenerations.status, 'generating'),
+        eq(nodeGenerations.attemptCount, options.claimedAttempt),
+      ))
+      .returning({ id: nodeGenerations.id });
+    if (!current) return;
+    const [changedSegment] = await tx
+      .update(trialSegments)
+      .set({ status: 'ready', updatedAt: new Date() })
+      .where(and(
+        eq(trialSegments.id, graph.segment.id),
+        eq(trialSegments.status, 'generating'),
+      ))
+      .returning({ id: trialSegments.id });
+    if (!changedSegment) throw new Error('trial segment completion lost its generation claim');
+    const siblings = await tx
+      .select({ ordinal: trialSegments.ordinal, status: trialSegments.status })
+      .from(trialSegments)
+      .where(eq(trialSegments.trialRevisionId, graph.revision.id));
+    if (!shouldPublishTrialRevision(siblings)) return;
+    const [revision] = await tx
+      .update(trialRevisions)
+      .set({ status: 'published', publishedAt: new Date(), updatedAt: new Date() })
+      .where(and(
+        eq(trialRevisions.id, graph.revision.id),
+        eq(trialRevisions.status, 'generating'),
+      ))
+      .returning({ id: trialRevisions.id });
+    if (!revision) return;
+    const [advanced] = await tx
+      .update(userBooks)
+      .set({ workflowStatus: 'trial_review', updatedAt: new Date() })
+      .where(and(
+        eq(userBooks.id, graph.userBook.id),
+        eq(userBooks.currentStrategyDraftVersionId, graph.draft.id),
+        eq(userBooks.currentTrialRevisionId, graph.revision.id),
+        eq(userBooks.workflowStatus, 'trial_generating'),
+      ))
+      .returning({ id: userBooks.id });
+    if (!advanced) throw new Error('trial revision published after its current pointer changed');
+  });
+}
+
 export async function executeContentGeneration(options: {
   db: Database;
   storage: ObjectStorage;
@@ -649,77 +748,12 @@ export async function executeContentGeneration(options: {
       })),
       afterReading: generated.after_reading,
     };
-    await options.db.transaction(async (tx) => {
-      if (row.generation.generationScope === 'formal') {
-        if (await discardUnexpectedFormalGeneration(tx, row.generation)) return;
-        await tx
-          .update(nodeGenerations)
-          .set({ status: 'ready', result, completedAt: new Date(), errorSummary: null, updatedAt: new Date() })
-          .where(and(
-            eq(nodeGenerations.id, row.generation.id),
-            eq(nodeGenerations.status, 'generating'),
-            eq(nodeGenerations.attemptCount, claimedAttempt),
-          ));
-        return;
-      }
-      if (!segment) return;
-      const graph = await lockTrialGenerationGraph(tx, row.generation, {
-        id: segment.id,
-        trialRevisionId: segment.trialRevisionId,
-      });
-      if (!graphIsCurrent(graph)) {
-        await supersedeStaleTrialGeneration(tx, row.generation.id, claimedAttempt);
-        return;
-      }
-      if (
-        graph.generation.status !== 'generating'
-        || graph.generation.attemptCount !== claimedAttempt
-        || graph.segment.status !== 'generating'
-      ) return;
-      const [current] = await tx
-        .update(nodeGenerations)
-        .set({ status: 'ready', result, completedAt: new Date(), errorSummary: null, updatedAt: new Date() })
-        .where(and(
-          eq(nodeGenerations.id, graph.generation.id),
-          eq(nodeGenerations.status, 'generating'),
-          eq(nodeGenerations.attemptCount, claimedAttempt),
-        ))
-        .returning({ id: nodeGenerations.id });
-      if (!current) return;
-      const [changedSegment] = await tx
-        .update(trialSegments)
-        .set({ status: 'ready', updatedAt: new Date() })
-        .where(and(
-          eq(trialSegments.id, graph.segment.id),
-          eq(trialSegments.status, 'generating'),
-        ))
-        .returning({ id: trialSegments.id });
-      if (!changedSegment) throw new Error('trial segment completion lost its generation claim');
-      const siblings = await tx
-        .select({ ordinal: trialSegments.ordinal, status: trialSegments.status })
-        .from(trialSegments)
-        .where(eq(trialSegments.trialRevisionId, graph.revision.id));
-      if (!shouldPublishTrialRevision(siblings)) return;
-      const [revision] = await tx
-        .update(trialRevisions)
-        .set({ status: 'published', publishedAt: new Date(), updatedAt: new Date() })
-        .where(and(
-          eq(trialRevisions.id, graph.revision.id),
-          eq(trialRevisions.status, 'generating'),
-        ))
-        .returning({ id: trialRevisions.id });
-      if (!revision) return;
-      const [advanced] = await tx
-        .update(userBooks)
-        .set({ workflowStatus: 'trial_review', updatedAt: new Date() })
-        .where(and(
-          eq(userBooks.id, graph.userBook.id),
-          eq(userBooks.currentStrategyDraftVersionId, graph.draft.id),
-          eq(userBooks.currentTrialRevisionId, graph.revision.id),
-          eq(userBooks.workflowStatus, 'trial_generating'),
-        ))
-        .returning({ id: userBooks.id });
-      if (!advanced) throw new Error('trial revision published after its current pointer changed');
+    await finalizeContentGeneration({
+      db: options.db,
+      generation: row.generation,
+      ...(segment ? { trialSegment: segment } : {}),
+      claimedAttempt,
+      result,
     });
   } catch (error) {
     throw errorForGenerationAttempt(error, claimedAttempt);
