@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { asc, eq } from 'drizzle-orm';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Strategy, StrategyReviewResponse } from '@readtailor/contracts';
 import type { ReadingSetupOutcome, ReadingStrategy } from '@readtailor/agent-kit';
 import {
@@ -273,6 +273,98 @@ describePostgres(`strategy revision service${skipReason}`, () => {
       leaseId: null,
     });
     expect(feedback).toHaveLength(1);
+  });
+
+  it('replays a completed operation by result pointer without calling the agent again', async () => {
+    const graph = await strategyReviewGraph(getTestDatabase().db);
+    const runTurn = vi.fn<ReadingSetupEngine['runTurn']>(async () => revisedOutcome);
+    const { db, operationStore, service } = createHarness({ runTurn });
+    const input = {
+      strategyDraftVersionId: graph.strategyDraftVersionId,
+      feedback: '验证完成结果重放',
+      idempotencyKey: 'strategy-completed-replay',
+    };
+    const operation = await service.resolveStrategyFeedback(graph.userBookId, input);
+
+    await service.executeOperation(operation);
+    const completed = await operationStore.observeById(graph.userBookId, operation.id);
+    const replay = await service.resolveStrategyFeedback(graph.userBookId, input);
+    await service.executeOperation(replay);
+
+    const afterReplay = await operationStore.observeById(graph.userBookId, operation.id);
+    const drafts = await db
+      .select()
+      .from(strategyDraftVersions)
+      .where(eq(strategyDraftVersions.userBookId, graph.userBookId));
+
+    expect(runTurn).toHaveBeenCalledOnce();
+    expect(replay.id).toBe(operation.id);
+    expect(replay).toMatchObject({
+      status: 'completed',
+      resultStrategyDraftVersionId: completed?.operation.resultStrategyDraftVersionId,
+    });
+    expect(afterReplay?.operation.resultStrategyDraftVersionId)
+      .toBe(completed?.operation.resultStrategyDraftVersionId);
+    expect(drafts).toHaveLength(2);
+  });
+
+  it('atomically supersedes a published trial and its draft after successful feedback', async () => {
+    const graph = await trialReviewGraph(getTestDatabase().db);
+    const runTurn = vi.fn<ReadingSetupEngine['runTurn']>(async () => revisedOutcome);
+    const { db, operationStore, service } = createHarness({ runTurn });
+    const operation = await service.resolveTrialFeedback(graph.userBookId, {
+      trialRevisionId: graph.trialRevisionId,
+      feedback: '根据试读重新调整策略',
+      idempotencyKey: 'trial-feedback-success',
+    });
+
+    await service.executeOperation(operation);
+
+    const [book] = await db.select().from(userBooks).where(eq(userBooks.id, graph.userBookId));
+    const drafts = await db
+      .select()
+      .from(strategyDraftVersions)
+      .where(eq(strategyDraftVersions.userBookId, graph.userBookId))
+      .orderBy(asc(strategyDraftVersions.version));
+    const [trial] = await db
+      .select()
+      .from(trialRevisions)
+      .where(eq(trialRevisions.id, graph.trialRevisionId));
+    const generations = await db
+      .select()
+      .from(nodeGenerations)
+      .where(eq(nodeGenerations.userBookId, graph.userBookId));
+    const observed = await operationStore.observeById(graph.userBookId, operation.id);
+
+    expect(runTurn).toHaveBeenCalledOnce();
+    expect(trial?.status).toBe('superseded');
+    expect(trial?.supersededAt).toBeInstanceOf(Date);
+    expect(generations).toHaveLength(3);
+    expect(generations.every((generation) => (
+      generation.status === 'superseded'
+      && generation.result === null
+      && generation.completedAt instanceof Date
+    ))).toBe(true);
+    expect(drafts).toHaveLength(2);
+    expect(drafts[0]?.status).toBe('superseded');
+    expect(drafts[1]).toMatchObject({
+      version: 2,
+      status: 'draft',
+      userFacingSummary: '修订后的处理方式',
+    });
+    expect(book).toMatchObject({
+      workflowStatus: 'strategy_review',
+      currentStrategyDraftVersionId: drafts[1]!.id,
+      currentTrialRevisionId: null,
+      adjustmentCount: 1,
+    });
+    expect(observed?.operation).toMatchObject({
+      status: 'completed',
+      source: 'trial_feedback',
+      baseTrialRevisionId: graph.trialRevisionId,
+      resultStrategyDraftVersionId: drafts[1]!.id,
+      leaseId: null,
+    });
   });
 
   it('keeps a published trial adoptable when trial feedback generation fails', async () => {

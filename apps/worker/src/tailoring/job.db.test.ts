@@ -37,6 +37,50 @@ async function loadFinalizeInput(db: Database, generationId: string) {
 }
 
 describePostgres(`trial generation finalizers PostgreSQL integration${skipReason}`, () => {
+  it('fences an attempt 1 finalizer after the generation advances to attempt 2', async () => {
+    const { db } = getTestDatabase();
+    const graph = await trialGeneratingGraph(db);
+    const staleInput = await loadFinalizeInput(db, graph.nodeGenerationIds[0]!);
+    await db
+      .update(nodeGenerations)
+      .set({ attemptCount: 2, startedAt: new Date(), updatedAt: new Date() })
+      .where(eq(nodeGenerations.id, staleInput.generation.id));
+
+    await finalizeContentGeneration({
+      db,
+      ...staleInput,
+      claimedAttempt: 1,
+      result,
+    });
+
+    const [generation] = await db
+      .select()
+      .from(nodeGenerations)
+      .where(eq(nodeGenerations.id, staleInput.generation.id));
+    const [segment] = await db
+      .select()
+      .from(trialSegments)
+      .where(eq(trialSegments.id, staleInput.trialSegment.id));
+    const [revision] = await db
+      .select()
+      .from(trialRevisions)
+      .where(eq(trialRevisions.id, graph.trialRevisionId));
+    const [book] = await db
+      .select()
+      .from(userBooks)
+      .where(eq(userBooks.id, graph.userBookId));
+
+    expect(generation).toMatchObject({
+      status: 'generating',
+      attemptCount: 2,
+      result: null,
+      completedAt: null,
+    });
+    expect(segment?.status).toBe('generating');
+    expect(revision).toMatchObject({ status: 'generating', publishedAt: null });
+    expect(book?.workflowStatus).toBe('trial_generating');
+  });
+
   it('publishes only after 3/3 ready and publishes once under concurrent finalization', async () => {
     const { db } = getTestDatabase();
     const graph = await trialGeneratingGraph(db);
