@@ -27,6 +27,7 @@
     "bullmq": "^5.56.0",
     "cheerio": "^1.2.0",
     "drizzle-orm": "^0.44.0",
+    "e2b-code-interpreter-ppio": "npm:@e2b/code-interpreter@1.2.0-beta.4",
     "fastify": "^5.4.0",
     "ioredis": "5.10.1",
     "pino": "^9.7.0",

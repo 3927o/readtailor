@@ -281,7 +281,7 @@ function createTools(
       name: 'run_shell',
       label: 'Run exploration shell',
       description:
-        '在隔离的 E2B 中以低权限用户运行 Shell 命令来探索 EPUB。cwd=/tmp/readtailor/work，原 EPUB 位于 /tmp/readtailor/source/source.epub，解包文件位于 /tmp/readtailor/source/unpacked；source/spec/tools 只读且网络不可用，正式执行和校验仍须使用专用工具。',
+        '在隔离的远程沙箱中以低权限用户运行 Shell 命令来探索 EPUB。cwd=/tmp/readtailor/work，原 EPUB 位于 /tmp/readtailor/source/source.epub，解包文件位于 /tmp/readtailor/source/unpacked；source/spec/tools 只读，不得依赖或使用网络，正式执行和校验仍须使用专用工具。',
       parameters: Type.Object({
         command: Type.String({ minLength: 1, maxLength: 20_000 }),
         timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 120 })),

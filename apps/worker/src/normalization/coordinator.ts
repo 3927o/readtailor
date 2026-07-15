@@ -16,7 +16,7 @@ import {
 } from '@readtailor/normalized-book';
 import { timeAgentCall, type PerfSink } from '@readtailor/observability';
 import type { ObjectStorage } from '@readtailor/storage';
-import { createE2BNormalizationSandbox } from './e2b-sandbox';
+import { createNormalizationSandbox } from './e2b-sandbox';
 import {
   createNormalizationRepository,
   type NormalizationRepository,
@@ -24,6 +24,7 @@ import {
 import type {
   NormalizationArtifact,
   NormalizationArtifactSink,
+  NormalizationSandboxConfig,
   NormalizationSandboxSession,
 } from './sandbox';
 
@@ -109,7 +110,7 @@ export function classifyNormalizationFailure(error: unknown): NormalizationFailu
   const message = error instanceof Error ? error.message : String(error);
   if (/timed out|turn limit|aborted/i.test(message)) return 'timeout';
   if (/nb_check|validation|blocking error|inventory/i.test(message)) return 'validation_failed';
-  if (/E2B|sandbox|model|fetch|network/i.test(message)) return 'external_error';
+  if (/E2B|PPIO|sandbox|model|fetch|network/i.test(message)) return 'external_error';
   return 'internal_error';
 }
 
@@ -119,8 +120,7 @@ export async function runFormalNormalization(options: {
   normalizationRunId: string;
   sourceEpub: Uint8Array;
   repoRoot: string;
-  e2bApiKey: string;
-  e2bTemplate?: string;
+  sandbox: NormalizationSandboxConfig;
   modelApiBaseUrl: string;
   modelApiKey: string;
   modelName: string;
@@ -145,7 +145,7 @@ export async function runFormalNormalization(options: {
     const sessionId = randomUUID();
     const started = await repository.startAttempt({
       normalizationRunId: options.normalizationRunId,
-      sandboxProvider: 'e2b',
+      sandboxProvider: options.sandbox.provider,
       agentSessionId: sessionId,
       agentModel: options.modelName,
       sourceEpubSha256: sha256(options.sourceEpub),
@@ -170,18 +170,22 @@ export async function runFormalNormalization(options: {
             attemptNo: started.attemptNo,
             artifactSink: recorder.sink,
           })
-        : await createE2BNormalizationSandbox({
-            apiKey: options.e2bApiKey,
+        : await createNormalizationSandbox({
+            config: options.sandbox,
             sourceEpub: options.sourceEpub,
             repoRoot: options.repoRoot,
             attemptId: started.id,
-            ...(options.e2bTemplate ? { template: options.e2bTemplate } : {}),
             timeoutMs: attemptTimeoutMs,
             artifactSink: recorder.sink,
           });
       await repository.attachSandbox(started.id, sandbox.id);
       options.logger.info(
-        { attemptId: started.id, attemptNo: started.attemptNo, sandboxId: sandbox.id },
+        {
+          attemptId: started.id,
+          attemptNo: started.attemptNo,
+          sandboxId: sandbox.id,
+          sandboxProvider: sandbox.provider,
+        },
         'normalization attempt started',
       );
 

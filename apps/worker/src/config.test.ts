@@ -50,4 +50,45 @@ describe('loadWorkerConfig', () => {
       'Environment variable WORKER_QUEUES contains unknown value "bogus"',
     );
   });
+
+  it('uses E2B as the default normalization sandbox provider', () => {
+    const config = loadWorkerConfig({ E2B_API_KEY: 'e2b-key', E2B_TEMPLATE: 'e2b-template' });
+    expect(config.sandboxProvider).toBe('e2b');
+    expect(config.normalizationSandbox).toEqual({
+      provider: 'e2b',
+      apiKey: 'e2b-key',
+      template: 'e2b-template',
+      domain: 'e2b.dev',
+    });
+  });
+
+  it('loads PPIO credentials and its default domain when selected', () => {
+    const config = loadWorkerConfig({
+      SANDBOX_PROVIDER: 'ppio',
+      PPIO_API_KEY: 'ppio-key',
+      PPIO_TEMPLATE: 'ppio-template',
+      E2B_API_KEY: 'ignored-e2b-key',
+    });
+    expect(config.normalizationSandbox).toEqual({
+      provider: 'ppio',
+      apiKey: 'ppio-key',
+      template: 'ppio-template',
+      domain: 'sandbox.ppio.cn',
+    });
+  });
+
+  it('does not configure PPIO from an E2B key', () => {
+    const config = loadWorkerConfig({
+      SANDBOX_PROVIDER: 'ppio',
+      E2B_API_KEY: 'e2b-key',
+    });
+    expect(config.sandboxProvider).toBe('ppio');
+    expect(config.normalizationSandbox).toBeUndefined();
+  });
+
+  it('rejects an unknown normalization sandbox provider', () => {
+    expect(() => loadWorkerConfig({ SANDBOX_PROVIDER: 'local' })).toThrow(
+      'Environment variable SANDBOX_PROVIDER must be one of: e2b, ppio',
+    );
+  });
 });
