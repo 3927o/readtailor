@@ -1143,7 +1143,7 @@ function createUserBookServiceForUser(
     expected: { questionCount: number; conversationVersion: number },
   ) => {
     if (outcome.type === 'question') {
-      await db.transaction(async (tx) => {
+      return db.transaction(async (tx) => {
         const sequence = expected.conversationVersion + 1;
         const advanced = await tx
           .update(interviewSessions)
@@ -1159,7 +1159,7 @@ function createUserBookServiceForUser(
             eq(interviewSessions.conversationVersion, expected.conversationVersion),
           ))
           .returning({ id: interviewSessions.id });
-        if (advanced.length !== 1) return;
+        if (advanced.length !== 1) return false;
         await tx.insert(interviewMessages).values({
           interviewSessionId: sessionId,
           sequence,
@@ -1168,11 +1168,11 @@ function createUserBookServiceForUser(
           content: outcome.question.prompt,
           payload: mapQuestion(outcome.question),
         });
+        return true;
       });
-      return;
     }
-    if (outcome.type !== 'completed') return;
-    await db.transaction(async (tx) => {
+    if (outcome.type !== 'completed') return false;
+    return db.transaction(async (tx) => {
       const completed = await tx
         .update(interviewSessions)
         .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
@@ -1183,7 +1183,7 @@ function createUserBookServiceForUser(
           eq(interviewSessions.conversationVersion, expected.conversationVersion),
         ))
         .returning({ id: interviewSessions.id });
-      if (completed.length !== 1) return;
+      if (completed.length !== 1) return false;
       const [profile] = await tx
         .insert(bookReaderProfileVersions)
         .values({
@@ -1241,6 +1241,7 @@ function createUserBookServiceForUser(
         .where(and(eq(userBooks.id, userBookId), eq(userBooks.workflowStatus, 'interviewing')))
         .returning({ id: userBooks.id });
       if (activated.length !== 1) throw new UserBookError('访谈状态已经变化', 409);
+      return true;
     });
   };
 
@@ -1261,12 +1262,18 @@ function createUserBookServiceForUser(
       conversationVersion: session.conversationVersion,
       context: setup.context,
       ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
-      ...(onStream ? { onStream } : {}),
+      ...(onStream ? {
+        onStream: (delta: InterviewStreamEvent) => {
+          // finish_interview is still speculative until the session/profile/draft CAS commits.
+          if (delta.type !== 'concluding') onStream(delta);
+        },
+      } : {}),
     });
-    await saveSetupOutcome(userBookId, sessionId, outcome, {
+    const committed = await saveSetupOutcome(userBookId, sessionId, outcome, {
       questionCount: session.questionCount,
       conversationVersion: session.conversationVersion,
     });
+    if (committed && outcome.type === 'completed') onStream?.({ type: 'concluding' });
     return outcome;
   };
 

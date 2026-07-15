@@ -537,8 +537,8 @@ export type InterviewQuestion = Static<typeof InterviewQuestionSchema>;
 // Token-level streaming for the interview (§4). As the model streams the
 // present_interview_question tool call, its argument JSON arrives one fragment at a
 // time; we parse the partial buffer and diff it against what we already emitted to push
-// clean semantic deltas. `concluding` fires the moment we recognise finish_interview so
-// the UI can switch to "generating briefing" without waiting for the (slow) full result.
+// clean semantic deltas. `concluding` fires only after finish_interview executes
+// successfully; callers may delay forwarding it until the outcome is durably committed.
 export type InterviewStreamDelta =
   | { type: 'ack_delta'; chars: string }
   | { type: 'prompt_delta'; chars: string }
@@ -619,7 +619,9 @@ export function createInterviewStreamParser(emit: (delta: InterviewStreamDelta) 
     onToolStart(name: string) {
       buffer = '';
       if (name === 'present_interview_question' || name === 'finish_interview') toolName = name;
-      if (name === 'finish_interview') markConcluding();
+    },
+    onToolFinished(name: string, succeeded: boolean) {
+      if (name === 'finish_interview' && succeeded) markConcluding();
     },
     onDelta(delta: string) {
       buffer += delta;
@@ -632,7 +634,6 @@ export function createInterviewStreamParser(emit: (delta: InterviewStreamDelta) 
             toolName = 'present_interview_question';
           } else if (keys.some((k) => k === 'book_reader_profile' || k === 'briefing' || k === 'public_strategy')) {
             toolName = 'finish_interview';
-            markConcluding();
           }
         }
       }
@@ -1076,13 +1077,16 @@ export async function runReadingSetupAgent(options: {
   if (options.onStream && options.phase === 'interviewing') {
     const parser = createInterviewStreamParser(options.onStream);
     agent.subscribe((event) => {
-      if (event.type !== 'message_update') return;
-      const streamed = event.assistantMessageEvent;
-      if (streamed.type === 'toolcall_start') {
-        const part = streamed.partial.content[streamed.contentIndex];
-        parser.onToolStart(part && part.type === 'toolCall' ? part.name : '');
-      } else if (streamed.type === 'toolcall_delta') {
-        parser.onDelta(streamed.delta);
+      if (event.type === 'message_update') {
+        const streamed = event.assistantMessageEvent;
+        if (streamed.type === 'toolcall_start') {
+          const part = streamed.partial.content[streamed.contentIndex];
+          parser.onToolStart(part && part.type === 'toolCall' ? part.name : '');
+        } else if (streamed.type === 'toolcall_delta') {
+          parser.onDelta(streamed.delta);
+        }
+      } else if (event.type === 'tool_execution_end') {
+        parser.onToolFinished(event.toolName, !event.isError);
       }
     });
   }

@@ -100,6 +100,7 @@ describe('createAgentReadingSetupEngine', () => {
       modelName: 'fake-tool-model',
       perfSink,
     });
+    const streamEventTypes: string[] = [];
     const result = await engine.runTurn({
       sessionId: 'session-1',
       phase: 'interviewing',
@@ -107,9 +108,11 @@ describe('createAgentReadingSetupEngine', () => {
       conversationVersion: 7,
       requestId: 'request-1',
       context: { book: { title: 'Book' } },
+      onStream: (event) => streamEventTypes.push(event.type),
     });
 
     expect(result).toEqual({ type: 'question', question });
+    expect(streamEventTypes).not.toContain('concluding');
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       requestId: 'request-1',

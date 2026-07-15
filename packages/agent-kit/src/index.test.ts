@@ -456,8 +456,18 @@ describe('createInterviewStreamParser', () => {
     for (const part of chunk(question, 2)) parser.onDelta(part);
   });
 
-  it('emits a single concluding event when finish_interview is the tool call', () => {
-    const events = drainParser(JSON.stringify({ book_reader_profile: {}, briefing: 'x' }), 5, 'finish_interview');
+  it('emits concluding only after finish_interview succeeds', () => {
+    const events: InterviewStreamDelta[] = [];
+    const parser = createInterviewStreamParser((delta) => events.push(delta));
+    parser.onToolStart('finish_interview');
+    for (const part of chunk(JSON.stringify({ book_reader_profile: {}, briefing: 'x' }), 5)) {
+      parser.onDelta(part);
+    }
+    expect(events).toEqual([]);
+    parser.onToolFinished('finish_interview', false);
+    expect(events).toEqual([]);
+    parser.onToolFinished('finish_interview', true);
+    parser.onToolFinished('finish_interview', true);
     expect(events).toEqual([{ type: 'concluding' }]);
   });
 
