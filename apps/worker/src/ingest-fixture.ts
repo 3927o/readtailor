@@ -255,6 +255,10 @@ async function main(): Promise<void> {
       ready.profileSha256 === ready.fileHashes['book_profile.json'] &&
       (await packageInventoryIsComplete(storage, ready.objectPrefix, ready.fileHashes))
     ) {
+      await database.db
+        .update(sharedBooks)
+        .set({ isPreset: true, updatedAt: sql`now()` })
+        .where(eq(sharedBooks.id, ready.bookId));
       process.stdout.write(
         `${JSON.stringify(
           {
@@ -289,6 +293,7 @@ async function main(): Promise<void> {
         language: 'und',
         identifiers: {},
         sourceFilename: basename(sourcePath),
+        isPreset: true,
       })
       .onConflictDoNothing({ target: sharedBooks.epubSha256 });
     const [book] = await database.db
@@ -559,6 +564,7 @@ async function main(): Promise<void> {
           publishedDate: metadata.published_date,
           sourceFilename: metadata.source_filename,
           currentPackageId: publishedPackage.id,
+          isPreset: true,
           errorSummary: null,
           updatedAt: sql`now()`,
         })

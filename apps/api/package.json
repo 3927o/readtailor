@@ -7,6 +7,7 @@
     "dev": "tsx watch --env-file-if-exists=../../.env src/server.ts",
     "build": "tsup",
     "start": "node --env-file-if-exists=../../.env dist/server.js",
+    "preset-book:export": "tsx --env-file-if-exists=../../.env src/export-preset-book-template.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
   },
   "dependencies": {
