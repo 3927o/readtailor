@@ -834,6 +834,13 @@ export type ReadingSetupOutcome =
     }
   | { type: 'fragments'; fragments: TrialFragmentSelection[] };
 
+export type ReadingSetupCallMetrics = {
+  // Cumulative provider-formatted messages + tools JSON across all model turns.
+  promptChars: number | null;
+  // Cumulative assistant text + tool-argument JSON across all completed model turns.
+  outputChars: number | null;
+};
+
 const READING_SETUP_SYSTEM_PROMPT = `你是 ReadTailor 的单本书访谈与处理方式 Agent。你只处理当前用户与当前书的阅读准备，不修改原文。每轮必须调用一个宿主工具结束：信息不足时调用 present_interview_question；信息足够或已达到问题上限时调用 finish_interview。问题必须直接服务于本书处理方式，不重复长期画像中的明确信息，每次只问一题，给出 2-5 个清晰选项并允许文字补充。访谈是轻快的口语对话，务必言简意赅、克制不铺陈，不要长篇大论：acknowledgment 用一句短话真实回应用户上一答（30 字以内，不复述整段、不堆砌寒暄，首问留空串）；prompt 用一句话把问题问清楚（一般 40 字以内，不加铺垫、背景解释或多余修饰）；hint 一句话说明为什么问这道题、它会如何影响本书处理方式（40 字以内，贴着当前问题写、不空泛）；每个选项 label 是一个简短短语（15 字以内，不写成整句）；sufficiency 给出 0-100 的信息充足度自评（可随判断诚实回落）。finish_interview 必须提交本书画像、个性化读前简报、用户可读的处理方式和结构化策略。读前简报 briefing 是给读者读正文前看的四段结构化短内容，务必简洁，每段只写 1-2 句、不铺陈：book_identity（这是一本什么书——它的定位与真正价值）；arc（全书怎么走——整体脉络或推进方式）；assumed_knowledge（假设你已经知道——读它默认你具备的背景，可结合该读者已有画像点明落差）；reading_advice（建议你的读法——针对这位读者的一句具体读法建议）。四段都要贴着本书与该读者写，不空泛、不复述处理方式细节。结构化策略要如实产出：整体处理目标 goals、表达原则 expression_principles（说明增强内容如何与原文协作、克制到什么程度）；导读 guide、裁读注 annotations、节后助读 after_reading 三段各自用 enabled 明确决定是否启用——启用时给出对应要点（guide.objectives / annotations.focuses 与 exclusions / after_reading.objectives），认为某段对本书无价值就把该段 enabled 设为 false 并把要点留空，不要为了填满而编造。trial_candidates 从 book profile 候选池中选择恰好三个不同候选，覆盖进入门槛、典型内容和较高难度内容。你没有确认权限，不能批准试读或创建正式策略。`;
 
 function userTurnMessage(text: string): AgentMessage {
@@ -908,6 +915,32 @@ export function reconstructReadingSetupHistory(
   return messages;
 }
 
+function jsonChars(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function modelPromptChars(payload: unknown): number {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return jsonChars(payload);
+  const source = payload as { messages?: unknown; tools?: unknown };
+  const promptPayload: Record<string, unknown> = {};
+  if (source.messages !== undefined) promptPayload.messages = source.messages;
+  if (source.tools !== undefined) promptPayload.tools = source.tools;
+  return Object.keys(promptPayload).length > 0 ? jsonChars(promptPayload) : jsonChars(payload);
+}
+
+function assistantOutputChars(message: AgentMessage): number {
+  if (message.role !== 'assistant') return 0;
+  return message.content.reduce((total, part) => {
+    if (part.type === 'text') return total + part.text.length;
+    if (part.type === 'toolCall') return total + jsonChars(part.arguments);
+    return total;
+  }, 0);
+}
+
 // One agent, one logical business session per user_book, covering interview → strategy
 // review/revision (agent_design §2/§3.3/§6). Pi sessions only live inside a single request,
 // so each turn rebuilds the conversation from the database (see reconstructReadingSetupHistory)
@@ -925,8 +958,11 @@ export async function runReadingSetupAgent(options: {
   timeoutMs?: number;
   onTrace?: AgentTraceHandler;
   onStream?: (delta: InterviewStreamDelta) => void;
+  onMetrics?: (metrics: ReadingSetupCallMetrics) => void;
 }): Promise<ReadingSetupOutcome> {
   let outcome: ReadingSetupOutcome | undefined;
+  let promptChars: number | null = null;
+  let outputChars: number | null = null;
   let turns = 0;
   let toolCalls = 0;
   let limitExceeded = false;
@@ -1048,16 +1084,28 @@ export async function runReadingSetupAgent(options: {
     : options.phase === 'select_trial'
       ? '处理方式已确认。请阅读上面给出的候选试读节点正文，调用 select_trial_fragments 选出恰好三个互不重叠、能独立阅读的片段（threshold/典型/hardest 各一），每个给出 section_id+segment 与落在该节点 block 范围内的连续 range。'
       : `请根据以上长期画像、书籍资料与访谈对话继续本书访谈。已提出 ${options.askedCount} 道问题，最多 7 道。信息不足就用 present_interview_question 提下一题，信息足够或已达上限就 finish_interview。`;
+  const messages = reconstructReadingSetupHistory(options.context, options.modelName);
+  const reportMetrics = () => {
+    try {
+      options.onMetrics?.({ promptChars, outputChars });
+    } catch {
+      // Metrics collection must not change agent behavior.
+    }
+  };
   const agent = new Agent({
     initialState: {
       systemPrompt,
       model: createModel(options),
       thinkingLevel: 'medium',
       tools,
-      messages: reconstructReadingSetupHistory(options.context, options.modelName),
+      messages,
     },
     sessionId: options.sessionId,
     getApiKey: () => options.apiKey,
+    onPayload: (payload) => {
+      promptChars = (promptChars ?? 0) + modelPromptChars(payload);
+      reportMetrics();
+    },
     toolExecution: 'sequential',
   });
   agent.subscribe((event) => {
@@ -1070,6 +1118,9 @@ export async function runReadingSetupAgent(options: {
       turns += 1;
     } else if (event.type === 'tool_execution_start') {
       toolCalls += 1;
+    } else if (event.type === 'message_end' && event.message.role === 'assistant') {
+      outputChars = (outputChars ?? 0) + assistantOutputChars(event.message);
+      reportMetrics();
     }
   });
   // Token-level interview streaming (§4): translate the model's streamed tool-call

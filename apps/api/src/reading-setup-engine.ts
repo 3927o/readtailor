@@ -3,6 +3,7 @@ import {
   type InterviewQuestion,
   type InterviewStreamDelta,
   type ReadingSetupOutcome,
+  type ReadingSetupCallMetrics,
   type ReadingSetupPhase,
   type ReadingStrategy,
   type TrialFragmentSelection,
@@ -40,6 +41,11 @@ export function createAgentReadingSetupEngine(options: {
   return {
     runTurn(input) {
       const trace: Array<Record<string, unknown>> = [];
+      let metrics: ReadingSetupCallMetrics | undefined;
+      const summarize = () => ({
+        ...summarizeAgentTraceEvents(trace),
+        ...(metrics ?? {}),
+      });
       return timeAgentCall(
         options.perfSink,
         {
@@ -55,10 +61,13 @@ export function createAgentReadingSetupEngine(options: {
           ...options,
           ...input,
           onTrace: (event) => appendAgentTraceEvent(trace, event),
+          onMetrics: (value) => {
+            metrics = value;
+          },
         }),
         {
-          onSuccess: () => summarizeAgentTraceEvents(trace),
-          onError: () => summarizeAgentTraceEvents(trace),
+          onSuccess: summarize,
+          onError: summarize,
         },
       );
     },
