@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { UserBookDetail } from './api';
+import type { UserBookDetail } from './api/http';
 import { ReadingSetupRoute } from './ReadingSetupRoute';
 import { userBookQueryKeys } from './queryKeys';
 import { routeForWorkflow } from './routes';
@@ -13,8 +13,8 @@ import { useReadingSetupWorkflow } from './useReadingSetupWorkflow';
 
 const apiMocks = vi.hoisted(() => ({ getUserBook: vi.fn() }));
 
-vi.mock('./api', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./api')>();
+vi.mock('./api/http', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./api/http')>();
   return { ...actual, getUserBook: apiMocks.getUserBook };
 });
 

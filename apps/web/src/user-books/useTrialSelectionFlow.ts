@@ -6,7 +6,7 @@ import {
   streamApproveStrategyForTrial,
   type TrialSelectionClientEvent,
   type TrialSnapshot,
-} from './api';
+} from './api/trial';
 import {
   useReadingSetupOperation,
   type ReadingSetupOperationAdapter,

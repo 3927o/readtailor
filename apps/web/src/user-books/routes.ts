@@ -1,5 +1,5 @@
 import type { UserBookWorkflowStatus } from '@readtailor/contracts';
-import type { UserBookSummary } from './api';
+import type { UserBookSummary } from './api/http';
 
 export function routeForWorkflow(userBookId: string, workflowStatus: UserBookWorkflowStatus): string {
   const root = `/user-books/${encodeURIComponent(userBookId)}`;

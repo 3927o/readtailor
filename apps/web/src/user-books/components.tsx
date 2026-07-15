@@ -7,7 +7,7 @@ import { EmptyState } from '../components/core/EmptyState';
 import { Kicker } from '../components/core/Kicker';
 import { bookCoverUrl } from '../library/api';
 import { LibraryChrome } from '../library/LibraryChrome';
-import type { UserBookSharedBook } from './api';
+import type { UserBookSharedBook } from './api/http';
 
 export function WorkflowPage({ book, kicker, title, children, hideHeader }: {
   book: UserBookSharedBook;

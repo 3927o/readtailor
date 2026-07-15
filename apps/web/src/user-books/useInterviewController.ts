@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ApiError } from './apiError';
 import {
-  ApiError,
   getInterview,
   startInterview,
   streamInterviewAnswer,
   streamResumeInterview,
   type InterviewClientStreamEvent,
   type InterviewQuestion,
-} from './api';
+} from './api/interview';
 import { IDLE_INTERVIEW_STREAM, interviewStreamReducer } from './interviewStreamState';
 import { userBookQueryKeys } from './queryKeys';
 import { applyTransition } from './transitions';

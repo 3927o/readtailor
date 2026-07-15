@@ -1,5 +1,5 @@
 import type { ProvisionalTrialSample } from '@readtailor/contracts';
-import type { TrialSelectionClientEvent, TrialSnapshot } from './api';
+import type { TrialSelectionClientEvent, TrialSnapshot } from './api/trial';
 
 export type TrialOrdinal = 1 | 2 | 3;
 export type TrialSelectionMode = 'idle' | 'selecting' | 'recovering' | 'failed' | 'completed';

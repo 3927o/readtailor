@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Navigate, Outlet, useLocation, useParams } from 'react-router';
-import { getUserBook, type UserBookDetail } from './api';
+import { getUserBook, type UserBookDetail } from './api/http';
 import { WorkflowFallback } from './components';
 import { userBookQueryKeys } from './queryKeys';
 import { routeForUserBook } from './routes';

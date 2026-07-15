@@ -1,5 +1,5 @@
 import { useOutletContext } from 'react-router';
-import type { UserBookDetail } from './api';
+import type { UserBookDetail } from './api/http';
 
 export interface ReadingSetupWorkflowContext {
   userBook: UserBookDetail;

@@ -8,7 +8,7 @@ import {
   useReaderLayoutAnchor,
 } from '../reader/readerLayoutAnchor';
 import type { ReaderLogicalPosition } from '../reader/readerLayoutAnchor';
-import type { TailoredContent, TrialSample } from './api';
+import type { TailoredContent, TrialSample } from './api/trial';
 import {
   AdjustmentForm,
   BackToShelf,

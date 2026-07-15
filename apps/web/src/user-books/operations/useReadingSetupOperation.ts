@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ReadingSetupOperationResponse } from '@readtailor/contracts';
+import { ApiError } from '../apiError';
 import {
-  ApiError,
   getCurrentReadingSetupOperation,
   getReadingSetupOperation,
   resumeReadingSetupOperation,
-} from '../api';
+} from '../api/operations';
 import { userBookQueryKeys } from '../queryKeys';
 import {
   advanceReadingSetupEventFence,

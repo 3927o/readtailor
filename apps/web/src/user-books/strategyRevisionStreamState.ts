@@ -1,5 +1,5 @@
 import type { ReadingNodePreview } from '@readtailor/contracts';
-import type { StrategyRevisionClientEvent, StrategySnapshot } from './api';
+import type { StrategyRevisionClientEvent, StrategySnapshot } from './api/strategy';
 
 export type StrategyRevisionSource = 'strategy_feedback' | 'trial_feedback';
 

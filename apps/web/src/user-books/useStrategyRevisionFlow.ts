@@ -4,10 +4,10 @@ import type { ReadingSetupOperationResponse } from '@readtailor/contracts';
 import {
   getStrategy,
   streamStrategyFeedback,
-  streamTrialFeedback,
   type StrategyRevisionClientEvent,
   type StrategySnapshot,
-} from './api';
+} from './api/strategy';
+import { streamTrialFeedback } from './api/trial';
 import {
   useReadingSetupOperation,
   type ReadingSetupOperationAdapter,

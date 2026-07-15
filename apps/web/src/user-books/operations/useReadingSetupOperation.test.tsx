@@ -17,8 +17,8 @@ const apiMocks = vi.hoisted(() => ({
   resume: vi.fn(),
 }));
 
-vi.mock('../api', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../api')>();
+vi.mock('../api/operations', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/operations')>();
   return {
     ...actual,
     getCurrentReadingSetupOperation: apiMocks.getCurrent,

@@ -3,8 +3,8 @@ import type {
   InterviewClientStreamEvent,
   InterviewOption,
   InterviewSnapshot,
-  StrategySnapshot,
-} from './api';
+} from './api/interview';
+import type { StrategySnapshot } from './api/strategy';
 
 export interface InterviewStreamState {
   mode: 'idle' | 'question_streaming' | 'draft_streaming' | 'recovering' | 'error';

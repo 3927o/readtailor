@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { bookAssetBaseUrl } from '../library/api';
+import { ApiError } from './apiError';
+import type { UserBookDetail } from './api/http';
+import { getStrategy } from './api/strategy';
 import {
   adoptTrial,
-  ApiError,
-  getStrategy,
   getTrial,
   markTrialSampleViewed,
   retryTrial,
   type TrialSample,
   type TrialSnapshot,
-  type UserBookDetail,
-} from './api';
+} from './api/trial';
 import type { ProgressiveStrategyModel } from './ProgressiveStrategyView';
 import type { ProgressiveTrialModel } from './ProgressiveTrialView';
 import { userBookQueryKeys } from './queryKeys';

@@ -1,13 +1,13 @@
 import type { QueryClient } from '@tanstack/react-query';
 import type { UserBookWorkflowStatus } from '@readtailor/contracts';
+import type { InterviewSnapshot } from './api/interview';
 import type {
-  InterviewSnapshot,
-  StrategySnapshot,
-  TrialSnapshot,
   UserBookDetail,
   UserBookListResponse,
   UserBookSummary,
-} from './api';
+} from './api/http';
+import type { StrategySnapshot } from './api/strategy';
+import type { TrialSnapshot } from './api/trial';
 import { userBookQueryKeys } from './queryKeys';
 
 export const userBookListQueryKey = ['user-books'] as const;

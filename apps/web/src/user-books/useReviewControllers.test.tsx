@@ -3,7 +3,9 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { StrategySnapshot, TrialSnapshot, UserBookDetail } from './api';
+import type { UserBookDetail } from './api/http';
+import type { StrategySnapshot } from './api/strategy';
+import type { TrialSnapshot } from './api/trial';
 import { userBookQueryKeys } from './queryKeys';
 import { useStrategyReviewController } from './useStrategyReviewController';
 import { useTrialReviewController } from './useTrialReviewController';
@@ -21,11 +23,18 @@ const mocks = vi.hoisted(() => ({
   selectOrdinal: vi.fn(),
 }));
 
-vi.mock('./api', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./api')>();
+vi.mock('./api/strategy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./api/strategy')>();
   return {
     ...actual,
     getStrategy: mocks.getStrategy,
+  };
+});
+
+vi.mock('./api/trial', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./api/trial')>();
+  return {
+    ...actual,
     getTrial: mocks.getTrial,
     markTrialSampleViewed: mocks.markViewed,
     retryTrial: mocks.retryTrial,

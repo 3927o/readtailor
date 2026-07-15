@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { bookAssetBaseUrl } from '../library/api';
-import { getStrategy, type UserBookDetail } from './api';
+import type { UserBookDetail } from './api/http';
+import { getStrategy } from './api/strategy';
 import type { ProgressiveStrategyModel } from './ProgressiveStrategyView';
 import type { ProgressiveTrialModel } from './ProgressiveTrialView';
 import { userBookQueryKeys } from './queryKeys';
