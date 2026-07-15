@@ -73,6 +73,12 @@ export interface TrialReviewGraph extends StrategyReviewGraph {
   nodeGenerationIds: string[];
 }
 
+export interface TrialGeneratingGraph extends StrategyReviewGraph {
+  trialRevisionId: string;
+  trialSegmentIds: string[];
+  nodeGenerationIds: string[];
+}
+
 export async function onShelfGraph(db: Database): Promise<OnShelfGraph> {
   const userId = randomUUID();
   const readerProfileId = randomUUID();
@@ -222,6 +228,68 @@ export async function strategyReviewGraph(db: Database): Promise<StrategyReviewG
     interviewSessionId,
     bookReaderProfileVersionId,
     strategyDraftVersionId,
+  };
+}
+
+export async function trialGeneratingGraph(db: Database): Promise<TrialGeneratingGraph> {
+  const graph = await strategyReviewGraph(db);
+  const trialRevisionId = randomUUID();
+  const startedAt = new Date('2026-07-16T00:10:00.000Z');
+
+  await db
+    .update(strategyDraftVersions)
+    .set({ status: 'approved_for_trial', approvedForTrialAt: startedAt })
+    .where(eq(strategyDraftVersions.id, graph.strategyDraftVersionId));
+  await db.insert(trialRevisions).values({
+    id: trialRevisionId,
+    userBookId: graph.userBookId,
+    strategyDraftVersionId: graph.strategyDraftVersionId,
+    revision: 1,
+    status: 'generating',
+  });
+
+  const segmentRows = [1, 2, 3].map((ordinal) => ({
+    id: randomUUID(),
+    trialRevisionId,
+    ordinal,
+    sectionId: `section-${ordinal}`,
+    segment: 1,
+    startBlockIndex: 1,
+    startOffset: 0,
+    endBlockIndex: 1,
+    endOffset: 10,
+    selectionReason: `试读片段 ${ordinal}`,
+    status: 'generating' as const,
+  }));
+  await db.insert(trialSegments).values(segmentRows);
+
+  const generationRows = segmentRows.map((segment) => ({
+    id: randomUUID(),
+    userBookId: graph.userBookId,
+    generationScope: 'trial' as const,
+    trialSegmentId: segment.id,
+    strategyDraftVersionId: graph.strategyDraftVersionId,
+    sectionId: segment.sectionId,
+    segment: segment.segment,
+    status: 'generating' as const,
+    attemptCount: 1,
+    maxAttempts: 3,
+    modelConfigId: 'database-test-model',
+    promptVersion: 'database-test-v1',
+    cacheKey: `database-test:${segment.id}`,
+    startedAt,
+  }));
+  await db.insert(nodeGenerations).values(generationRows);
+  await db
+    .update(userBooks)
+    .set({ workflowStatus: 'trial_generating', currentTrialRevisionId: trialRevisionId })
+    .where(eq(userBooks.id, graph.userBookId));
+
+  return {
+    ...graph,
+    trialRevisionId,
+    trialSegmentIds: segmentRows.map(({ id }) => id),
+    nodeGenerationIds: generationRows.map(({ id }) => id),
   };
 }
 
