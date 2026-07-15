@@ -987,6 +987,73 @@ function assertRangeWithinBlocks(
   }
 }
 
+type TrialRetrySegmentSource = Pick<
+  typeof trialSegments.$inferSelect,
+  | 'id'
+  | 'ordinal'
+  | 'sectionId'
+  | 'segment'
+  | 'startBlockIndex'
+  | 'startOffset'
+  | 'endBlockIndex'
+  | 'endOffset'
+  | 'selectionReason'
+>;
+
+type TrialRetryGenerationSource = Pick<
+  typeof nodeGenerations.$inferSelect,
+  | 'id'
+  | 'generationScope'
+  | 'trialSegmentId'
+  | 'strategyDraftVersionId'
+  | 'sectionId'
+  | 'segment'
+  | 'maxAttempts'
+  | 'modelConfigId'
+  | 'promptVersion'
+>;
+
+export function buildTrialRetryPlan(
+  strategyDraftVersionId: string,
+  segments: TrialRetrySegmentSource[],
+  generations: TrialRetryGenerationSource[],
+) {
+  const ordered = [...segments].sort((left, right) => left.ordinal - right.ordinal);
+  if (
+    ordered.length !== 3
+    || ordered.some((segment, index) => segment.ordinal !== index + 1)
+    || new Set(ordered.map((segment) => segment.id)).size !== 3
+  ) {
+    throw new UserBookError('失败试读版本的片段数据不完整', 409);
+  }
+  const generationBySegmentId = new Map<string, TrialRetryGenerationSource>();
+  for (const generation of generations) {
+    if (
+      generation.generationScope !== 'trial'
+      || !generation.trialSegmentId
+      || generation.strategyDraftVersionId !== strategyDraftVersionId
+      || generationBySegmentId.has(generation.trialSegmentId)
+    ) {
+      throw new UserBookError('失败试读版本的生成任务数据不完整', 409);
+    }
+    generationBySegmentId.set(generation.trialSegmentId, generation);
+  }
+  if (generationBySegmentId.size !== 3) {
+    throw new UserBookError('失败试读版本的生成任务数据不完整', 409);
+  }
+  return ordered.map((segment) => {
+    const generation = generationBySegmentId.get(segment.id);
+    if (
+      !generation
+      || generation.sectionId !== segment.sectionId
+      || generation.segment !== segment.segment
+    ) {
+      throw new UserBookError('失败试读版本的片段与生成任务不一致', 409);
+    }
+    return { segment, generation };
+  });
+}
+
 // The standard-text slice a highlight range covers (reading_contract §2.5), joined across blocks with
 // a newline so a multi-block quote reads naturally. Capped so a long cross-block selection can't bloat
 // the row; the snapshot is only for list display and drift fallback, not an authority.
@@ -2802,6 +2869,59 @@ function createUserBookServiceForUser(
     return { manifest: asManifest(manifestValue), html: new TextDecoder().decode(content) };
   };
 
+  const enqueueTrialRevisionGenerations = async (
+    userBookId: string,
+    trialRevisionId: string,
+    generationIds: string[],
+  ) => {
+    try {
+      await Promise.all(generationIds.map((generationId) => options.generations.enqueue({
+        generationId,
+        userBookId,
+        scope: 'trial',
+      })));
+    } catch {
+      await db.transaction(async (tx) => {
+        const failedGenerations = await tx.update(nodeGenerations).set({
+          status: 'failed',
+          result: null,
+          errorSummary: '内容生成任务入队失败',
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(and(
+          inArray(nodeGenerations.id, generationIds),
+          inArray(nodeGenerations.status, ['queued', 'generating', 'retrying']),
+        )).returning({ trialSegmentId: nodeGenerations.trialSegmentId });
+        const failedSegmentIds = failedGenerations
+          .map((generation) => generation.trialSegmentId)
+          .filter((segmentId): segmentId is string => Boolean(segmentId));
+        if (failedSegmentIds.length > 0) {
+          await tx.update(trialSegments).set({ status: 'failed', updatedAt: new Date() }).where(and(
+            inArray(trialSegments.id, failedSegmentIds),
+            inArray(trialSegments.status, ['pending', 'generating']),
+          ));
+        }
+        await tx.update(trialRevisions).set({
+          status: 'failed',
+          failureSummary: '试读内容暂时无法开始生成，请重试。',
+          failedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(and(
+          eq(trialRevisions.id, trialRevisionId),
+          eq(trialRevisions.status, 'generating'),
+        ));
+        await tx.update(userBooks).set({
+          workflowStatus: 'trial_generation_failed',
+          updatedAt: new Date(),
+        }).where(and(
+          eq(userBooks.id, userBookId),
+          eq(userBooks.workflowStatus, 'trial_generating'),
+          eq(userBooks.currentTrialRevisionId, trialRevisionId),
+        ));
+      }).catch(() => {});
+    }
+  };
+
   const createTrialRevision = async (
     userBookId: string,
     draftId: string,
@@ -2961,47 +3081,7 @@ function createUserBookServiceForUser(
       }
       return { revision, generationIds };
     });
-    try {
-      await Promise.all(created.generationIds.map((generationId) => options.generations.enqueue({ generationId, userBookId, scope: 'trial' })));
-    } catch {
-      await db.transaction(async (tx) => {
-        const failedGenerations = await tx.update(nodeGenerations).set({
-          status: 'failed',
-          result: null,
-          errorSummary: '内容生成任务入队失败',
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        }).where(and(
-          inArray(nodeGenerations.id, created.generationIds),
-          inArray(nodeGenerations.status, ['queued', 'generating', 'retrying']),
-        )).returning({ trialSegmentId: nodeGenerations.trialSegmentId });
-        const failedSegmentIds = failedGenerations
-          .map((generation) => generation.trialSegmentId)
-          .filter((segmentId): segmentId is string => Boolean(segmentId));
-        if (failedSegmentIds.length > 0) {
-          await tx.update(trialSegments).set({ status: 'failed', updatedAt: new Date() }).where(and(
-            inArray(trialSegments.id, failedSegmentIds),
-            inArray(trialSegments.status, ['pending', 'generating']),
-          ));
-        }
-        await tx.update(trialRevisions).set({
-          status: 'failed',
-          failureSummary: '试读内容暂时无法开始生成，请重试。',
-          failedAt: new Date(),
-          updatedAt: new Date(),
-        }).where(and(
-          eq(trialRevisions.id, created.revision.id),
-          eq(trialRevisions.status, 'generating'),
-        ));
-        // §6.5 guard: only fail the book we just moved to trial_generating for this revision.
-        await tx.update(userBooks).set({ workflowStatus: 'trial_generation_failed', updatedAt: new Date() }).where(and(
-          eq(userBooks.id, userBookId),
-          eq(userBooks.workflowStatus, 'trial_generating'),
-          eq(userBooks.currentTrialRevisionId, created.revision.id),
-        ));
-      }).catch(() => {});
-      return created.revision;
-    }
+    await enqueueTrialRevisionGenerations(userBookId, created.revision.id, created.generationIds);
     return created.revision;
   };
 
@@ -4753,35 +4833,183 @@ function createUserBookServiceForUser(
     trialStateByRevisionId,
 
     async retryTrial(userBookId: string) {
-      const current = await trialState(userBookId);
-      if (current.status !== 'failed') throw new UserBookError('当前试读不需要重试', 409);
-      await db.transaction(async (tx) => {
-        const changed = await tx
-          .update(trialRevisions)
-          .set({ status: 'superseded', supersededAt: new Date(), updatedAt: new Date() })
+      await getOwnedBook(userBookId);
+      const created = await db.transaction(async (tx) => {
+        const now = new Date();
+        const [book] = await tx
+          .select()
+          .from(userBooks)
           .where(and(
-            eq(trialRevisions.id, current.trialRevisionId),
-            eq(trialRevisions.userBookId, userBookId),
-            eq(trialRevisions.status, 'failed'),
+            eq(userBooks.id, userBookId),
+            eq(userBooks.userId, userId),
+            isNull(userBooks.deletedAt),
           ))
-          .returning({ id: trialRevisions.id });
-        if (changed.length !== 1) throw new UserBookError('试读状态已经更新', 409);
-        const [book] = await tx.select().from(userBooks).where(eq(userBooks.id, userBookId)).limit(1);
+          .limit(1)
+          .for('update');
         if (
           !book
           || book.workflowStatus !== 'trial_generation_failed'
-          || book.currentTrialRevisionId !== current.trialRevisionId
+          || !book.currentTrialRevisionId
+          || !book.currentStrategyDraftVersionId
+        ) {
+          throw new UserBookError('当前试读不需要重试', 409);
+        }
+
+        const [revision] = await tx
+          .select()
+          .from(trialRevisions)
+          .where(and(
+            eq(trialRevisions.id, book.currentTrialRevisionId),
+            eq(trialRevisions.userBookId, userBookId),
+          ))
+          .limit(1)
+          .for('update');
+        if (
+          !revision
+          || revision.status !== 'failed'
+          || revision.strategyDraftVersionId !== book.currentStrategyDraftVersionId
         ) {
           throw new UserBookError('试读状态已经更新', 409);
         }
-        await tx.update(nodeGenerations).set({ status: 'superseded', result: null, completedAt: new Date(), updatedAt: new Date() }).where(and(
-          eq(nodeGenerations.userBookId, userBookId),
-          eq(nodeGenerations.generationScope, 'trial'),
-          inArray(nodeGenerations.status, ['queued', 'generating', 'retrying', 'ready', 'failed']),
-        ));
+
+        const [draft] = await tx
+          .select({ id: strategyDraftVersions.id, status: strategyDraftVersions.status })
+          .from(strategyDraftVersions)
+          .where(and(
+            eq(strategyDraftVersions.id, revision.strategyDraftVersionId),
+            eq(strategyDraftVersions.userBookId, userBookId),
+          ))
+          .limit(1)
+          .for('update');
+        if (!draft || draft.status !== 'approved_for_trial') {
+          throw new UserBookError('试读使用的处理方式已经失效', 409);
+        }
+
+        const segments = await tx
+          .select()
+          .from(trialSegments)
+          .where(eq(trialSegments.trialRevisionId, revision.id))
+          .orderBy(asc(trialSegments.ordinal))
+          .for('update');
+        if (segments.length !== 3) {
+          throw new UserBookError('失败试读版本的片段数据不完整', 409);
+        }
+        const generations = await tx
+          .select()
+          .from(nodeGenerations)
+          .where(and(
+            eq(nodeGenerations.userBookId, userBookId),
+            eq(nodeGenerations.generationScope, 'trial'),
+            inArray(nodeGenerations.trialSegmentId, segments.map((segment) => segment.id)),
+          ))
+          .for('update');
+        const retryPlan = buildTrialRetryPlan(revision.strategyDraftVersionId, segments, generations);
+
+        const supersededGenerations = await tx
+          .update(nodeGenerations)
+          .set({
+            status: 'superseded',
+            result: null,
+            completedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            inArray(nodeGenerations.id, retryPlan.map((item) => item.generation.id)),
+            eq(nodeGenerations.userBookId, userBookId),
+            eq(nodeGenerations.generationScope, 'trial'),
+            inArray(nodeGenerations.status, ['queued', 'generating', 'retrying', 'ready', 'failed']),
+          ))
+          .returning({ id: nodeGenerations.id });
+        if (supersededGenerations.length !== 3) {
+          throw new UserBookError('试读状态已经更新', 409);
+        }
+        const [supersededRevision] = await tx
+          .update(trialRevisions)
+          .set({ status: 'superseded', supersededAt: now, updatedAt: now })
+          .where(and(
+            eq(trialRevisions.id, revision.id),
+            eq(trialRevisions.status, 'failed'),
+          ))
+          .returning({ id: trialRevisions.id });
+        if (!supersededRevision) throw new UserBookError('试读状态已经更新', 409);
+
+        const [lastRevision] = await tx
+          .select({ revision: trialRevisions.revision })
+          .from(trialRevisions)
+          .where(eq(trialRevisions.userBookId, userBookId))
+          .orderBy(desc(trialRevisions.revision))
+          .limit(1);
+        const [newRevision] = await tx
+          .insert(trialRevisions)
+          .values({
+            userBookId,
+            strategyDraftVersionId: revision.strategyDraftVersionId,
+            revision: (lastRevision?.revision ?? revision.revision) + 1,
+            status: 'generating',
+          })
+          .returning();
+        if (!newRevision) throw new Error('failed to create retry trial revision');
+
+        const newSegments = await tx
+          .insert(trialSegments)
+          .values(retryPlan.map(({ segment }) => ({
+            trialRevisionId: newRevision.id,
+            ordinal: segment.ordinal,
+            sectionId: segment.sectionId,
+            segment: segment.segment,
+            startBlockIndex: segment.startBlockIndex,
+            startOffset: segment.startOffset,
+            endBlockIndex: segment.endBlockIndex,
+            endOffset: segment.endOffset,
+            selectionReason: segment.selectionReason,
+            status: 'pending' as const,
+          })))
+          .returning({ id: trialSegments.id, ordinal: trialSegments.ordinal });
+        if (newSegments.length !== 3) throw new Error('failed to copy retry trial segments');
+        const newSegmentIdByOrdinal = new Map(
+          newSegments.map((segment) => [segment.ordinal, segment.id]),
+        );
+        const generationIds = retryPlan.map(({ segment, generation }) => {
+          const trialSegmentId = newSegmentIdByOrdinal.get(segment.ordinal);
+          if (!trialSegmentId) throw new Error('failed to map retry trial segment');
+          return {
+            id: randomUUID(),
+            userBookId,
+            generationScope: 'trial' as const,
+            trialSegmentId,
+            strategyDraftVersionId: revision.strategyDraftVersionId,
+            sectionId: segment.sectionId,
+            segment: segment.segment,
+            status: 'queued' as const,
+            maxAttempts: generation.maxAttempts,
+            modelConfigId: generation.modelConfigId,
+            promptVersion: generation.promptVersion,
+          };
+        });
+        await tx.insert(nodeGenerations).values(generationIds.map((generation) => ({
+          ...generation,
+          cacheKey: `pending:${generation.id}`,
+        })));
+
+        const [advanced] = await tx
+          .update(userBooks)
+          .set({
+            workflowStatus: 'trial_generating',
+            currentTrialRevisionId: newRevision.id,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(userBooks.id, userBookId),
+            eq(userBooks.workflowStatus, 'trial_generation_failed'),
+            eq(userBooks.currentTrialRevisionId, revision.id),
+            eq(userBooks.currentStrategyDraftVersionId, revision.strategyDraftVersionId),
+          ))
+          .returning({ id: userBooks.id });
+        if (!advanced) throw new UserBookError('试读状态已经更新', 409);
+        return { revisionId: newRevision.id, generationIds: generationIds.map((row) => row.id) };
       });
-      await createTrialRevision(userBookId, current.strategyDraftVersionId);
-      return trialState(userBookId);
+      await enqueueTrialRevisionGenerations(userBookId, created.revisionId, created.generationIds);
+      return trialStateByRevisionId(userBookId, created.revisionId);
     },
 
     async markTrialViewed(userBookId: string, input: MarkTrialSegmentViewedRequest) {
