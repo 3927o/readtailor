@@ -56,6 +56,19 @@ const interviewState = {
   sufficiency: null,
   answers: [],
 };
+const detail = {
+  book: item,
+  currentInterviewSessionId: null,
+  currentBookReaderProfileVersionId: null,
+  currentStrategyDraftVersionId: null,
+  currentStrategyVersionId: '22222222-3333-4444-8555-666666666666',
+  currentTrialRevisionId: null,
+  adjustmentCount: 0,
+  deletedAt: null,
+  purgeAfter: null,
+  createdAt: '2026-07-13T00:00:00.000Z',
+  updatedAt: '2026-07-14T00:00:00.000Z',
+};
 
 const HIGHLIGHT_ID = '11111111-2222-3333-4444-555555555555';
 const STRATEGY_VERSION_ID = '22222222-3333-4444-8555-666666666666';
@@ -90,8 +103,8 @@ function fakeService(overrides: Partial<UserBookUserService> = {}): UserBookServ
     async deleteHighlight(_userBookId: string, highlightId: string) {
       return { id: highlightId };
     },
-    async workflow() {
-      return { workflowStatus: 'active_reading', book: item, interview: null, strategy: null, trial: null };
+    async detail() {
+      return detail;
     },
     async interviewState() {
       return interviewState;
@@ -164,16 +177,19 @@ function buildApp() {
 }
 
 describe('user book workflow routes', () => {
-  it('serves the user shelf, workflow snapshot and reader bootstrap', async () => {
+  it('serves the user shelf, read-only detail and reader bootstrap', async () => {
     const app = await buildApp();
 
     const shelf = await app.inject({ method: 'GET', url: '/v1/user-books' });
     expect(shelf.statusCode).toBe(200);
     expect(shelf.json()).toEqual({ books: [item] });
 
-    const workflow = await app.inject({ method: 'GET', url: `/v1/user-books/${USER_BOOK_ID}/workflow` });
-    expect(workflow.statusCode).toBe(200);
-    expect(workflow.json().workflowStatus).toBe('active_reading');
+    const detailResponse = await app.inject({ method: 'GET', url: `/v1/user-books/${USER_BOOK_ID}` });
+    expect(detailResponse.statusCode).toBe(200);
+    expect(detailResponse.json().book.workflowStatus).toBe('active_reading');
+
+    const removedWorkflow = await app.inject({ method: 'GET', url: `/v1/user-books/${USER_BOOK_ID}/workflow` });
+    expect(removedWorkflow.statusCode).toBe(404);
 
     const reader = await app.inject({ method: 'GET', url: `/v1/user-books/${USER_BOOK_ID}/reader` });
     expect(reader.statusCode).toBe(200);

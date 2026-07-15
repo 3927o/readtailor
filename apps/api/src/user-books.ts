@@ -52,9 +52,9 @@ import type {
   SubmitStrategyFeedbackRequest,
   SubmitTrialFeedbackRequest,
   TrialReviewResponse,
+  UserBookDetailResponse,
   UserBookShelfItem,
   UserBookShelfResponse,
-  UserBookWorkflowResponse,
 } from '@readtailor/contracts';
 import { DEFAULT_READING_SETTINGS } from '@readtailor/contracts';
 import {
@@ -1960,7 +1960,7 @@ function createUserBookServiceForUser(
     if (!revision) throw new UserBookError('当前试读不存在', 404);
     // §6.3 / §10.5: all-or-nothing is a server-side guarantee, not just the client-side
     // `canAdopt` gate. Until the whole revision is published we withhold every per-segment
-    // `result`, so `workflow()` during `trial_generating` and a `failed`/`superseded` round
+    // `result`, so `trialState()` during `trial_generating` and a `failed`/`superseded` round
     // never leak a partially-generated fragment.
     const exposeResults = revision.status === 'published';
     const segments = segmentRows.map(({ segment, generation }) => {
@@ -2975,17 +2975,20 @@ function createUserBookServiceForUser(
       return { books: rows.map(shelfItem) };
     },
 
-    async workflow(userBookId: string): Promise<UserBookWorkflowResponse> {
+    async detail(userBookId: string): Promise<UserBookDetailResponse> {
       const owned = await getOwnedBook(userBookId);
-      const status = owned.userBook.workflowStatus;
       return {
-        workflowStatus: status,
         book: shelfItem(owned),
-        interview: status === 'interviewing' ? await interviewState(userBookId) : null,
-        strategy: status === 'strategy_review' ? await strategyState(userBookId) : null,
-        trial: ['trial_generating', 'trial_generation_failed', 'trial_review'].includes(status)
-          ? await trialState(userBookId)
-          : null,
+        currentInterviewSessionId: owned.userBook.currentInterviewSessionId,
+        currentBookReaderProfileVersionId: owned.userBook.currentBookReaderProfileVersionId,
+        currentStrategyDraftVersionId: owned.userBook.currentStrategyDraftVersionId,
+        currentStrategyVersionId: owned.userBook.currentStrategyVersionId,
+        currentTrialRevisionId: owned.userBook.currentTrialRevisionId,
+        adjustmentCount: owned.userBook.adjustmentCount,
+        deletedAt: owned.userBook.deletedAt?.toISOString() ?? null,
+        purgeAfter: owned.userBook.purgeAfter?.toISOString() ?? null,
+        createdAt: owned.userBook.createdAt.toISOString(),
+        updatedAt: owned.userBook.updatedAt.toISOString(),
       };
     },
 

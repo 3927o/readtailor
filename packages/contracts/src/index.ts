@@ -1129,12 +1129,3 @@ export type UserBookDetail = Static<typeof UserBookDetailSchema>;
 
 export const UserBookDetailResponseSchema = UserBookDetailSchema;
 export type UserBookDetailResponse = UserBookDetail;
-
-export const UserBookWorkflowResponseSchema = Type.Object({
-  workflowStatus: UserBookWorkflowStatusSchema,
-  book: UserBookShelfItemSchema,
-  interview: Type.Union([InterviewStateResponseSchema, Type.Null()]),
-  strategy: Type.Union([StrategyReviewResponseSchema, Type.Null()]),
-  trial: Type.Union([TrialReviewResponseSchema, Type.Null()]),
-});
-export type UserBookWorkflowResponse = Static<typeof UserBookWorkflowResponseSchema>;

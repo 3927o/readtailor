@@ -335,7 +335,7 @@ export async function getUserBooks(): Promise<UserBookListResponse> {
 }
 
 export async function getUserBook(userBookId: string): Promise<UserBookSummary> {
-  const raw = await get<{ book: RawShelfItem }>(`${userBookRoot(userBookId)}/workflow`);
+  const raw = await get<{ book: RawShelfItem }>(userBookRoot(userBookId));
   return mapShelfItem(raw.book);
 }
 
