@@ -121,11 +121,12 @@ export function AssistanceContent({ content }: { content: string }) {
   return <div className="assistance-content">{parseMarkdown(content).map(renderBlock)}</div>;
 }
 
-export function AdjustmentForm({ value, onChange, onSubmit, pending, label, placeholder }: {
+export function AdjustmentForm({ value, onChange, onSubmit, pending, disabled = false, label, placeholder }: {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
   pending: boolean;
+  disabled?: boolean;
   label: string;
   placeholder: string;
 }) {
@@ -137,9 +138,9 @@ export function AdjustmentForm({ value, onChange, onSubmit, pending, label, plac
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        disabled={pending}
+        disabled={pending || disabled}
       />
-      <button className="button button-ghost" type="button" disabled={!value.trim() || pending} onClick={onSubmit}>
+      <button className="button button-ghost" type="button" disabled={!value.trim() || pending || disabled} onClick={onSubmit}>
         {pending ? '正在重新起草…' : '提交反馈，重新起草'}
       </button>
     </div>

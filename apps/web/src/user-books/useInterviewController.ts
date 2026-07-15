@@ -74,7 +74,10 @@ export function useInterviewController(options: {
     queryKey: userBookQueryKeys.interview(options.userBookId),
     queryFn: () => getInterview(options.userBookId),
     enabled: !options.shouldStart,
-    refetchInterval: (current) => current.state.data?.status === 'generating' ? 1800 : false,
+    refetchInterval: (current) => {
+      const snapshot = current.state.data;
+      return snapshot?.status === 'active' && !snapshot.currentQuestion ? 1800 : false;
+    },
   });
 
   useEffect(() => {
@@ -164,6 +167,14 @@ export function useInterviewController(options: {
     const snapshot = interview.data;
     if (!snapshot) return;
     dispatchStream({ type: 'reconcile', snapshot });
+    if (snapshot.status === 'completed') {
+      pendingStrategy.current = null;
+      resumeRequested.current = false;
+      void queryClient.invalidateQueries({
+        queryKey: userBookQueryKeys.detail(options.userBookId),
+      });
+      return;
+    }
     if (snapshot.currentQuestion) {
       setStreamError(null);
       setActiveQuestion((current) => (
@@ -174,7 +185,7 @@ export function useInterviewController(options: {
       const persisted = new Set(snapshot.history.map((turn) => turn.questionId));
       setLocalHistory((history) => history.filter((turn) => !persisted.has(turn.questionId)));
     }
-  }, [interview.data]);
+  }, [interview.data, options.userBookId, queryClient]);
 
   const question = activeQuestion ?? interview.data?.currentQuestion ?? null;
   const answer = useMutation<void, Error, InterviewAnswerRequest>({
@@ -224,16 +235,22 @@ export function useInterviewController(options: {
 
   const snapshot = interview.data ?? null;
   const questionStreaming = stream.mode === 'question_streaming';
-  const draftView = Boolean(snapshot) && (
-    stream.mode === 'draft_streaming'
-    || stream.mode === 'recovering'
-    || (snapshot?.status === 'generating' && !question)
+  const draftView = Boolean(
+    snapshot?.status === 'active'
+    && (
+      stream.mode === 'draft_streaming'
+      || (!question && (
+        stream.mode === 'recovering'
+        || snapshot.turnInProgress
+        || snapshot.canResume
+      ))
+    ),
   );
-  const failedView = Boolean(snapshot) && (snapshot?.status === 'failed' || stream.mode === 'error');
+  const failedView = Boolean(snapshot?.status === 'cancelled' || stream.mode === 'error');
   const interactive = Boolean(
     snapshot
     && stream.mode === 'idle'
-    && snapshot.status === 'asking'
+    && snapshot.status === 'active'
     && question,
   );
   const history = useMemo(() => {
@@ -259,6 +276,7 @@ export function useInterviewController(options: {
     retryLoad: () => void interview.refetch(),
     isFetching: interview.isFetching,
     snapshot,
+    completed: snapshot?.status === 'completed',
     stream,
     streamError,
     question,

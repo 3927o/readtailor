@@ -176,6 +176,90 @@ const completedOutcome = {
 };
 
 describePostgres(`interview service${skipReason}`, () => {
+  it('resumes interview completion from durable checkpoints after a failed turn', async () => {
+    const { db } = getTestDatabase();
+    const graph = await interviewingGraph(db);
+    let turn = 0;
+    const runTurn = vi.fn<ReadingSetupEngine['runTurn']>(async (input) => {
+      const store = input.completionStore;
+      if (!store) throw new Error('completion store is missing');
+      let snapshot = await store.load();
+      if (!snapshot.completionId) snapshot = await store.start();
+      if (!snapshot.briefing) snapshot = await store.submitBriefing(completedOutcome.briefing);
+      turn += 1;
+      if (turn === 1) throw new Error('provider disconnected after briefing');
+      if (!snapshot.strategy) {
+        const { trial_candidates: _trialCandidates, ...strategy } = completedOutcome.strategy;
+        snapshot = await store.submitStrategy({
+          publicStrategy: completedOutcome.publicStrategy,
+          strategy,
+        });
+      }
+      if (!snapshot.candidates) {
+        snapshot = await store.submitCandidates(completedOutcome.strategy.trial_candidates);
+      }
+      if (!snapshot.profile) {
+        await store.submitProfile({ bookReaderProfile: completedOutcome.bookReaderProfile });
+      }
+      const artifacts = await store.complete();
+      return {
+        type: 'completed',
+        briefing: artifacts.briefing,
+        publicStrategy: artifacts.strategy.publicStrategy,
+        strategy: {
+          ...artifacts.strategy.strategy,
+          trial_candidates: artifacts.candidates,
+        },
+        bookReaderProfile: artifacts.profile.bookReaderProfile,
+        ...(artifacts.profile.readerProfilePatch
+          ? { readerProfilePatch: artifacts.profile.readerProfilePatch }
+          : {}),
+      };
+    });
+    const service = createService({ setupEngine: { runTurn } });
+
+    const failed = await collect(service.streamAnswer(graph.userBookId, {
+      questionId: 'purpose',
+      selectedOptionIds: ['overview'],
+      freeText: null,
+      idempotencyKey: 'checkpoint-resume-answer',
+    }));
+    expect(failed.at(-1)).toMatchObject({ type: 'error', code: 'agent_failed' });
+    expect((await db
+      .select()
+      .from(interviewMessages)
+      .where(eq(interviewMessages.interviewSessionId, graph.interviewSessionId)))
+      .filter((message) => message.kind === 'summary')
+      .map((message) => message.payload.type)).toEqual([
+        'completion_started',
+        'briefing_submitted',
+      ]);
+
+    const resumed = await collect(service.streamResume(graph.userBookId));
+    expect(resumed.map(({ type }) => type)).toEqual(['draft_final', 'done']);
+    expect(runTurn).toHaveBeenCalledTimes(2);
+    const messages = await db
+      .select()
+      .from(interviewMessages)
+      .where(eq(interviewMessages.interviewSessionId, graph.interviewSessionId));
+    expect(messages.filter((message) => message.kind === 'summary').map((message) => message.payload.type))
+      .toEqual([
+        'completion_started',
+        'briefing_submitted',
+        'strategy_submitted',
+        'trial_candidates_submitted',
+        'interview_profile_submitted',
+      ]);
+    expect(await db
+      .select()
+      .from(bookReaderProfileVersions)
+      .where(eq(bookReaderProfileVersions.userBookId, graph.userBookId))).toHaveLength(1);
+    expect(await db
+      .select()
+      .from(strategyDraftVersions)
+      .where(eq(strategyDraftVersions.userBookId, graph.userBookId))).toHaveLength(1);
+  });
+
   it('replays an answer key through streamAnswer without running the agent twice', async () => {
     const { db } = getTestDatabase();
     const graph = await interviewingGraph(db);

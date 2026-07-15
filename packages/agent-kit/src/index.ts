@@ -643,23 +643,28 @@ const READING_STRATEGY_CORE = {
   }),
 };
 
+export const ReadingStrategyCoreSchema = Type.Object(READING_STRATEGY_CORE);
+export type ReadingStrategyCore = Static<typeof ReadingStrategyCoreSchema>;
+
+export const TrialCandidateSchema = Type.Object({
+  section_id: Type.String({ minLength: 1, maxLength: 200 }),
+  segment: Type.Integer({ minimum: 1 }),
+  reason: Type.String({ minLength: 5, maxLength: 500 }),
+});
+export type TrialCandidate = Static<typeof TrialCandidateSchema>;
+
+export const TrialCandidatesSchema = Type.Array(TrialCandidateSchema, { minItems: 3, maxItems: 3 });
+
 export const ReadingStrategySchema = Type.Object({
   ...READING_STRATEGY_CORE,
-  trial_candidates: Type.Array(
-    Type.Object({
-      section_id: Type.String({ minLength: 1, maxLength: 200 }),
-      segment: Type.Integer({ minimum: 1 }),
-      reason: Type.String({ minLength: 5, maxLength: 500 }),
-    }),
-    { minItems: 3, maxItems: 3 },
-  ),
+  trial_candidates: TrialCandidatesSchema,
 });
 export type ReadingStrategy = Static<typeof ReadingStrategySchema>;
 
 // A reading-strategy change proposed by the 问 AI Agent mid-reading (§8.2). It reuses the
 // setup strategy's tailoring core but omits trial_candidates. This is only ever a *proposal*:
 // nothing is applied until the user confirms it through the host confirm endpoint.
-export const ProposedStrategySchema = Type.Object(READING_STRATEGY_CORE);
+export const ProposedStrategySchema = ReadingStrategyCoreSchema;
 export type ProposedStrategy = Static<typeof ProposedStrategySchema>;
 
 export const StrategyChangeProposalSchema = Type.Object({
@@ -707,6 +712,11 @@ export type TrialFragmentSelection = Static<typeof TrialFragmentSchema>;
 export type ReadingSetupToolName =
   | 'present_interview_question'
   | 'finish_interview'
+  | 'submit_reading_briefing'
+  | 'submit_reading_strategy'
+  | 'submit_trial_candidates'
+  | 'submit_interview_profile'
+  | 'complete_interview_result'
   | 'save_strategy_draft'
   | 'select_trial_fragments';
 
@@ -751,8 +761,22 @@ type CompletedArrayItem = { raw: string; end: number };
 function isReadingSetupToolName(name: string): name is ReadingSetupToolName {
   return name === 'present_interview_question'
     || name === 'finish_interview'
+    || name === 'submit_reading_briefing'
+    || name === 'submit_reading_strategy'
+    || name === 'submit_trial_candidates'
+    || name === 'submit_interview_profile'
+    || name === 'complete_interview_result'
     || name === 'save_strategy_draft'
     || name === 'select_trial_fragments';
+}
+
+function isInterviewCompletionTool(name: ReadingSetupToolName | undefined): boolean {
+  return name === 'finish_interview'
+    || name === 'submit_reading_briefing'
+    || name === 'submit_reading_strategy'
+    || name === 'submit_trial_candidates'
+    || name === 'submit_interview_profile'
+    || name === 'complete_interview_result';
 }
 
 function findNamedValueStart(source: string, propertyName: string): number | undefined {
@@ -788,47 +812,6 @@ function findNamedValueStart(source: string, propertyName: string): number | und
 function findNamedArrayStart(source: string, propertyName: string): number | undefined {
   const valueStart = findNamedValueStart(source, propertyName);
   return valueStart !== undefined && source[valueStart] === '[' ? valueStart : undefined;
-}
-
-function hasCompletedNamedString(source: string, propertyName: string): boolean {
-  const valueStart = findNamedValueStart(source, propertyName);
-  if (valueStart === undefined || source[valueStart] !== '"') return false;
-  let escaped = false;
-  for (let index = valueStart + 1; index < source.length; index += 1) {
-    const char = source[index]!;
-    if (escaped) escaped = false;
-    else if (char === '\\') escaped = true;
-    else if (char === '"') return true;
-  }
-  return false;
-}
-
-function hasCompletedNamedObject(source: string, propertyName: string): boolean {
-  const valueStart = findNamedValueStart(source, propertyName);
-  if (valueStart === undefined || source[valueStart] !== '{') return false;
-  let objectDepth = 0;
-  let arrayDepth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = valueStart; index < source.length; index += 1) {
-    const char = source[index]!;
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (char === '\\') escaped = true;
-      else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') inString = true;
-    else if (char === '{') objectDepth += 1;
-    else if (char === '[') arrayDepth += 1;
-    else if (char === ']') arrayDepth -= 1;
-    else if (char === '}') {
-      objectDepth -= 1;
-      if (objectDepth === 0 && arrayDepth === 0) return true;
-    }
-    if (objectDepth < 0 || arrayDepth < 0) return false;
-  }
-  return false;
 }
 
 // Extracts only array items whose object-closing brace has actually arrived in the raw stream.
@@ -953,7 +936,10 @@ function parseTrialFragment(raw: string): TrialFragmentSelection | undefined {
   }
 }
 
-function inferReadingSetupTool(buffer: string): ReadingSetupToolName | undefined {
+function inferReadingSetupTool(
+  buffer: string,
+  phase?: ReadingSetupPhase,
+): ReadingSetupToolName | undefined {
   const parsed = recordValue(completeJson(buffer));
   if (!parsed) return undefined;
   const keys = new Set(Object.keys(parsed));
@@ -961,18 +947,31 @@ function inferReadingSetupTool(buffer: string): ReadingSetupToolName | undefined
     return 'present_interview_question';
   }
   if (keys.has('fragments')) return 'select_trial_fragments';
-  if (keys.has('briefing') || keys.has('book_reader_profile') || keys.has('reader_profile_patch')) {
-    return 'finish_interview';
+  if (keys.has('book_identity') || keys.has('arc') || keys.has('assumed_knowledge')) {
+    return 'submit_reading_briefing';
   }
-  if (keys.has('public_strategy') || keys.has('strategy')) return 'save_strategy_draft';
+  if (keys.has('book_reader_profile') || keys.has('reader_profile_patch')) {
+    return 'submit_interview_profile';
+  }
+  if (keys.has('candidates')) return 'submit_trial_candidates';
+  if (keys.has('public_strategy') || keys.has('strategy')) {
+    return phase === 'strategy_review' ? 'save_strategy_draft' : 'submit_reading_strategy';
+  }
   return undefined;
 }
 
-export function createReadingSetupStreamParser(emit: (delta: ReadingSetupStreamDelta) => void) {
+export function createReadingSetupStreamParser(
+  emit: (delta: ReadingSetupStreamDelta) => void,
+  phase?: ReadingSetupPhase,
+) {
   let speculativeEpoch = 0;
   let toolName: ReadingSetupToolName | undefined;
+  let acceptedCompletion: CompletionSnapshot | undefined;
+  let ignoreCurrentTool = false;
   let buffer = '';
   let startedForEpoch = false;
+  let completionFlow = false;
+  let completionDraftStarted = false;
   let consumedOptionsEnd = 0;
   let consumedCandidatesEnd = 0;
   let consumedFragmentsEnd = 0;
@@ -1000,20 +999,72 @@ export function createReadingSetupStreamParser(emit: (delta: ReadingSetupStreamD
   const emitToolStarted = () => {
     if (!toolName || startedForEpoch) return;
     startedForEpoch = true;
-    if (toolName === 'finish_interview') {
-      emit(withEpoch({ type: 'draft_started' as const, source: 'interview' as const }));
-    } else if (toolName === 'save_strategy_draft') {
+    if (toolName === 'save_strategy_draft') {
       emit(withEpoch({ type: 'draft_started' as const, source: 'revision' as const }));
     } else if (toolName === 'select_trial_fragments') {
       emit(withEpoch({ type: 'selection_started' as const, total: 3 as const }));
     }
   };
 
+  const expectedCompletionTool = (): ReadingSetupToolName => {
+    if (!acceptedCompletion?.completionId) return 'finish_interview';
+    if (!acceptedCompletion.briefing) return 'submit_reading_briefing';
+    if (!acceptedCompletion.strategy) return 'submit_reading_strategy';
+    if (!acceptedCompletion.candidates) return 'submit_trial_candidates';
+    if (!acceptedCompletion.profile) return 'submit_interview_profile';
+    return 'complete_interview_result';
+  };
+
+  const emitAcceptedCompletion = () => {
+    if (!acceptedCompletion?.completionId) return;
+    if (!completionDraftStarted) {
+      completionDraftStarted = true;
+      emit(withEpoch({ type: 'draft_started' as const, source: 'interview' as const }));
+    }
+    if (acceptedCompletion.briefing) {
+      for (const field of ['book_identity', 'arc', 'assumed_knowledge', 'reading_advice'] as const) {
+        const value = acceptedCompletion.briefing[field];
+        const previousLength = emitted.briefing[field];
+        if (value.length > previousLength) {
+          emit(withEpoch({
+            type: 'briefing_delta' as const,
+            field,
+            chars: value.slice(previousLength),
+          }));
+        }
+        emitted.briefing[field] = value.length;
+      }
+    }
+    if (acceptedCompletion.strategy) {
+      const value = acceptedCompletion.strategy.publicStrategy;
+      if (value.length > emitted.strategy) {
+        emit(withEpoch({ type: 'strategy_delta' as const, chars: value.slice(emitted.strategy) }));
+      }
+      emitted.strategy = value.length;
+    }
+    if (acceptedCompletion.candidates) {
+      for (let index = emittedCandidates; index < acceptedCompletion.candidates.length; index += 1) {
+        const candidate = acceptedCompletion.candidates[index]!;
+        emit(withEpoch({
+          type: 'reading_node_added' as const,
+          ordinal: index + 1,
+          sectionId: candidate.section_id,
+          segment: candidate.segment,
+          reason: candidate.reason,
+        }));
+      }
+      emittedCandidates = acceptedCompletion.candidates.length;
+    }
+  };
+
   const reset = (name: string) => {
     speculativeEpoch += 1;
     toolName = isReadingSetupToolName(name) ? name : undefined;
+    ignoreCurrentTool = false;
     buffer = '';
     startedForEpoch = false;
+    completionFlow = isInterviewCompletionTool(toolName);
+    completionDraftStarted = false;
     consumedOptionsEnd = 0;
     consumedCandidatesEnd = 0;
     consumedFragmentsEnd = 0;
@@ -1029,6 +1080,18 @@ export function createReadingSetupStreamParser(emit: (delta: ReadingSetupStreamD
     };
     emit({ type: 'speculative_reset', speculativeEpoch, toolName: toolName ?? null });
     emitToolStarted();
+    if (completionFlow) emitAcceptedCompletion();
+  };
+
+  const switchTool = (name: ReadingSetupToolName) => {
+    toolName = name;
+    ignoreCurrentTool = false;
+    buffer = '';
+    startedForEpoch = false;
+    consumedOptionsEnd = 0;
+    consumedCandidatesEnd = 0;
+    consumedFragmentsEnd = 0;
+    emitToolStarted();
   };
 
   const emitStringSuffix = (
@@ -1043,12 +1106,88 @@ export function createReadingSetupStreamParser(emit: (delta: ReadingSetupStreamD
 
   return {
     onToolStart(name: string) {
+      const nextTool = isReadingSetupToolName(name) ? name : undefined;
+      if (completionFlow && !nextTool) {
+        toolName = undefined;
+        ignoreCurrentTool = false;
+        buffer = '';
+        startedForEpoch = false;
+        consumedOptionsEnd = 0;
+        consumedCandidatesEnd = 0;
+        consumedFragmentsEnd = 0;
+        return;
+      }
+      if (isInterviewCompletionTool(nextTool) && nextTool) {
+        const expectedTool = expectedCompletionTool();
+        if (nextTool !== expectedTool) {
+          reset(name);
+          ignoreCurrentTool = true;
+          return;
+        }
+        if (completionFlow && nextTool !== toolName) {
+          switchTool(nextTool);
+          return;
+        }
+      }
       reset(name);
     },
+    onToolSucceeded(name: string) {
+      if (
+        name === 'finish_interview'
+        && toolName === 'finish_interview'
+        && !completionDraftStarted
+      ) {
+        acceptedCompletion ??= {
+          completionId: 'accepted-by-host',
+          baseConversationVersion: null,
+        };
+        completionDraftStarted = true;
+        emit(withEpoch({ type: 'draft_started' as const, source: 'interview' as const }));
+      }
+    },
+    acceptCompletion(snapshot: CompletionSnapshot) {
+      acceptedCompletion = snapshot;
+      emitAcceptedCompletion();
+    },
+    replayCompletion(snapshot: CompletionSnapshot) {
+      acceptedCompletion = snapshot;
+      if (!snapshot.completionId) return;
+      speculativeEpoch += 1;
+      toolName = undefined;
+      buffer = '';
+      startedForEpoch = false;
+      completionFlow = true;
+      completionDraftStarted = false;
+      consumedOptionsEnd = 0;
+      consumedCandidatesEnd = 0;
+      consumedFragmentsEnd = 0;
+      emittedCandidates = 0;
+      emittedFragments = 0;
+      emitted = {
+        ack: 0,
+        prompt: 0,
+        hint: 0,
+        strategy: 0,
+        briefing: { book_identity: 0, arc: 0, assumed_knowledge: 0, reading_advice: 0 },
+        sufficiency: undefined,
+      };
+      emit({ type: 'speculative_reset', speculativeEpoch, toolName: null });
+      emitAcceptedCompletion();
+    },
     onDelta(delta: string) {
+      if (ignoreCurrentTool) return;
       buffer += delta;
       if (!toolName) {
-        toolName = inferReadingSetupTool(buffer);
+        const inferredTool = inferReadingSetupTool(buffer, phase);
+        if (
+          isInterviewCompletionTool(inferredTool)
+          && inferredTool !== expectedCompletionTool()
+        ) {
+          ignoreCurrentTool = true;
+          return;
+        }
+        toolName = inferredTool;
+        if (isInterviewCompletionTool(toolName)) completionFlow = true;
         emitToolStarted();
       }
       if (!toolName) return;
@@ -1078,42 +1217,39 @@ export function createReadingSetupStreamParser(emit: (delta: ReadingSetupStreamD
         return;
       }
 
-      if (toolName === 'finish_interview') {
-        const briefing = recordValue(parsed.briefing);
-        if (briefing) {
-          for (const field of ['book_identity', 'arc', 'assumed_knowledge', 'reading_advice'] as const) {
-            emitted.briefing[field] = emitStringSuffix(
-              briefing[field],
-              emitted.briefing[field],
-              (chars) => withEpoch({ type: 'briefing_delta' as const, field, chars }),
-            );
-          }
+      if (toolName === 'submit_reading_briefing') {
+        for (const field of ['book_identity', 'arc', 'assumed_knowledge', 'reading_advice'] as const) {
+          emitted.briefing[field] = emitStringSuffix(
+            parsed[field],
+            emitted.briefing[field],
+            (chars) => withEpoch({ type: 'briefing_delta' as const, field, chars }),
+          );
         }
+        return;
       }
 
-      // Providers may stream tool properties out of schema order. Raw closing delimiters fence
-      // the visible phases so synthesized completeJson() values cannot reveal a later phase early.
-      const briefingComplete = toolName !== 'finish_interview'
-        || hasCompletedNamedObject(buffer, 'briefing');
-      if ((toolName === 'finish_interview' || toolName === 'save_strategy_draft') && briefingComplete) {
+      if (toolName === 'submit_reading_strategy' || toolName === 'save_strategy_draft') {
         emitted.strategy = emitStringSuffix(
           parsed.public_strategy,
           emitted.strategy,
           (chars) => withEpoch({ type: 'strategy_delta' as const, chars }),
         );
-        if (hasCompletedNamedString(buffer, 'public_strategy')) {
-          for (const item of scanCompletedArrayItems(buffer, 'trial_candidates')) {
-            if (item.end <= consumedCandidatesEnd) continue;
-            const candidate = parseTrialCandidate(item.raw);
-            if (!candidate) break;
-            emit(withEpoch({
-              type: 'reading_node_added' as const,
-              ordinal: emittedCandidates + 1,
-              ...candidate,
-            }));
-            consumedCandidatesEnd = item.end;
-            emittedCandidates += 1;
-          }
+        if (toolName === 'submit_reading_strategy') return;
+      }
+
+      if (toolName === 'submit_trial_candidates' || toolName === 'save_strategy_draft') {
+        const propertyName = toolName === 'submit_trial_candidates' ? 'candidates' : 'trial_candidates';
+        for (const item of scanCompletedArrayItems(buffer, propertyName)) {
+          if (item.end <= consumedCandidatesEnd) continue;
+          const candidate = parseTrialCandidate(item.raw);
+          if (!candidate) break;
+          emit(withEpoch({
+            type: 'reading_node_added' as const,
+            ordinal: emittedCandidates + 1,
+            ...candidate,
+          }));
+          consumedCandidatesEnd = item.end;
+          emittedCandidates += 1;
         }
         return;
       }
@@ -1135,6 +1271,47 @@ export function createReadingSetupStreamParser(emit: (delta: ReadingSetupStreamD
 }
 
 export type ReadingSetupPhase = 'interviewing' | 'strategy_review' | 'select_trial';
+
+export type SubmittedReadingStrategy = {
+  publicStrategy: string;
+  strategy: ReadingStrategyCore;
+};
+
+export type SubmittedInterviewProfile = {
+  bookReaderProfile: BookReaderProfile;
+  readerProfilePatch?: ReaderProfilePatch;
+};
+
+export type CompletionSnapshot = {
+  completionId: string | null;
+  baseConversationVersion: number | null;
+  briefing?: ReadingBriefing;
+  strategy?: SubmittedReadingStrategy;
+  candidates?: TrialCandidate[];
+  profile?: SubmittedInterviewProfile;
+};
+
+export type CompletedInterviewArtifacts = {
+  briefing: ReadingBriefing;
+  strategy: SubmittedReadingStrategy;
+  candidates: TrialCandidate[];
+  profile: SubmittedInterviewProfile;
+};
+
+/**
+ * Durable completion checkpoints for an interviewing turn. The API binds an implementation
+ * to the currently claimed session/lease; agent-kit only enforces tool order and never knows
+ * about database transactions or fencing columns.
+ */
+export interface InterviewCompletionStore {
+  load(): Promise<CompletionSnapshot>;
+  start(): Promise<CompletionSnapshot>;
+  submitBriefing(value: ReadingBriefing): Promise<CompletionSnapshot>;
+  submitStrategy(value: SubmittedReadingStrategy): Promise<CompletionSnapshot>;
+  submitCandidates(value: TrialCandidate[]): Promise<CompletionSnapshot>;
+  submitProfile(value: SubmittedInterviewProfile): Promise<CompletionSnapshot>;
+  complete(): Promise<CompletedInterviewArtifacts>;
+}
 
 export type ReadingSetupOutcome =
   | { type: 'question'; question: InterviewQuestion }
@@ -1161,7 +1338,7 @@ export type ReadingSetupCallMetrics = {
   outputChars: number | null;
 };
 
-const READING_SETUP_SYSTEM_PROMPT = `你是 ReadTailor 的单本书访谈与处理方式 Agent。你只处理当前用户与当前书的阅读准备，不修改原文。每轮必须调用一个宿主工具结束：信息不足时调用 present_interview_question；信息足够或已达到问题上限时调用 finish_interview。问题必须直接服务于本书处理方式，不重复长期画像中的明确信息，每次只问一题，给出 2-5 个清晰选项并允许文字补充。访谈是轻快的口语对话，务必言简意赅、克制不铺陈，不要长篇大论：acknowledgment 用一句短话真实回应用户上一答（30 字以内，不复述整段、不堆砌寒暄，首问留空串）；prompt 用一句话把问题问清楚（一般 40 字以内，不加铺垫、背景解释或多余修饰）；hint 一句话说明为什么问这道题、它会如何影响本书处理方式（40 字以内，贴着当前问题写、不空泛）；每个选项 label 是一个简短短语（15 字以内，不写成整句）；sufficiency 给出 0-100 的信息充足度自评（可随判断诚实回落）。finish_interview 必须提交本书画像、个性化读前简报、用户可读的处理方式和结构化策略。调用 finish_interview 时严格按 briefing、public_strategy、strategy、book_reader_profile、reader_profile_patch 的字段顺序生成，让读者先看到简报，再看到处理方式，最后看到试读候选。读前简报 briefing 是给读者读正文前看的四段结构化短内容，务必简洁，每段只写 1-2 句、不铺陈：book_identity（这是一本什么书——它的定位与真正价值）；arc（全书怎么走——整体脉络或推进方式）；assumed_knowledge（假设你已经知道——读它默认你具备的背景，可结合该读者已有画像点明落差）；reading_advice（建议你的读法——针对这位读者的一句具体读法建议）。四段都要贴着本书与该读者写，不空泛、不复述处理方式细节。结构化策略要如实产出：整体处理目标 goals、表达原则 expression_principles（说明增强内容如何与原文协作、克制到什么程度）；导读 guide、裁读注 annotations、节后助读 after_reading 三段各自用 enabled 明确决定是否启用——启用时给出对应要点（guide.objectives / annotations.focuses 与 exclusions / after_reading.objectives），认为某段对本书无价值就把该段 enabled 设为 false 并把要点留空，不要为了填满而编造。trial_candidates 从 book profile 候选池中选择恰好三个不同候选，覆盖进入门槛、典型内容和较高难度内容。你没有确认权限，不能批准试读或创建正式策略。`;
+const READING_SETUP_SYSTEM_PROMPT = `你是 ReadTailor 的单本书访谈与处理方式 Agent。你只处理当前用户与当前书的阅读准备，不修改原文。访谈阶段信息不足时调用 present_interview_question；信息足够或已达到问题上限时先调用无参数的 finish_interview，确定性结束问答。finish_interview 成功后不得再次提问，必须依次调用 submit_reading_briefing、submit_reading_strategy、submit_trial_candidates、submit_interview_profile，最后调用 complete_interview_result。每个提交工具成功后结果都会持久化；恢复时不要重复生成已有阶段，从第一个缺失阶段继续。问题必须直接服务于本书处理方式，不重复长期画像中的明确信息，每次只问一题，给出 2-5 个清晰选项并允许文字补充。访谈是轻快的口语对话，务必言简意赅、克制不铺陈：acknowledgment 用一句短话回应用户上一答（30 字以内，首问留空串）；prompt 一般 40 字以内；hint 说明问题如何影响本书处理方式（40 字以内）；每个选项 label 15 字以内；sufficiency 给出 0-100 的信息充足度自评。读前简报是四段结构化短内容，每段只写 1-2 句：book_identity（本书定位与价值）；arc（全书脉络）；assumed_knowledge（默认背景及读者落差）；reading_advice（针对读者的具体读法）。结构化策略要如实产出整体 goals、expression_principles，以及 guide、annotations、after_reading 三段的 enabled 和对应要点；某段无价值就设为 false 并留空要点。trial candidates 从 book profile 候选池中选择恰好三个不同候选，覆盖进入门槛、典型内容和较高难度内容。你没有确认权限，不能批准试读或创建正式策略。`;
 
 function userTurnMessage(text: string): AgentMessage {
   return { role: 'user', content: text, timestamp: Date.now() };
@@ -1274,6 +1451,7 @@ export async function runReadingSetupAgent(options: {
   askedCount: number;
   context: Record<string, unknown>;
   feedback?: string;
+  completionStore?: InterviewCompletionStore;
   maxTurns?: number;
   timeoutMs?: number;
   onTrace?: AgentTraceHandler;
@@ -1286,11 +1464,31 @@ export async function runReadingSetupAgent(options: {
   let turns = 0;
   let toolCalls = 0;
   let limitExceeded = false;
-  const maxTurns = options.maxTurns ?? 8;
+  const maxTurns = options.maxTurns ?? 12;
   const tools: AgentTool[] = [];
+  let completionSnapshot: CompletionSnapshot = {
+    completionId: null,
+    baseConversationVersion: null,
+  };
+  let streamParser: ReturnType<typeof createReadingSetupStreamParser> | undefined;
 
   if (options.phase === 'interviewing') {
-    if (options.askedCount < 7) {
+    completionSnapshot = options.completionStore
+      ? await options.completionStore.load()
+      : completionSnapshot;
+    const requireStore = (): InterviewCompletionStore => {
+      if (!options.completionStore) {
+        throw new Error('Interview completion store is not configured.');
+      }
+      return options.completionStore;
+    };
+    const requireStarted = () => {
+      if (!completionSnapshot.completionId) {
+        throw new Error('Call finish_interview before submitting completion artifacts.');
+      }
+    };
+
+    if (options.askedCount < 7 && !completionSnapshot.completionId) {
       tools.push({
         name: 'present_interview_question',
         label: 'Present interview question',
@@ -1298,6 +1496,9 @@ export async function runReadingSetupAgent(options: {
         parameters: InterviewQuestionSchema,
         executionMode: 'sequential',
         execute: async (_id, input) => {
+          if (completionSnapshot.completionId) {
+            throw new Error('The interview is already finishing; no more questions are allowed.');
+          }
           outcome = { type: 'question', question: input as InterviewQuestion };
           return {
             content: [{ type: 'text' as const, text: 'Interview question accepted.' }],
@@ -1307,41 +1508,155 @@ export async function runReadingSetupAgent(options: {
         },
       });
     }
-    if (options.askedCount > 0) tools.push({
-      name: 'finish_interview',
-      label: 'Finish interview',
-      description: '信息已经足够或问题达到上限时，提交完整的阅读准备结果。',
-      parameters: Type.Object({
-        briefing: ReadingBriefingSchema,
-        public_strategy: Type.String({ minLength: 50, maxLength: 8000 }),
-        strategy: ReadingStrategySchema,
-        book_reader_profile: BookReaderProfileSchema,
-        reader_profile_patch: Type.Optional(ReaderProfilePatchSchema),
-      }),
-      executionMode: 'sequential',
-      execute: async (_id, input) => {
-        const value = input as {
-          book_reader_profile: BookReaderProfile;
-          reader_profile_patch?: ReaderProfilePatch;
-          briefing: ReadingBriefing;
-          public_strategy: string;
-          strategy: ReadingStrategy;
-        };
-        outcome = {
-          type: 'completed',
-          bookReaderProfile: value.book_reader_profile,
-          ...(value.reader_profile_patch ? { readerProfilePatch: value.reader_profile_patch } : {}),
-          briefing: value.briefing,
-          publicStrategy: value.public_strategy,
-          strategy: value.strategy,
-        };
-        return {
-          content: [{ type: 'text' as const, text: 'Reading setup accepted.' }],
-          details: { trialCandidateCount: value.strategy.trial_candidates.length },
-          terminate: true,
-        };
-      },
-    });
+    if (options.askedCount > 0 && !completionSnapshot.completionId) {
+      tools.push({
+        name: 'finish_interview',
+        label: 'Finish interview',
+        description: '信息已经足够或问题达到上限时，结束问答阶段。这个工具没有参数，也不提交生成产物。',
+        parameters: Type.Object({}),
+        executionMode: 'sequential',
+        execute: async () => {
+          completionSnapshot = await requireStore().start();
+          streamParser?.acceptCompletion(completionSnapshot);
+          return {
+            content: [{ type: 'text' as const, text: 'Interview closed. Submit the reading briefing next.' }],
+            details: { completionId: completionSnapshot.completionId },
+          };
+        },
+      });
+    }
+    if (options.askedCount > 0 || completionSnapshot.completionId) {
+      tools.push(
+        {
+          name: 'submit_reading_briefing',
+          label: 'Submit reading briefing',
+          description: '提交四段个性化读前简报。必须在 finish_interview 之后首先调用。',
+          parameters: ReadingBriefingSchema,
+          executionMode: 'sequential',
+          execute: async (_id, input) => {
+            requireStarted();
+            completionSnapshot = await requireStore().submitBriefing(input as ReadingBriefing);
+            streamParser?.acceptCompletion(completionSnapshot);
+            return {
+              content: [{ type: 'text' as const, text: 'Reading briefing saved. Submit the reading strategy next.' }],
+              details: { saved: true },
+            };
+          },
+        },
+        {
+          name: 'submit_reading_strategy',
+          label: 'Submit reading strategy',
+          description: '提交用户可读处理方式和不含试读候选的结构化策略。',
+          parameters: Type.Object({
+            public_strategy: Type.String({ minLength: 50, maxLength: 8000 }),
+            strategy: ReadingStrategyCoreSchema,
+          }),
+          executionMode: 'sequential',
+          execute: async (_id, input) => {
+            requireStarted();
+            if (!completionSnapshot.briefing) {
+              throw new Error('Submit the reading briefing before the reading strategy.');
+            }
+            const value = input as { public_strategy: string; strategy: ReadingStrategyCore };
+            completionSnapshot = await requireStore().submitStrategy({
+              publicStrategy: value.public_strategy,
+              strategy: value.strategy,
+            });
+            streamParser?.acceptCompletion(completionSnapshot);
+            return {
+              content: [{ type: 'text' as const, text: 'Reading strategy saved. Submit trial candidates next.' }],
+              details: { saved: true },
+            };
+          },
+        },
+        {
+          name: 'submit_trial_candidates',
+          label: 'Submit trial candidates',
+          description: '从 book profile 候选池提交恰好三个不同的试读候选。',
+          parameters: Type.Object({ candidates: TrialCandidatesSchema }),
+          executionMode: 'sequential',
+          execute: async (_id, input) => {
+            requireStarted();
+            if (!completionSnapshot.strategy) {
+              throw new Error('Submit the reading strategy before trial candidates.');
+            }
+            const value = input as { candidates: TrialCandidate[] };
+            completionSnapshot = await requireStore().submitCandidates(value.candidates);
+            streamParser?.acceptCompletion(completionSnapshot);
+            return {
+              content: [{ type: 'text' as const, text: 'Trial candidates saved. Submit the interview profile next.' }],
+              details: { trialCandidateCount: value.candidates.length },
+            };
+          },
+        },
+        {
+          name: 'submit_interview_profile',
+          label: 'Submit interview profile',
+          description: '提交本书读者画像和可选的长期画像补丁。',
+          parameters: Type.Object({
+            book_reader_profile: BookReaderProfileSchema,
+            reader_profile_patch: Type.Optional(ReaderProfilePatchSchema),
+          }),
+          executionMode: 'sequential',
+          execute: async (_id, input) => {
+            requireStarted();
+            if (!completionSnapshot.candidates) {
+              throw new Error('Submit trial candidates before the interview profile.');
+            }
+            const value = input as {
+              book_reader_profile: BookReaderProfile;
+              reader_profile_patch?: ReaderProfilePatch;
+            };
+            completionSnapshot = await requireStore().submitProfile({
+              bookReaderProfile: value.book_reader_profile,
+              ...(value.reader_profile_patch ? { readerProfilePatch: value.reader_profile_patch } : {}),
+            });
+            streamParser?.acceptCompletion(completionSnapshot);
+            return {
+              content: [{ type: 'text' as const, text: 'Interview profile saved. Complete the interview result next.' }],
+              details: { saved: true },
+            };
+          },
+        },
+        {
+          name: 'complete_interview_result',
+          label: 'Complete interview result',
+          description: '所有四类产物保存后，组装完整访谈结果并结束本次 Agent run。这个工具没有参数。',
+          parameters: Type.Object({}),
+          executionMode: 'sequential',
+          execute: async () => {
+            requireStarted();
+            if (
+              !completionSnapshot.briefing
+              || !completionSnapshot.strategy
+              || !completionSnapshot.candidates
+              || !completionSnapshot.profile
+            ) {
+              throw new Error('All completion artifacts must be submitted before completing the result.');
+            }
+            const artifacts = await requireStore().complete();
+            outcome = {
+              type: 'completed',
+              bookReaderProfile: artifacts.profile.bookReaderProfile,
+              ...(artifacts.profile.readerProfilePatch
+                ? { readerProfilePatch: artifacts.profile.readerProfilePatch }
+                : {}),
+              briefing: artifacts.briefing,
+              publicStrategy: artifacts.strategy.publicStrategy,
+              strategy: {
+                ...artifacts.strategy.strategy,
+                trial_candidates: artifacts.candidates,
+              },
+            };
+            return {
+              content: [{ type: 'text' as const, text: 'Reading setup accepted.' }],
+              details: { trialCandidateCount: artifacts.candidates.length },
+              terminate: true,
+            };
+          },
+        },
+      );
+    }
   } else if (options.phase === 'strategy_review') {
     tools.push({
       name: 'save_strategy_draft',
@@ -1394,16 +1709,21 @@ export async function runReadingSetupAgent(options: {
     });
   }
 
+  const completionProgress = options.phase === 'interviewing' && completionSnapshot.completionId
+    ? `\n当前问答已经结束。持久化完成进度：briefing=${Boolean(completionSnapshot.briefing)}，strategy=${Boolean(completionSnapshot.strategy)}，candidates=${Boolean(completionSnapshot.candidates)}，profile=${Boolean(completionSnapshot.profile)}。不要提问或重新生成已完成阶段，直接调用第一个缺失阶段的工具；全部齐全时调用 complete_interview_result。`
+    : '';
   const systemPrompt = options.phase === 'strategy_review'
     ? `${READING_SETUP_SYSTEM_PROMPT}\n当前处于处理方式确认阶段：请结合访谈历史与上一版草稿，吸收用户最新反馈后调用 save_strategy_draft 产出新草稿，保持连续性，不要提出新问题或确认策略。`
     : options.phase === 'select_trial'
       ? `${READING_SETUP_SYSTEM_PROMPT}\n当前处于试读片段选择阶段：处理方式已确认，请依据已给出的候选节点正文，调用 select_trial_fragments 选出恰好三个不重叠、可独立阅读的片段，分别标记 threshold/typical/hardest。只能引用候选节点，range 只填写连续的起止 block_index，不要填写或计算字符 offset，并且必须落在对应节点已列出的 block 范围内。优先命中最能体现处理价值的内容，不要提问或改动策略。`
-      : READING_SETUP_SYSTEM_PROMPT;
+      : `${READING_SETUP_SYSTEM_PROMPT}${completionProgress}`;
   const prompt = options.phase === 'strategy_review'
     ? `用户对当前处理方式草稿给出以下反馈，请吸收后调用 save_strategy_draft 产出新草稿：\n${options.feedback ?? ''}`
     : options.phase === 'select_trial'
       ? '处理方式已确认。请阅读上面给出的候选试读节点正文，调用 select_trial_fragments 选出恰好三个互不重叠、能独立阅读的片段（threshold/典型/hardest 各一），每个给出 section_id+segment 与落在该节点内连续的起止 block_index；不要计算字符 offset。'
-      : `请根据以上长期画像、书籍资料与访谈对话继续本书访谈。已提出 ${options.askedCount} 道问题，最多 7 道。信息不足就用 present_interview_question 提下一题，信息足够或已达上限就 finish_interview。`;
+      : completionSnapshot.completionId
+        ? '问答已经结束。请按照系统消息中的持久化完成进度，从第一个缺失阶段继续；不要重复生成已保存产物。'
+        : `请根据以上长期画像、书籍资料与访谈对话继续本书访谈。已提出 ${options.askedCount} 道问题，最多 7 道。信息不足就用 present_interview_question 提下一题，信息足够或已达上限就先调用 finish_interview，再依序生成并提交四类产物。`;
   const messages = reconstructReadingSetupHistory(options.context, options.modelName);
   const reportMetrics = () => {
     try {
@@ -1444,15 +1764,18 @@ export async function runReadingSetupAgent(options: {
     }
   });
   if (options.onReadingSetupStream) {
-    const parser = createReadingSetupStreamParser(options.onReadingSetupStream);
+    streamParser = createReadingSetupStreamParser(options.onReadingSetupStream, options.phase);
+    if (options.phase === 'interviewing' && completionSnapshot.completionId) {
+      streamParser.replayCompletion(completionSnapshot);
+    }
     agent.subscribe((event) => {
       if (event.type === 'message_update') {
         const streamed = event.assistantMessageEvent;
         if (streamed.type === 'toolcall_start') {
           const part = streamed.partial.content[streamed.contentIndex];
-          parser.onToolStart(part && part.type === 'toolCall' ? part.name : '');
+          streamParser?.onToolStart(part && part.type === 'toolCall' ? part.name : '');
         } else if (streamed.type === 'toolcall_delta') {
-          parser.onDelta(streamed.delta);
+          streamParser?.onDelta(streamed.delta);
         }
       }
     });

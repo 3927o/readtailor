@@ -173,8 +173,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-// Interleaves SSE keep-alive comments so a long silent gap (e.g. while finish_interview
-// generates the briefing) doesn't trip idle proxy/load-balancer timeouts. A single pending
+// Interleaves SSE keep-alive comments so a long silent gap during an agent tool turn doesn't
+// trip idle proxy/load-balancer timeouts. A single pending
 // read of the source is kept across heartbeats so no event is dropped.
 async function* withHeartbeat(source: AsyncGenerator<string>, intervalMs: number): AsyncGenerator<string> {
   let pending = source.next();

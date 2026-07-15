@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getCurrentReadingSetupOperation,
+  getInterview,
   getReadingSetupOperation,
   getStrategy,
   getTrial,
@@ -43,7 +44,7 @@ describe('interview lifecycle commands', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(request('book/1')).resolves.toMatchObject({
-      status: 'generating',
+      status: 'active',
       turnInProgress: true,
       canResume: false,
     });
@@ -61,9 +62,28 @@ describe('interview lifecycle commands', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(interviewResponse(false)));
 
     await expect(resumeInterview('book-1')).resolves.toMatchObject({
-      status: 'generating',
+      status: 'active',
       turnInProgress: false,
       canResume: true,
+    });
+  });
+
+  it('preserves a completed interview instead of mapping it back to generating', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({
+      sessionId: 'session-1',
+      status: 'completed',
+      turnInProgress: false,
+      questionCount: 3,
+      maxQuestions: 7,
+      currentQuestion: null,
+      sufficiency: null,
+      answers: [],
+    })));
+
+    await expect(getInterview('book-1')).resolves.toMatchObject({
+      status: 'completed',
+      turnInProgress: false,
+      canResume: false,
     });
   });
 });

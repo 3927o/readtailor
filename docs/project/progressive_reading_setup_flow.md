@@ -45,7 +45,7 @@
 
 ### 1.1 访谈结束
 
-- `finish_interview` 已经一次性产出本书画像、读前简报、公开策略和包含三个 `trial_candidates` 的结构化策略。
+- 旧实现中，`finish_interview` 一次性产出本书画像、读前简报、公开策略和三个候选；当前实现已拆成 durable completion checkpoints。
 - 实施前 parser 不解析 `finish_interview` 参数，只能在工具成功后发送通用完成信号。
 - API 会扣住该信号，直到 interview session、画像和策略草稿在同一事务中提交成功。
 - `InterviewPage` 只能展示固定的“正在生成读前简报”，提交完成后依赖 workflow gate 跳到策略页。
@@ -280,23 +280,29 @@ GET /v1/user-books/:id/reading-setup-operation/:operationId
 | 工具 | 增量字段 |
 |---|---|
 | `present_interview_question` | acknowledgment、prompt、hint、options、sufficiency |
-| `finish_interview` | briefing 四段、public_strategy、strategy.trial_candidates |
+| `finish_interview` | 无参数，只关闭问答并持久化 completion_started |
+| `submit_reading_briefing` | briefing 四段 |
+| `submit_reading_strategy` | public_strategy |
+| `submit_trial_candidates` | candidates 数组中的完整 candidate |
+| `submit_interview_profile` | 无用户可见增量 |
+| `complete_interview_result` | 无参数，组装已持久化产物 |
 | `save_strategy_draft` | public_strategy、strategy.trial_candidates |
 | `select_trial_fragments` | fragments 数组中的完整 fragment |
 
-### 5.2 调整 `finish_interview` 字段顺序
+### 5.2 访谈完成工具顺序
 
-当前隐藏的本书画像位于用户可见字段之前。工具参数顺序调整为：
+宿主强制以下工具顺序，不再依赖单个 JSON 对象的属性顺序：
 
 ```text
-briefing
-public_strategy
-strategy
-book_reader_profile
-reader_profile_patch
+finish_interview
+submit_reading_briefing
+submit_reading_strategy
+submit_trial_candidates
+submit_interview_profile
+complete_interview_result
 ```
 
-parser 不能只依赖字段顺序判断正确性，但顺序用于降低首个可见内容的延迟。
+每个 submit 工具成功后结果立即写入 checkpoint；恢复时重放已保存阶段并从第一个缺失工具继续。
 
 ### 5.3 安全增量规则
 
@@ -366,7 +372,7 @@ type ReadingSetupStreamErrorCode =
 
 语义：
 
-- `draft_started` 在识别到 `finish_interview` tool call 时立即发送。
+- `draft_started` 只在 `finish_interview` 的 completion_started checkpoint 持久化成功后发送。
 - `draft_final` 只在 interview lease fencing 和保存草稿事务成功后发送。
 - `done` 仍作为 turn 结束帧，但客户端以 `draft_final` 的 snapshot 填充策略缓存。
 - 旧的通用完成事件已删除，草稿阶段只使用上述 typed draft 事件。

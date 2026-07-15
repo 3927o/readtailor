@@ -32,10 +32,19 @@ vi.mock('./api/interview', async (importOriginal) => {
 
 vi.mock('./components', () => ({
   AssistanceContent: ({ content }: { content: string }) => <div>{content}</div>,
+  AdjustmentForm: ({ disabled = false }: { disabled?: boolean }) => (
+    <textarea aria-label="策略反馈" disabled={disabled} />
+  ),
+  BackToShelf: () => <a href="/">返回书架</a>,
   BriefCard: ({ briefing }: { briefing: Record<string, string> }) => (
     <section>{Object.values(briefing).join(' ')}</section>
   ),
-  WorkflowPage: ({ children }: { children: ReactNode }) => <main>{children}</main>,
+  WorkflowPage: ({ children, title, hideHeader }: { children: ReactNode; title: string; hideHeader?: boolean }) => (
+    <main data-chromeless={hideHeader ? 'true' : undefined}>
+      {hideHeader ? null : <h1>{title}</h1>}
+      {children}
+    </main>
+  ),
   WorkflowMessage: ({
     title,
     children,
@@ -64,7 +73,7 @@ afterEach(() => {
 
 function snapshot(questionOrdinal = 1): InterviewSnapshot {
   return {
-    status: 'asking',
+    status: 'active',
     turnInProgress: false,
     canResume: false,
     history: [],
@@ -83,9 +92,20 @@ function snapshot(questionOrdinal = 1): InterviewSnapshot {
 
 function pendingSnapshot(): InterviewSnapshot {
   return {
-    status: 'generating',
+    status: 'active',
     turnInProgress: false,
     canResume: true,
+    history: [],
+    currentQuestion: null,
+    errorSummary: null,
+  };
+}
+
+function completedSnapshot(): InterviewSnapshot {
+  return {
+    status: 'completed',
+    turnInProgress: false,
+    canResume: false,
     history: [],
     currentQuestion: null,
     errorSummary: null,
@@ -157,6 +177,50 @@ describe('useInterviewController', () => {
       question: '问题 1',
       answer: '选项 1',
     });
+  });
+
+  it('lets a durable draft_started event replace the stale answered question snapshot', async () => {
+    apiMocks.getInterview.mockResolvedValue(snapshot(1));
+    let answerHandlers: { onEvent(event: unknown): void } | null = null;
+    apiMocks.streamAnswer.mockImplementation((_id, _input, handlers) => {
+      answerHandlers = handlers;
+      return new Promise<void>(() => {});
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let controller: ReturnType<typeof useInterviewController> | null = null;
+    const value = () => controller!;
+
+    function Harness() {
+      controller = useInterviewController({ userBookId: 'book-1', shouldStart: false });
+      return null;
+    }
+
+    const root = createRoot(document.createElement('div'));
+    roots.push(root);
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><Harness /></QueryClientProvider>);
+    });
+    await waitFor(() => expect(value().question?.id).toBe('question-1'));
+
+    act(() => {
+      expect(value().submit({ optionId: 'option-1' })).toBe(true);
+    });
+    await waitFor(() => expect(answerHandlers).not.toBeNull());
+    act(() => {
+      answerHandlers!.onEvent({
+        userBookId: 'book-1',
+        streamId: 'stream-1',
+        sequence: 1,
+        speculativeEpoch: 1,
+        type: 'draft_started',
+        conversationVersion: 2,
+      });
+    });
+
+    await waitFor(() => expect(value().stream.mode).toBe('draft_streaming'));
+    expect(value().snapshot?.status).toBe('active');
+    expect(value().draftView).toBe(true);
+    expect(value().stream.mode).toBe('draft_streaming');
   });
 
   it('does not advance the canonical workflow when draft_final is followed by done(interviewing)', async () => {
@@ -318,6 +382,49 @@ describe('useInterviewController', () => {
 });
 
 describe('InterviewPage recovery', () => {
+  it('does not render a completed interview as a recovering generation', async () => {
+    apiMocks.getInterview.mockResolvedValue(completedSnapshot());
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const userBook: UserBookDetail = {
+      id: 'book-1',
+      workflowStatus: 'interviewing',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+      sharedBook: {
+        id: 'shared-1',
+        status: 'ready',
+        title: 'Book',
+        authors: [],
+        coverPath: null,
+        errorSummary: null,
+      },
+      readingProgress: null,
+      currentStrategyDraftVersionId: null,
+      currentStrategyVersionId: null,
+      currentTrialRevisionId: null,
+    };
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    roots.push(root);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/user-books/book-1/interview']}>
+            <Routes>
+              <Route path="/user-books/:id" element={<Outlet context={{ userBook }} />}>
+                <Route path="interview" element={<InterviewPage />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitFor(() => expect(host.textContent).toContain('正在打开策略确认'));
+    expect(host.textContent).not.toContain('连接正在恢复');
+    expect(apiMocks.streamResume).not.toHaveBeenCalled();
+  });
+
   it('leaves recovering and restores the answer form after a successful current-question snapshot', async () => {
     apiMocks.getInterview.mockResolvedValue(pendingSnapshot());
     apiMocks.streamResume.mockImplementation(() => new Promise<void>(() => {}));
@@ -358,6 +465,10 @@ describe('InterviewPage recovery', () => {
     });
     await waitFor(() => expect(apiMocks.streamResume).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(host.textContent).toContain('连接正在恢复'));
+    expect(host.textContent).toContain('读之前，先看地图');
+    expect(host.textContent).toContain('正在完成策略…');
+    expect((host.querySelector('textarea[aria-label="策略反馈"]') as HTMLTextAreaElement).disabled).toBe(true);
+    expect(host.querySelector('main')?.hasAttribute('data-chromeless')).toBe(false);
 
     await act(async () => {
       queryClient.setQueryData(userBookQueryKeys.interview('book-1'), snapshot(2));
