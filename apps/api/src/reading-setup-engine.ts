@@ -270,11 +270,26 @@ export function createFakeReadingSetupEngine(): ReadingSetupEngine {
       if (input.phase === 'strategy_review') {
         const completed = fakeCompleted(input.context);
         if (completed.type !== 'completed') throw new Error('fake setup did not complete');
-        return {
+        const outcome: ReadingSetupOutcome = {
           type: 'revised',
           publicStrategy: `${completed.publicStrategy}\n\n已吸收你的反馈：${(input.feedback ?? '').trim()}`,
           strategy: completed.strategy,
         };
+        if (input.onStream) {
+          const speculativeEpoch = 1;
+          input.onStream({ type: 'speculative_reset', speculativeEpoch, toolName: 'save_strategy_draft' });
+          input.onStream({ type: 'draft_started', source: 'revision', speculativeEpoch });
+          input.onStream({ type: 'strategy_delta', chars: outcome.publicStrategy, speculativeEpoch });
+          outcome.strategy.trial_candidates.forEach((candidate, ordinal) => input.onStream?.({
+            type: 'reading_node_added',
+            ordinal: ordinal + 1,
+            sectionId: candidate.section_id,
+            segment: candidate.segment,
+            reason: candidate.reason,
+            speculativeEpoch,
+          }));
+        }
+        return outcome;
       }
       const question = fakeQuestions[input.askedCount];
       const outcome: ReadingSetupOutcome = question

@@ -2,7 +2,7 @@ import { createServer, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentCallPerfEvent, PerfSink } from '@readtailor/observability';
-import { createAgentReadingSetupEngine } from './reading-setup-engine';
+import { createAgentReadingSetupEngine, createFakeReadingSetupEngine } from './reading-setup-engine';
 
 const servers: ReturnType<typeof createServer>[] = [];
 
@@ -48,6 +48,38 @@ function writeToolCall(
 }
 
 describe('createAgentReadingSetupEngine', () => {
+  it('emits epoch-aware strategy revision deltas in fake mode', async () => {
+    const engine = createFakeReadingSetupEngine();
+    const eventTypes: string[] = [];
+    const outcome = await engine.runTurn({
+      sessionId: 'session-fake',
+      phase: 'strategy_review',
+      askedCount: 0,
+      feedback: '更简短',
+      context: {
+        book: { title: 'Book' },
+        bookProfile: {
+          trial_candidates: [1, 2, 3].map((segment) => ({
+            section_id: 'chapter-1',
+            segment,
+            reason: `reason-${segment}`,
+          })),
+        },
+      },
+      onStream: (event) => eventTypes.push(event.type),
+    });
+
+    expect(outcome.type).toBe('revised');
+    expect(eventTypes).toEqual([
+      'speculative_reset',
+      'draft_started',
+      'strategy_delta',
+      'reading_node_added',
+      'reading_node_added',
+      'reading_node_added',
+    ]);
+  });
+
   it('persists ordered, queryable tool traces without prompt or raw argument content', async () => {
     const question = {
       id: 'goal',

@@ -9,7 +9,10 @@ import {
   resumeInterview,
   resumeReadingSetupOperation,
   startInterview,
+  streamStrategyFeedback,
+  streamTrialFeedback,
   streamResumeInterview,
+  type StrategyRevisionClientEvent,
   submitStrategyFeedback,
   submitTrialFeedback,
 } from './api';
@@ -269,6 +272,39 @@ describe('reading setup command idempotency', () => {
       idempotencyKey: 'approve-command-1',
     });
     expect(fetchMock.mock.calls[1]?.[0]).toMatch(/\/trial\/revisions\/trial%2F2$/);
+  });
+});
+
+describe('strategy revision streams', () => {
+  it.each([
+    ['strategy', streamStrategyFeedback, ['book-1', 'draft-1', '再短一些', 'command-1']],
+    ['trial', streamTrialFeedback, ['book-1', 'trial-1', '注释少一些', 'command-2']],
+  ] as const)('maps %s feedback final snapshots and preserves caller keys', async (_source, request, args) => {
+    const envelope = {
+      userBookId: '10000000-0000-0000-0000-000000000001',
+      operationId: '10000000-0000-0000-0000-000000000002',
+      operationAttempt: 1,
+    };
+    const frames = [
+      { ...envelope, sequence: 1, speculativeEpoch: 1, type: 'strategy_delta', chars: '新方式' },
+      { ...envelope, sequence: 2, type: 'revision_final', strategy: strategyResponse('draft-2') },
+    ].map((item) => `data: ${JSON.stringify(item)}\n\n`).join('');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(frames, {
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const events: Array<{ type: string; strategy?: { draftId: string } }> = [];
+
+    await request(args[0], args[1], args[2], args[3], {
+      onEvent: (event: StrategyRevisionClientEvent) => events.push(event),
+    });
+
+    expect(events.map((event) => event.type)).toEqual(['strategy_delta', 'revision_final']);
+    expect(events[1]?.strategy?.draftId).toBe('draft-2');
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      idempotencyKey: args[3],
+    });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/feedback/stream');
   });
 });
 

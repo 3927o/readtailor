@@ -6,6 +6,7 @@ import type {
   ReadingSetupOperationResponse,
   SharedBookStatus,
   StrategyReviewResponse,
+  StrategyRevisionStreamEvent,
   TrialReviewResponse,
   TrialSegment,
 } from '@readtailor/contracts';
@@ -535,6 +536,103 @@ export function submitStrategyFeedback(
   }).then(mapStrategy);
 }
 
+type StrategyRevisionFinalEvent = Extract<StrategyRevisionStreamEvent, { type: 'revision_final' }>;
+export type StrategyRevisionClientEvent =
+  | Exclude<StrategyRevisionStreamEvent, StrategyRevisionFinalEvent>
+  | (Omit<StrategyRevisionFinalEvent, 'strategy'> & { strategy: StrategySnapshot });
+
+export interface StrategyRevisionStreamHandlers {
+  onEvent(event: StrategyRevisionClientEvent): void;
+}
+
+function dispatchStrategyRevisionFrame(
+  frame: string,
+  handlers: StrategyRevisionStreamHandlers,
+): StrategyRevisionClientEvent['type'] | null {
+  const dataLine = frame.split('\n').find((line) => line.startsWith('data:'));
+  if (!dataLine) return null;
+  const payload = dataLine.slice(5).trim();
+  if (!payload) return null;
+  let event: StrategyRevisionStreamEvent;
+  try {
+    event = JSON.parse(payload) as StrategyRevisionStreamEvent;
+  } catch {
+    return null;
+  }
+  const clientEvent: StrategyRevisionClientEvent = event.type === 'revision_final'
+    ? { ...event, strategy: mapStrategy(event.strategy) }
+    : event;
+  handlers.onEvent(clientEvent);
+  return clientEvent.type;
+}
+
+async function consumeStrategyRevisionStream(
+  response: Response,
+  handlers: StrategyRevisionStreamHandlers,
+): Promise<void> {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!response.ok || !contentType.includes('text/event-stream') || !response.body) {
+    const body = await response.json().catch(() => null) as { error?: unknown } | null;
+    throw new ApiError(
+      typeof body?.error === 'string' ? body.error : `请求失败（${response.status}）`,
+      response.status,
+    );
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let terminal = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        const type = dispatchStrategyRevisionFrame(buffer.slice(0, boundary), handlers);
+        if (type === 'revision_final' || type === 'error') terminal = true;
+        buffer = buffer.slice(boundary + 2);
+        boundary = buffer.indexOf('\n\n');
+      }
+    }
+    if (!terminal) throw new ApiError('连接中断，正在恢复处理方式修订。', 0);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function streamStrategyRevisionRequest(
+  path: string,
+  body: Record<string, unknown>,
+  handlers: StrategyRevisionStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(path, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
+  });
+  await consumeStrategyRevisionStream(response, handlers);
+}
+
+export function streamStrategyFeedback(
+  userBookId: string,
+  draftId: string,
+  feedback: string,
+  idempotencyKey: string,
+  handlers: StrategyRevisionStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  return streamStrategyRevisionRequest(
+    `${userBookRoot(userBookId)}/strategy/feedback/stream`,
+    { strategyDraftVersionId: draftId, feedback, idempotencyKey },
+    handlers,
+    signal,
+  );
+}
+
 export async function approveStrategyForTrial(
   userBookId: string,
   draftId: string,
@@ -600,6 +698,22 @@ export function submitTrialFeedback(
     feedback,
     idempotencyKey,
   }).then(mapStrategy);
+}
+
+export function streamTrialFeedback(
+  userBookId: string,
+  revisionId: string,
+  feedback: string,
+  idempotencyKey: string,
+  handlers: StrategyRevisionStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  return streamStrategyRevisionRequest(
+    `${userBookRoot(userBookId)}/trial/feedback/stream`,
+    { trialRevisionId: revisionId, feedback, idempotencyKey },
+    handlers,
+    signal,
+  );
 }
 
 export async function adoptTrial(

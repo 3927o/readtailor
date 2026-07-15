@@ -35,6 +35,7 @@ function PartialBriefCard({ briefing }: { briefing: Partial<Briefing> }) {
 
 export function ProgressiveStrategyView({ model }: { model: ProgressiveStrategyModel }) {
   const committed = model.mode === 'committed';
+  const showCommittedBriefing = committed || model.source !== 'interview';
   const briefing = {
     bookIdentity: model.briefing.bookIdentity ?? '',
     arc: model.briefing.arc ?? '',
@@ -47,7 +48,7 @@ export function ProgressiveStrategyView({ model }: { model: ProgressiveStrategyM
       className="strategy-review progressive-strategy"
       aria-busy={model.mode === 'streaming' || model.mode === 'recovering'}
     >
-      {committed ? <BriefCard briefing={briefing} /> : <PartialBriefCard briefing={model.briefing} />}
+      {showCommittedBriefing ? <BriefCard briefing={briefing} /> : <PartialBriefCard briefing={model.briefing} />}
       <section className="strategy-copy">
         <div className="strategy-version">
           {model.draftVersion ? `处理方式 · 草稿 V${model.draftVersion}` : '处理方式 · 正在起草'}

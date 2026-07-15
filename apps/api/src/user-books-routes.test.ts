@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { StrategyRevisionStreamEvent } from '@readtailor/contracts';
 import { buildApp as buildApiApp } from './app';
 import type { AuthService } from './auth';
 import { loadApiConfig } from './config';
@@ -69,6 +70,40 @@ const detail = {
   createdAt: '2026-07-13T00:00:00.000Z',
   updatedAt: '2026-07-14T00:00:00.000Z',
 };
+
+function strategyReview(draftId = STRATEGY_DRAFT_ID) {
+  return {
+    userBookId: USER_BOOK_ID,
+    workflowStatus: 'strategy_review' as const,
+    draft: {
+      id: draftId,
+      version: 2,
+      status: 'draft' as const,
+      readingBriefing: BRIEFING,
+      userFacingSummary: 'Strategy',
+      strategy: {
+        goals: ['goal'],
+        expressionPrinciples: ['plain'],
+        guide: { enabled: true, objectives: ['orient'] },
+        annotations: { enabled: true, focuses: ['terms'], exclusions: [] },
+        afterReading: { enabled: true, objectives: ['recap'] },
+        trialCandidates: [1, 2, 3].map((segment) => ({ sectionId: 'chapter-1', segment, reason: `reason-${segment}` })),
+      },
+      createdAt: '2026-07-14T00:00:00.000Z',
+      approvedForTrialAt: null,
+    },
+    trialCandidatePreviews: [1, 2, 3].map((segment) => ({
+      ordinal: segment,
+      sectionId: 'chapter-1',
+      segment,
+      chapterPath: ['Chapter 1'],
+      reason: `reason-${segment}`,
+    })),
+    adjustmentCount: 1,
+    adjustmentLimit: 5,
+    canAdjust: true,
+  };
+}
 
 const HIGHLIGHT_ID = '11111111-2222-3333-4444-555555555555';
 const STRATEGY_VERSION_ID = '22222222-3333-4444-8555-666666666666';
@@ -614,6 +649,77 @@ describe('user book workflow routes', () => {
     expect(response.statusCode).toBe(200);
     expect(received).toEqual({ trialRevisionId: SHARED_BOOK_ID, strategyDraftVersionId: SHARED_BOOK_ID });
     expect(response.json()).toMatchObject({ workflowStatus: 'active_reading' });
+  });
+
+  it('streams strategy and trial feedback through the shared revision contract', async () => {
+    const streamId = OPERATION_ID;
+    const createEvents = async function* (
+      source: 'strategy_feedback' | 'trial_feedback',
+    ): AsyncGenerator<StrategyRevisionStreamEvent> {
+      yield {
+        userBookId: USER_BOOK_ID,
+        operationId: streamId,
+        operationAttempt: 1,
+        sequence: 1,
+        speculativeEpoch: 1,
+        type: 'revision_started' as const,
+        source,
+        baseDraftId: STRATEGY_DRAFT_ID,
+        baseTrialRevisionId: source === 'trial_feedback' ? TRIAL_REVISION_ID : null,
+      } as StrategyRevisionStreamEvent;
+      yield {
+        userBookId: USER_BOOK_ID,
+        operationId: streamId,
+        operationAttempt: 1,
+        sequence: 2,
+        speculativeEpoch: 1,
+        type: 'strategy_delta' as const,
+        chars: 'New strategy',
+      };
+      yield {
+        userBookId: USER_BOOK_ID,
+        operationId: streamId,
+        operationAttempt: 1,
+        sequence: 3,
+        type: 'revision_final' as const,
+        strategy: strategyReview(),
+      };
+    };
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        streamStrategyFeedback() {
+          return createEvents('strategy_feedback');
+        },
+        streamTrialFeedback() {
+          return createEvents('trial_feedback');
+        },
+      }),
+    });
+
+    const [strategy, trial] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `/v1/user-books/${USER_BOOK_ID}/strategy/feedback/stream`,
+        headers: { origin: 'http://localhost:5173' },
+        payload: { strategyDraftVersionId: STRATEGY_DRAFT_ID, feedback: 'shorter', idempotencyKey: 'command-1' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/v1/user-books/${USER_BOOK_ID}/trial/feedback/stream`,
+        headers: { origin: 'http://localhost:5173' },
+        payload: { trialRevisionId: TRIAL_REVISION_ID, feedback: 'fewer notes', idempotencyKey: 'command-2' },
+      }),
+    ]);
+
+    for (const response of [strategy, trial]) {
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['cache-control']).toBe('private, no-store');
+      expect(response.headers['x-accel-buffering']).toBe('no');
+      expect(response.body.indexOf('revision_started')).toBeLessThan(response.body.indexOf('revision_final'));
+    }
+    expect(strategy.body).toContain('"source":"strategy_feedback"');
+    expect(trial.body).toContain('"source":"trial_feedback"');
   });
 
   it('streams interview deltas as SSE and closes with question_final', async () => {

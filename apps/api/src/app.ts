@@ -55,6 +55,7 @@ import {
   ReadingSetupOperationResponseSchema,
   SharedBookSchema,
   StrategyReviewResponseSchema,
+  type StrategyRevisionStreamEvent,
   SubmitInterviewAnswerRequestSchema,
   SubmitStrategyFeedbackRequestSchema,
   SubmitTrialFeedbackRequestSchema,
@@ -531,6 +532,48 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       return { error: error.message };
     }
     throw error;
+  };
+
+  const sendStrategyRevisionStream = async (
+    events: AsyncGenerator<StrategyRevisionStreamEvent>,
+    reply: FastifyReply,
+    onError: (error: unknown) => void,
+  ) => {
+    let first: IteratorResult<StrategyRevisionStreamEvent>;
+    try {
+      first = await events.next();
+    } catch (error) {
+      return userBookFailure(error, reply);
+    }
+    const encode = (event: StrategyRevisionStreamEvent) => `data: ${JSON.stringify(event)}\n\n`;
+    const toSse = async function* (): AsyncGenerator<string> {
+      let last = first.done ? undefined : first.value;
+      try {
+        if (last) yield encode(last);
+        for await (const event of events) {
+          last = event;
+          yield encode(event);
+        }
+      } catch (error) {
+        onError(error);
+        if (last) {
+          yield encode({
+            userBookId: last.userBookId,
+            operationId: last.operationId,
+            operationAttempt: last.operationAttempt,
+            sequence: last.sequence + 1,
+            type: 'error',
+            code: 'internal_error',
+            message: '处理方式修订失败',
+          });
+        }
+      }
+    };
+    return reply
+      .type('text/event-stream')
+      .header('cache-control', 'private, no-store')
+      .header('x-accel-buffering', 'no')
+      .send(Readable.from(withHeartbeat(toSse(), 15_000)));
   };
 
   app.get(
@@ -1120,6 +1163,27 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
   );
 
   app.post(
+    '/v1/user-books/:id/strategy/feedback/stream',
+    {
+      schema: {
+        params: userBookIdParams,
+        body: SubmitStrategyFeedbackRequestSchema,
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      const events = deps.userBooks
+        .forUser(request.authUser!.id, { requestId: request.id })
+        .streamStrategyFeedback(request.params.id, request.body);
+      return sendStrategyRevisionStream(
+        events,
+        reply,
+        (error) => request.log.error({ err: error }, 'strategy feedback stream failed'),
+      );
+    },
+  );
+
+  app.post(
     '/v1/user-books/:id/strategy/approve',
     {
       schema: {
@@ -1231,6 +1295,27 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       } catch (error) {
         return userBookFailure(error, reply);
       }
+    },
+  );
+
+  app.post(
+    '/v1/user-books/:id/trial/feedback/stream',
+    {
+      schema: {
+        params: userBookIdParams,
+        body: SubmitTrialFeedbackRequestSchema,
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      const events = deps.userBooks
+        .forUser(request.authUser!.id, { requestId: request.id })
+        .streamTrialFeedback(request.params.id, request.body);
+      return sendStrategyRevisionStream(
+        events,
+        reply,
+        (error) => request.log.error({ err: error }, 'trial feedback stream failed'),
+      );
     },
   );
 

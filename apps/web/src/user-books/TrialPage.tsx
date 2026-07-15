@@ -8,10 +8,10 @@ import type { ActivePopover } from '../reader/NotePopover';
 import {
   adoptTrial,
   ApiError,
+  getStrategy,
   getTrial,
   markTrialSampleViewed,
   retryTrial,
-  submitTrialFeedback,
 } from './api';
 import type { TrialSample, TrialSnapshot } from './api';
 import {
@@ -23,13 +23,9 @@ import {
   WorkflowPage,
 } from './components';
 import { userBookQueryKeys } from './queryKeys';
+import { ProgressiveStrategyView } from './ProgressiveStrategyView';
+import { useStrategyRevisionFlow } from './useStrategyRevisionFlow';
 import { useWorkflowGate } from './useWorkflowGate';
-
-interface TrialFeedbackCommand {
-  trialRevisionId: string;
-  feedback: string;
-  idempotencyKey: string;
-}
 
 export function TrialPage() {
   const { id = '' } = useParams();
@@ -47,7 +43,21 @@ export function TrialPage() {
   const [feedback, setFeedback] = useState('');
   const [popover, setPopover] = useState<ActivePopover | null>(null);
   const viewedAttempts = useRef(new Set<string>());
-  const feedbackCommand = useRef<TrialFeedbackCommand | null>(null);
+  const baseDraftId = trial.data?.draftId ?? '';
+  const baseStrategy = useQuery({
+    queryKey: userBookQueryKeys.strategy(id, baseDraftId),
+    queryFn: () => getStrategy(id, baseDraftId),
+    enabled: gate.active && Boolean(baseDraftId),
+  });
+  const revision = useStrategyRevisionFlow({
+    userBookId: id,
+    source: 'trial_feedback',
+    baseDraftId,
+    baseTrialRevisionId: currentTrialRevisionId || null,
+    enabled: gate.active && Boolean(baseDraftId && currentTrialRevisionId),
+    onCompleted: () => setFeedback(''),
+    onRecoverableFeedback: setFeedback,
+  });
   const resyncOnConflict = async (error: Error) => {
     if (error instanceof ApiError && error.status === 409) {
       await Promise.all([
@@ -73,34 +83,9 @@ export function TrialPage() {
     },
     onError: resyncOnConflict,
   });
-  const revise = useMutation<Awaited<ReturnType<typeof submitTrialFeedback>>, Error, TrialFeedbackCommand>({
-    mutationFn: (command) => submitTrialFeedback(
-      id,
-      command.trialRevisionId,
-      command.feedback,
-      command.idempotencyKey,
-    ),
-    onSuccess: async (strategy) => {
-      feedbackCommand.current = null;
-      queryClient.setQueryData(userBookQueryKeys.strategy(id, strategy.draftId), strategy);
-      await queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
-      navigate(`/user-books/${encodeURIComponent(id)}/strategy`, { replace: true });
-    },
-    onError: resyncOnConflict,
-  });
   const submitFeedback = () => {
-    if (!trial.data) return;
-    const trimmedFeedback = feedback.trim();
-    const previous = feedbackCommand.current;
-    const command = previous?.trialRevisionId === trial.data.revisionId && previous.feedback === trimmedFeedback
-      ? previous
-      : {
-          trialRevisionId: trial.data.revisionId,
-          feedback: trimmedFeedback,
-          idempotencyKey: crypto.randomUUID(),
-        };
-    feedbackCommand.current = command;
-    revise.mutate(command);
+    if (!baseStrategy.data) return;
+    revision.submit(feedback);
   };
   const adopt = useMutation({
     mutationFn: () => {
@@ -171,11 +156,30 @@ export function TrialPage() {
   if (trial.isPending) return <WorkflowPage book={book} kicker="TRIAL SAMPLES · 三个试读" title="先用三段原文试一试"><WorkflowMessage title="正在读取试读状态">当前 revision 正在从服务端恢复。</WorkflowMessage></WorkflowPage>;
   if (trial.isError) return <WorkflowPage book={book} kicker="TRIAL SAMPLES · 三个试读" title="先用三段原文试一试"><WorkflowMessage title="暂时读不到试读" action={<button className="button button-ghost" type="button" onClick={() => void trial.refetch()}>重新读取</button>}>{trial.error.message}</WorkflowMessage></WorkflowPage>;
   const snapshot = trial.data;
-  const mutationError = retry.error?.message ?? revise.error?.message ?? adopt.error?.message;
+  const mutationError = retry.error?.message
+    ?? revision.error
+    ?? baseStrategy.error?.message
+    ?? adopt.error?.message;
 
   return (
     <WorkflowPage book={book} kicker="TRIAL SAMPLES · 三个试读" title="先用三段原文试一试">
-      {snapshot.status === 'generating' ? (
+      {revision.active ? (
+        <ProgressiveStrategyView model={{
+          mode: revision.state.mode === 'completed'
+            ? 'committed'
+            : revision.state.mode === 'recovering'
+              ? 'recovering'
+              : 'streaming',
+          source: 'trial_feedback',
+          briefing: baseStrategy.data?.readingBriefing ?? {},
+          strategySummary: revision.state.strategySummary,
+          nodes: revision.state.nodes,
+          ...(revision.state.finalStrategy
+            ? { draftVersion: revision.state.finalStrategy.draftVersion }
+            : {}),
+          ...(revision.state.error ? { error: revision.state.error } : {}),
+        }} />
+      ) : snapshot.status === 'generating' ? (
         <section className="trial-generating">
           <WorkflowMessage title="正在生成三个试读片段">
             三个片段会全部成功后一起出现。现在不会展示部分结果，也不会让旧版本混进来。
@@ -241,7 +245,7 @@ export function TrialPage() {
               value={feedback}
               onChange={setFeedback}
               onSubmit={submitFeedback}
-              pending={revise.isPending}
+              pending={revision.pending || baseStrategy.isPending}
               label={`试读不对味？反馈会回到处理方式 · 还可调整 ${Math.max(0, snapshot.adjustmentLimit - snapshot.adjustmentCount)} 次`}
               placeholder="比如：导读再短一点；术语解释不要太浅；注释只留真正影响理解的地方。"
             />
