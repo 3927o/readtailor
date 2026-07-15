@@ -50,6 +50,24 @@ function normalizeKey(key: string): string {
   return normalized;
 }
 
+function doesNotSupportConditionalPut(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const value = error as {
+    name?: string;
+    Code?: string;
+    Header?: string;
+    message?: string;
+    $metadata?: { httpStatusCode?: number };
+  };
+  const status = value.$metadata?.httpStatusCode;
+  const code = value.Code ?? value.name;
+  return (
+    (status === 400 || status === 501) &&
+    code === 'NotImplemented' &&
+    (value.Header === 'If-None-Match' || value.message?.includes('If-None-Match') === true)
+  );
+}
+
 async function collectBody(body: AsyncIterable<Uint8Array> | undefined): Promise<Uint8Array> {
   if (!body) {
     return new Uint8Array();
@@ -266,6 +284,14 @@ export class S3ObjectStorage implements ObjectStorage {
       };
     } catch (error) {
       const status = (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode;
+      if (doesNotSupportConditionalPut(error)) {
+        // Some S3-compatible providers (notably Aliyun OSS) reject If-None-Match on PutObject.
+        // Content-addressed keys and the callers' hash verification preserve immutability here;
+        // the native conditional path remains atomic on providers that support it.
+        const existing = await this.head(normalized);
+        if (existing) return { object: existing, created: false };
+        return { object: await this.put(normalized, body, contentType), created: true };
+      }
       if (status !== 409 && status !== 412) {
         throw error;
       }

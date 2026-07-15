@@ -1,8 +1,13 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { createObjectStorage, FileSystemObjectStorage, ObjectNotFoundError } from './index';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  createObjectStorage,
+  FileSystemObjectStorage,
+  ObjectNotFoundError,
+  S3ObjectStorage,
+} from './index';
 
 const roots: string[] = [];
 
@@ -74,5 +79,57 @@ describe('createObjectStorage', () => {
     ).client;
 
     expect(client.config.forcePathStyle).toBe(false);
+  });
+});
+
+describe('S3ObjectStorage', () => {
+  it('falls back when the provider rejects If-None-Match on PutObject', async () => {
+    const storage = new S3ObjectStorage('books', { region: 'test' });
+    const client = (storage as unknown as { client: { send: ReturnType<typeof vi.fn> } }).client;
+    client.send = vi.fn().mockRejectedValueOnce(
+      Object.assign(new Error('conditional writes are unsupported'), {
+        name: 'NotImplemented',
+        Code: 'NotImplemented',
+        Header: 'If-None-Match',
+        $metadata: { httpStatusCode: 400 },
+      }),
+    );
+    vi.spyOn(storage, 'head').mockResolvedValue(undefined);
+    const put = vi.spyOn(storage, 'put').mockResolvedValue({
+      key: 'books/a/immutable.txt',
+      size: 4,
+    });
+
+    const result = await storage.putIfAbsent(
+      'books/a/immutable.txt',
+      new TextEncoder().encode('book'),
+      'text/plain',
+    );
+
+    expect(result.created).toBe(true);
+    expect(put).toHaveBeenCalledOnce();
+  });
+
+  it('does not overwrite an existing object in the compatibility fallback', async () => {
+    const storage = new S3ObjectStorage('books', { region: 'test' });
+    const client = (storage as unknown as { client: { send: ReturnType<typeof vi.fn> } }).client;
+    client.send = vi.fn().mockRejectedValueOnce(
+      Object.assign(new Error('conditional writes are unsupported'), {
+        name: 'NotImplemented',
+        Code: 'NotImplemented',
+        Header: 'If-None-Match',
+        $metadata: { httpStatusCode: 400 },
+      }),
+    );
+    vi.spyOn(storage, 'head').mockResolvedValue({ key: 'books/a/immutable.txt', size: 4 });
+    const put = vi.spyOn(storage, 'put');
+
+    const result = await storage.putIfAbsent(
+      'books/a/immutable.txt',
+      new TextEncoder().encode('book'),
+    );
+
+    expect(result.created).toBe(false);
+    expect(put).not.toHaveBeenCalled();
   });
 });
