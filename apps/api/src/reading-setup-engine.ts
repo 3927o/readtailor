@@ -262,7 +262,6 @@ function emitFakeStream(onStream: (delta: ReadingSetupStreamDelta) => void, outc
       reason: candidate.reason,
       speculativeEpoch,
     }));
-    onStream({ type: 'concluding', speculativeEpoch });
   } else if (outcome.type === 'fragments') {
     onStream({ type: 'selection_started', total: 3, speculativeEpoch });
     outcome.fragments.forEach((fragment, ordinal) => onStream({

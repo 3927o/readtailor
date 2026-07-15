@@ -390,93 +390,38 @@ describe('user book workflow routes', () => {
     expect(response.statusCode).toBe(400);
   });
 
-  it('returns a conflict response for stale workflow commands', async () => {
-    const app = await buildApiApp(config, {
-      auth: fakeAuth,
-      userBooks: fakeService({
-        async approveStrategy() {
-          throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
-        },
-      }),
-    });
-    const response = await app.inject({
-      method: 'POST',
-      url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve`,
-      headers: { origin: 'http://localhost:5173' },
-      payload: { strategyDraftVersionId: SHARED_BOOK_ID, idempotencyKey: 'approve-stale-1' },
-    });
-
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({ error: '处理方式已经更新，请刷新后继续' });
-  });
-
-  it('requires and forwards the approve idempotency key', async () => {
-    let received: unknown;
-    const app = await buildApiApp(config, {
-      auth: fakeAuth,
-      userBooks: fakeService({
-        async approveStrategy(_userBookId, input) {
-          received = input;
-          return {
-            userBookId: USER_BOOK_ID,
-            workflowStatus: 'trial_generating',
-            strategyDraftVersionId: input.strategyDraftVersionId,
-            trialRevisionId: SHARED_BOOK_ID,
-          };
-        },
-      }),
-    });
-    const response = await app.inject({
-      method: 'POST',
-      url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve`,
-      headers: { origin: 'http://localhost:5173' },
-      payload: { strategyDraftVersionId: SHARED_BOOK_ID, idempotencyKey: 'approve-1' },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(received).toEqual({ strategyDraftVersionId: SHARED_BOOK_ID, idempotencyKey: 'approve-1' });
-    expect(response.json()).toMatchObject({ workflowStatus: 'trial_generating' });
-
-    const missingKey = await app.inject({
-      method: 'POST',
-      url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve`,
-      headers: { origin: 'http://localhost:5173' },
-      payload: { strategyDraftVersionId: SHARED_BOOK_ID },
-    });
-    expect(missingKey.statusCode).toBe(400);
-  });
-
   it('rejects malformed reading setup commands before calling the service', async () => {
     let calls = 0;
     const app = await buildApiApp(config, {
       auth: fakeAuth,
       userBooks: fakeService({
-        async submitStrategyFeedback() { calls += 1; throw new Error('must not run'); },
-        async approveStrategy() { calls += 1; throw new Error('must not run'); },
-        async submitTrialFeedback() { calls += 1; throw new Error('must not run'); },
+        async *streamStrategyFeedback() { calls += 1; throw new Error('must not run'); },
+        async *streamApproveStrategy() { calls += 1; throw new Error('must not run'); },
+        async *streamTrialFeedback() { calls += 1; throw new Error('must not run'); },
       }),
     });
     const requests = [
       app.inject({
         method: 'POST',
-        url: `/v1/user-books/${USER_BOOK_ID}/strategy/feedback`,
+        url: `/v1/user-books/${USER_BOOK_ID}/strategy/feedback/stream`,
         headers: { origin: 'http://localhost:5173' },
         payload: { strategyDraftVersionId: 'not-a-uuid', feedback: 'clearer', idempotencyKey: 'command-1' },
       }),
       app.inject({
         method: 'POST',
-        url: `/v1/user-books/${USER_BOOK_ID}/strategy/feedback`,
+        url: `/v1/user-books/${USER_BOOK_ID}/strategy/feedback/stream`,
         headers: { origin: 'http://localhost:5173' },
         payload: { strategyDraftVersionId: STRATEGY_DRAFT_ID, feedback: '   ', idempotencyKey: 'command-2' },
       }),
       app.inject({
         method: 'POST',
-        url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve`,
+        url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve/stream`,
         headers: { origin: 'http://localhost:5173' },
         payload: { strategyDraftVersionId: STRATEGY_DRAFT_ID, idempotencyKey: '   ' },
       }),
       app.inject({
         method: 'POST',
-        url: `/v1/user-books/${USER_BOOK_ID}/trial/feedback`,
+        url: `/v1/user-books/${USER_BOOK_ID}/trial/feedback/stream`,
         headers: { origin: 'http://localhost:5173' },
         payload: { trialRevisionId: 'not-a-uuid', feedback: 'clearer', idempotencyKey: 'command-3' },
       }),
@@ -485,6 +430,21 @@ describe('user book workflow routes', () => {
     const responses = await Promise.all(requests);
     expect(responses.map((response) => response.statusCode)).toEqual([400, 400, 400, 400]);
     expect(calls).toBe(0);
+  });
+
+  it.each([
+    ['/strategy/feedback', { strategyDraftVersionId: STRATEGY_DRAFT_ID, feedback: 'clearer', idempotencyKey: 'command-1' }],
+    ['/strategy/approve', { strategyDraftVersionId: STRATEGY_DRAFT_ID, idempotencyKey: 'command-2' }],
+    ['/trial/feedback', { trialRevisionId: TRIAL_REVISION_ID, feedback: 'clearer', idempotencyKey: 'command-3' }],
+  ])('does not expose the retired synchronous endpoint %s', async (path, payload) => {
+    const app = await buildApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}${path}`,
+      headers: { origin: 'http://localhost:5173' },
+      payload,
+    });
+    expect(response.statusCode).toBe(404);
   });
 
   it('reads exact strategy and trial versions by pointer', async () => {

@@ -65,7 +65,7 @@ export function InterviewPage() {
     queryKey: userBookQueryKeys.interview(id),
     queryFn: () => getInterview(id),
     enabled: gate.active && !shouldStart,
-    refetchInterval: (current) => ['generating', 'completing'].includes(current.state.data?.status ?? '') ? 1800 : false,
+    refetchInterval: (current) => current.state.data?.status === 'generating' ? 1800 : false,
   });
   const [text, setText] = useState('');
   const [stream, dispatchStream] = useReducer(interviewStreamReducer, IDLE_INTERVIEW_STREAM);

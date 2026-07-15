@@ -15,7 +15,6 @@ import {
   AdoptTrialRequestSchema,
   AdoptTrialResponseSchema,
   ApproveStrategyRequestSchema,
-  ApproveStrategyResponseSchema,
   AskQuestionRequestSchema,
   CreateHighlightRequestSchema,
   DeleteHighlightResponseSchema,
@@ -1187,25 +1186,6 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
   );
 
   app.post(
-    '/v1/user-books/:id/strategy/feedback',
-    {
-      schema: {
-        params: userBookIdParams,
-        body: SubmitStrategyFeedbackRequestSchema,
-        response: { 200: StrategyReviewResponseSchema, 400: ErrorResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
-      },
-    },
-    async (request, reply) => {
-      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
-      try {
-        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).submitStrategyFeedback(request.params.id, request.body);
-      } catch (error) {
-        return userBookFailure(error, reply);
-      }
-    },
-  );
-
-  app.post(
     '/v1/user-books/:id/strategy/feedback/stream',
     {
       schema: {
@@ -1223,25 +1203,6 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
         reply,
         (error) => request.log.error({ err: error }, 'strategy feedback stream failed'),
       );
-    },
-  );
-
-  app.post(
-    '/v1/user-books/:id/strategy/approve',
-    {
-      schema: {
-        params: userBookIdParams,
-        body: ApproveStrategyRequestSchema,
-        response: { 200: ApproveStrategyResponseSchema, 400: ErrorResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
-      },
-    },
-    async (request, reply) => {
-      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
-      try {
-        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).approveStrategy(request.params.id, request.body);
-      } catch (error) {
-        return userBookFailure(error, reply);
-      }
     },
   );
 
@@ -1337,25 +1298,6 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
         return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).markTrialViewed(request.params.id, request.body);
-      } catch (error) {
-        return userBookFailure(error, reply);
-      }
-    },
-  );
-
-  app.post(
-    '/v1/user-books/:id/trial/feedback',
-    {
-      schema: {
-        params: userBookIdParams,
-        body: SubmitTrialFeedbackRequestSchema,
-        response: { 200: StrategyReviewResponseSchema, 400: ErrorResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
-      },
-    },
-    async (request, reply) => {
-      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
-      try {
-        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).submitTrialFeedback(request.params.id, request.body);
       } catch (error) {
         return userBookFailure(error, reply);
       }

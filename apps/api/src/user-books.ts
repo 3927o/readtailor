@@ -5,7 +5,6 @@ import type {
   AdoptTrialRequest,
   AdoptTrialResponse,
   ApproveStrategyRequest,
-  ApproveStrategyResponse,
   AskQuestionRequest,
   BookReaderProfile,
   Briefing,
@@ -2186,8 +2185,6 @@ function createUserBookServiceForUser(
         ...(onStream ? {
           onStream: (delta: ReadingSetupStreamDelta) => {
             lease.assertActive();
-            // `concluding` is held until the authoritative transaction commits.
-            if (delta.type === 'concluding') return;
             if (delta.type === 'speculative_reset') {
               streamedEpoch = delta.speculativeEpoch;
               streamedNodes = new Set<string>();
@@ -2548,11 +2545,9 @@ function createUserBookServiceForUser(
   ): AsyncGenerator<InterviewStreamEvent> {
     const emit = createInterviewStreamEmitter(userBookId, claim.leaseId);
     const bridge = createStreamBridge<InterviewStreamEvent>();
-    let latestEpoch = 1;
     let result: Awaited<ReturnType<typeof generateNextQuestion>> | undefined;
     let turnError: unknown;
     const running = generateNextQuestion(userBookId, claim, (delta) => {
-      latestEpoch = Math.max(latestEpoch, delta.speculativeEpoch);
       switch (delta.type) {
         case 'speculative_reset':
           bridge.push(emit({
@@ -2610,7 +2605,6 @@ function createUserBookServiceForUser(
             node: delta.node,
           }));
           break;
-        case 'concluding':
         case 'selection_started':
         case 'fragment_added':
           break;
@@ -2652,7 +2646,6 @@ function createUserBookServiceForUser(
         yield emit({ type: 'error', code: 'internal_error', message: '处理方式草稿结果缺失。' });
         return;
       }
-      yield emit({ type: 'concluding', speculativeEpoch: latestEpoch });
       const strategy = await strategyStateByDraftId(userBookId, result.draftId);
       yield emit({ type: 'draft_final', strategy });
     }
@@ -3409,11 +3402,10 @@ function createUserBookServiceForUser(
 
   const executeRevisionOperation = async (
     initialOperation: ReadingSetupOperationRow,
-  ): Promise<StrategyReviewResponse> => {
+  ): Promise<void> => {
     const prepared = await prepareReadingSetupOperationExecution(initialOperation);
     try {
-      const resultDraftId = await runPreparedRevisionOperation(prepared);
-      return await strategyStateByDraftId(initialOperation.userBookId, resultDraftId);
+      await runPreparedRevisionOperation(prepared);
     } catch (error) {
       if (error instanceof ReadingSetupLeaseLostError) {
         throw new UserBookError('阅读准备操作已由新请求接管，请查询恢复状态', 409);
@@ -3666,17 +3658,10 @@ function createUserBookServiceForUser(
 
   const executeTrialSelectionOperation = async (
     initialOperation: ReadingSetupOperationRow,
-  ): Promise<ApproveStrategyResponse> => {
+  ): Promise<void> => {
     const prepared = await prepareReadingSetupOperationExecution(initialOperation);
     try {
-      const resultTrialRevisionId = await runPreparedTrialSelectionOperation(prepared);
-      const snapshot = await trialStateByRevisionId(initialOperation.userBookId, resultTrialRevisionId);
-      return {
-        userBookId: initialOperation.userBookId,
-        workflowStatus: snapshot.workflowStatus,
-        strategyDraftVersionId: snapshot.strategyDraftVersionId,
-        trialRevisionId: snapshot.trialRevisionId,
-      };
+      await runPreparedTrialSelectionOperation(prepared);
     } catch (error) {
       if (error instanceof ReadingSetupLeaseLostError) {
         throw new UserBookError('阅读准备操作已由新请求接管，请查询恢复状态', 409);
@@ -4842,8 +4827,8 @@ function createUserBookServiceForUser(
     },
 
     // Streaming answer endpoint (§4). Commits the answer, then runs the interviewing turn,
-    // yielding token-level deltas as the model streams the next question — or `concluding`
-    // then `done` when it finishes the interview. Validation errors are thrown before the
+    // yielding token-level deltas as the model streams the next question, or progressive draft
+    // fields followed by `draft_final` when it finishes. Validation errors are thrown before the
     // first yield so the route can still surface them as HTTP status codes; failures after the
     // stream opens become an in-band `error` event.
     async *streamInterviewAnswer(
@@ -4865,19 +4850,9 @@ function createUserBookServiceForUser(
     strategyState,
     strategyStateByDraftId,
 
-    async submitStrategyFeedback(userBookId: string, input: SubmitStrategyFeedbackRequest) {
-      const operation = await resolveStrategyFeedbackOperation(userBookId, input);
-      return executeRevisionOperation(operation);
-    },
-
     async *streamStrategyFeedback(userBookId: string, input: SubmitStrategyFeedbackRequest) {
       const operation = await resolveStrategyFeedbackOperation(userBookId, input);
       yield* streamRevisionOperation(operation);
-    },
-
-    async approveStrategy(userBookId: string, input: ApproveStrategyRequest): Promise<ApproveStrategyResponse> {
-      const operation = await resolveApproveStrategyOperation(userBookId, input);
-      return executeTrialSelectionOperation(operation);
     },
 
     async *streamApproveStrategy(userBookId: string, input: ApproveStrategyRequest) {
@@ -5096,11 +5071,6 @@ function createUserBookServiceForUser(
         if (changed.length !== 1) throw new UserBookError('试读片段不存在或尚未准备好', 409);
       });
       return trialState(userBookId);
-    },
-
-    async submitTrialFeedback(userBookId: string, input: SubmitTrialFeedbackRequest) {
-      const operation = await resolveTrialFeedbackOperation(userBookId, input);
-      return executeRevisionOperation(operation);
     },
 
     async *streamTrialFeedback(userBookId: string, input: SubmitTrialFeedbackRequest) {

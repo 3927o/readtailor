@@ -717,15 +717,6 @@ export type ReadingBriefingField =
   | 'assumed_knowledge'
   | 'reading_advice';
 
-// Kept as the compatibility surface used by the current interview SSE service.
-export type InterviewStreamDelta =
-  | { type: 'ack_delta'; chars: string }
-  | { type: 'prompt_delta'; chars: string }
-  | { type: 'hint_delta'; chars: string }
-  | { type: 'option_added'; id: string; label: string }
-  | { type: 'sufficiency'; value: number }
-  | { type: 'concluding' };
-
 type SpeculativeDelta<T> = T & { speculativeEpoch: number };
 
 export type ReadingSetupStreamDelta =
@@ -739,7 +730,6 @@ export type ReadingSetupStreamDelta =
   | SpeculativeDelta<{ type: 'hint_delta'; chars: string }>
   | SpeculativeDelta<{ type: 'option_added'; id: string; label: string }>
   | SpeculativeDelta<{ type: 'sufficiency'; value: number }>
-  | SpeculativeDelta<{ type: 'concluding' }>
   | SpeculativeDelta<{ type: 'draft_started'; source: 'interview' | 'revision' }>
   | SpeculativeDelta<{ type: 'briefing_delta'; field: ReadingBriefingField; chars: string }>
   | SpeculativeDelta<{ type: 'strategy_delta'; chars: string }>
@@ -938,7 +928,6 @@ export function createReadingSetupStreamParser(emit: (delta: ReadingSetupStreamD
   let toolName: ReadingSetupToolName | undefined;
   let buffer = '';
   let startedForEpoch = false;
-  let concludingEpoch = 0;
   let consumedOptionsEnd = 0;
   let consumedCandidatesEnd = 0;
   let consumedFragmentsEnd = 0;
@@ -1010,12 +999,6 @@ export function createReadingSetupStreamParser(emit: (delta: ReadingSetupStreamD
   return {
     onToolStart(name: string) {
       reset(name);
-    },
-    onToolFinished(name: string, succeeded: boolean) {
-      if (name === 'finish_interview' && succeeded && concludingEpoch !== speculativeEpoch) {
-        concludingEpoch = speculativeEpoch;
-        emit(withEpoch({ type: 'concluding' as const }));
-      }
     },
     onDelta(delta: string) {
       buffer += delta;
@@ -1098,22 +1081,6 @@ export function createReadingSetupStreamParser(emit: (delta: ReadingSetupStreamD
       }
     },
   };
-}
-
-// Compatibility adapter for the existing interview-only SSE service. New callers should use
-// createReadingSetupStreamParser so they can observe speculative resets and epochs.
-export function createInterviewStreamParser(emit: (delta: InterviewStreamDelta) => void) {
-  return createReadingSetupStreamParser((delta) => {
-    switch (delta.type) {
-      case 'ack_delta': emit({ type: delta.type, chars: delta.chars }); break;
-      case 'prompt_delta': emit({ type: delta.type, chars: delta.chars }); break;
-      case 'hint_delta': emit({ type: delta.type, chars: delta.chars }); break;
-      case 'option_added': emit({ type: delta.type, id: delta.id, label: delta.label }); break;
-      case 'sufficiency': emit({ type: delta.type, value: delta.value }); break;
-      case 'concluding': emit({ type: delta.type }); break;
-      default: break;
-    }
-  });
 }
 
 export type ReadingSetupPhase = 'interviewing' | 'strategy_review' | 'select_trial';
@@ -1259,8 +1226,6 @@ export async function runReadingSetupAgent(options: {
   maxTurns?: number;
   timeoutMs?: number;
   onTrace?: AgentTraceHandler;
-  // Legacy interview-only callback. Kept until API consumers migrate to the epoch-aware stream.
-  onStream?: (delta: InterviewStreamDelta) => void;
   onReadingSetupStream?: (delta: ReadingSetupStreamDelta) => void;
   onMetrics?: (metrics: ReadingSetupCallMetrics) => void;
 }): Promise<ReadingSetupOutcome> {
@@ -1427,22 +1392,8 @@ export async function runReadingSetupAgent(options: {
       reportMetrics();
     }
   });
-  // Translate streamed tool-call arguments into semantic deltas. The legacy callback receives
-  // only interview events; the additive callback receives every phase plus speculative epochs.
-  if (options.onReadingSetupStream || (options.onStream && options.phase === 'interviewing')) {
-    const parser = createReadingSetupStreamParser((delta) => {
-      options.onReadingSetupStream?.(delta);
-      if (!options.onStream || options.phase !== 'interviewing') return;
-      switch (delta.type) {
-        case 'ack_delta': options.onStream({ type: delta.type, chars: delta.chars }); break;
-        case 'prompt_delta': options.onStream({ type: delta.type, chars: delta.chars }); break;
-        case 'hint_delta': options.onStream({ type: delta.type, chars: delta.chars }); break;
-        case 'option_added': options.onStream({ type: delta.type, id: delta.id, label: delta.label }); break;
-        case 'sufficiency': options.onStream({ type: delta.type, value: delta.value }); break;
-        case 'concluding': options.onStream({ type: delta.type }); break;
-        default: break;
-      }
-    });
+  if (options.onReadingSetupStream) {
+    const parser = createReadingSetupStreamParser(options.onReadingSetupStream);
     agent.subscribe((event) => {
       if (event.type === 'message_update') {
         const streamed = event.assistantMessageEvent;
@@ -1452,8 +1403,6 @@ export async function runReadingSetupAgent(options: {
         } else if (streamed.type === 'toolcall_delta') {
           parser.onDelta(streamed.delta);
         }
-      } else if (event.type === 'tool_execution_end') {
-        parser.onToolFinished(event.toolName, !event.isError);
       }
     });
   }

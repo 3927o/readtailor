@@ -82,7 +82,7 @@ export interface InterviewHistoryItem {
 }
 
 export interface InterviewSnapshot {
-  status: 'asking' | 'generating' | 'completing' | 'failed';
+  status: 'asking' | 'generating' | 'failed';
   turnInProgress: boolean;
   canResume: boolean;
   history: InterviewHistoryItem[];
@@ -267,7 +267,7 @@ function mapInterview(raw: RawInterviewSnapshot): InterviewSnapshot {
   return {
     status: raw.status === 'active'
       ? raw.currentQuestion ? 'asking' : 'generating'
-      : raw.status === 'completed' ? 'completing' : 'failed',
+      : raw.status === 'completed' ? 'generating' : 'failed',
     turnInProgress: raw.turnInProgress,
     canResume: raw.status === 'active' && !raw.currentQuestion && !raw.turnInProgress,
     history: raw.answers.map((answer, index) => ({
@@ -381,7 +381,6 @@ export interface InterviewStreamHandlers {
   onHint?(chars: string): void;
   onOption?(option: InterviewOption): void;
   onSufficiency?(value: number): void;
-  onConcluding?(): void;
   onQuestionFinal?(question: InterviewQuestion): void;
   onDone?(workflowStatus: WorkflowStatus): void;
   onError?(message: string): void;
@@ -413,7 +412,6 @@ function dispatchInterviewFrame(frame: string, handlers: InterviewStreamHandlers
     case 'hint_delta': handlers.onHint?.(event.chars); break;
     case 'option_added': handlers.onOption?.({ id: event.id, label: event.label }); break;
     case 'sufficiency': handlers.onSufficiency?.(event.value); break;
-    case 'concluding': handlers.onConcluding?.(); break;
     case 'speculative_reset':
     case 'draft_started':
     case 'briefing_delta':
@@ -530,19 +528,6 @@ export async function getStrategy(userBookId: string, draftId?: string): Promise
     ? `${userBookRoot(userBookId)}/strategy/versions/${encodeURIComponent(draftId)}`
     : `${userBookRoot(userBookId)}/strategy`;
   return mapStrategy(await get<RawStrategySnapshot>(path));
-}
-
-export function submitStrategyFeedback(
-  userBookId: string,
-  draftId: string,
-  feedback: string,
-  idempotencyKey: string,
-): Promise<StrategySnapshot> {
-  return post<RawStrategySnapshot>(`${userBookRoot(userBookId)}/strategy/feedback`, {
-    strategyDraftVersionId: draftId,
-    feedback,
-    idempotencyKey,
-  }).then(mapStrategy);
 }
 
 type StrategyRevisionFinalEvent = Extract<StrategyRevisionStreamEvent, { type: 'revision_final' }>;
@@ -724,18 +709,6 @@ export async function streamApproveStrategyForTrial(
   await consumeTrialSelectionStream(response, handlers);
 }
 
-export async function approveStrategyForTrial(
-  userBookId: string,
-  draftId: string,
-  idempotencyKey: string,
-): Promise<TrialSnapshot> {
-  const result = await post<{ trialRevisionId: string }>(`${userBookRoot(userBookId)}/strategy/approve`, {
-    strategyDraftVersionId: draftId,
-    idempotencyKey,
-  });
-  return getTrial(userBookId, result.trialRevisionId);
-}
-
 export async function getTrial(userBookId: string, trialRevisionId?: string): Promise<TrialSnapshot> {
   const path = trialRevisionId
     ? `${userBookRoot(userBookId)}/trial/revisions/${encodeURIComponent(trialRevisionId)}`
@@ -776,19 +749,6 @@ export function markTrialSampleViewed(
 
 export function retryTrial(userBookId: string): Promise<TrialSnapshot> {
   return post<RawTrialSnapshot>(`${userBookRoot(userBookId)}/trial/retry`).then(mapTrial);
-}
-
-export function submitTrialFeedback(
-  userBookId: string,
-  revisionId: string,
-  feedback: string,
-  idempotencyKey: string,
-): Promise<StrategySnapshot> {
-  return post<RawStrategySnapshot>(`${userBookRoot(userBookId)}/trial/feedback`, {
-    trialRevisionId: revisionId,
-    feedback,
-    idempotencyKey,
-  }).then(mapStrategy);
 }
 
 export function streamTrialFeedback(

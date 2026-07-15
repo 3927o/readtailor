@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  approveStrategyForTrial,
   getCurrentReadingSetupOperation,
   getReadingSetupOperation,
   getStrategy,
@@ -15,8 +14,6 @@ import {
   streamResumeInterview,
   type StrategyRevisionClientEvent,
   type TrialSelectionClientEvent,
-  submitStrategyFeedback,
-  submitTrialFeedback,
 } from './api';
 import { userBookQueryKeys } from './queryKeys';
 
@@ -252,44 +249,6 @@ describe('versioned setup resources', () => {
       { segmentId: 'segment-1' },
     );
     error.mockRestore();
-  });
-});
-
-describe('reading setup command idempotency', () => {
-  it('posts caller-owned keys for strategy feedback and trial feedback', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(Response.json(strategyResponse('draft-2')))
-      .mockResolvedValueOnce(Response.json(strategyResponse('draft-3')));
-    vi.stubGlobal('fetch', fetchMock);
-
-    await submitStrategyFeedback('book-1', 'draft-1', '再简短一些', 'strategy-command-1');
-    await submitTrialFeedback('book-1', 'trial-1', '注释少一些', 'trial-command-1');
-
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
-      strategyDraftVersionId: 'draft-1',
-      feedback: '再简短一些',
-      idempotencyKey: 'strategy-command-1',
-    });
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
-      trialRevisionId: 'trial-1',
-      feedback: '注释少一些',
-      idempotencyKey: 'trial-command-1',
-    });
-  });
-
-  it('posts the caller-owned approve key and fetches the returned exact revision', async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(Response.json({ trialRevisionId: 'trial/2' }))
-      .mockResolvedValueOnce(Response.json(trialResponse('trial/2')));
-    vi.stubGlobal('fetch', fetchMock);
-
-    await approveStrategyForTrial('book-1', 'draft-1', 'approve-command-1');
-
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
-      strategyDraftVersionId: 'draft-1',
-      idempotencyKey: 'approve-command-1',
-    });
-    expect(fetchMock.mock.calls[1]?.[0]).toMatch(/\/trial\/revisions\/trial%2F2$/);
   });
 });
 

@@ -107,13 +107,12 @@ export function interviewStreamReducer(
         : { ...next, options: [...next.options, { id: event.id, label: event.label }] };
     case 'sufficiency': return { ...next, sufficiency: event.value };
     case 'draft_started':
-    case 'concluding':
       return {
         ...next,
         mode: 'draft_streaming',
-        briefing: event.type === 'draft_started' ? {} : next.briefing,
-        strategySummary: event.type === 'draft_started' ? '' : next.strategySummary,
-        nodes: event.type === 'draft_started' ? [] : next.nodes,
+        briefing: {},
+        strategySummary: '',
+        nodes: [],
       };
     case 'briefing_delta': {
       const key: keyof Briefing = event.field === 'book_identity'

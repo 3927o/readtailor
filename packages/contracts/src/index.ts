@@ -683,14 +683,6 @@ export const ApproveStrategyRequestSchema = Type.Object({
 });
 export type ApproveStrategyRequest = Static<typeof ApproveStrategyRequestSchema>;
 
-export const ApproveStrategyResponseSchema = Type.Object({
-  userBookId: Type.String(),
-  workflowStatus: UserBookWorkflowStatusSchema,
-  strategyDraftVersionId: Type.String(),
-  trialRevisionId: Type.String(),
-});
-export type ApproveStrategyResponse = Static<typeof ApproveStrategyResponseSchema>;
-
 export const GenerationAnnotationSchema = Type.Object({
   id: Type.String({ minLength: 1 }),
   range: TextRangeSchema,
@@ -1034,7 +1026,6 @@ export const InterviewStreamEventSchema = Type.Union([
     type: Type.Literal('sufficiency'),
     value: Type.Integer({ minimum: 0, maximum: 100 }),
   }),
-  Type.Object({ ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE, type: Type.Literal('concluding') }),
   Type.Object({
     ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
     type: Type.Literal('draft_started'),
