@@ -755,7 +755,7 @@ function isReadingSetupToolName(name: string): name is ReadingSetupToolName {
     || name === 'select_trial_fragments';
 }
 
-function findNamedArrayStart(source: string, propertyName: string): number | undefined {
+function findNamedValueStart(source: string, propertyName: string): number | undefined {
   for (let index = 0; index < source.length; index += 1) {
     if (source[index] !== '"') continue;
     const start = index;
@@ -780,9 +780,55 @@ function findNamedArrayStart(source: string, propertyName: string): number | und
     if (source[cursor] !== ':') continue;
     cursor += 1;
     while (/\s/.test(source[cursor] ?? '')) cursor += 1;
-    if (source[cursor] === '[') return cursor;
+    return cursor < source.length ? cursor : undefined;
   }
   return undefined;
+}
+
+function findNamedArrayStart(source: string, propertyName: string): number | undefined {
+  const valueStart = findNamedValueStart(source, propertyName);
+  return valueStart !== undefined && source[valueStart] === '[' ? valueStart : undefined;
+}
+
+function hasCompletedNamedString(source: string, propertyName: string): boolean {
+  const valueStart = findNamedValueStart(source, propertyName);
+  if (valueStart === undefined || source[valueStart] !== '"') return false;
+  let escaped = false;
+  for (let index = valueStart + 1; index < source.length; index += 1) {
+    const char = source[index]!;
+    if (escaped) escaped = false;
+    else if (char === '\\') escaped = true;
+    else if (char === '"') return true;
+  }
+  return false;
+}
+
+function hasCompletedNamedObject(source: string, propertyName: string): boolean {
+  const valueStart = findNamedValueStart(source, propertyName);
+  if (valueStart === undefined || source[valueStart] !== '{') return false;
+  let objectDepth = 0;
+  let arrayDepth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = valueStart; index < source.length; index += 1) {
+    const char = source[index]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') objectDepth += 1;
+    else if (char === '[') arrayDepth += 1;
+    else if (char === ']') arrayDepth -= 1;
+    else if (char === '}') {
+      objectDepth -= 1;
+      if (objectDepth === 0 && arrayDepth === 0) return true;
+    }
+    if (objectDepth < 0 || arrayDepth < 0) return false;
+  }
+  return false;
 }
 
 // Extracts only array items whose object-closing brace has actually arrived in the raw stream.
@@ -1045,23 +1091,29 @@ export function createReadingSetupStreamParser(emit: (delta: ReadingSetupStreamD
         }
       }
 
-      if (toolName === 'finish_interview' || toolName === 'save_strategy_draft') {
+      // Providers may stream tool properties out of schema order. Raw closing delimiters fence
+      // the visible phases so synthesized completeJson() values cannot reveal a later phase early.
+      const briefingComplete = toolName !== 'finish_interview'
+        || hasCompletedNamedObject(buffer, 'briefing');
+      if ((toolName === 'finish_interview' || toolName === 'save_strategy_draft') && briefingComplete) {
         emitted.strategy = emitStringSuffix(
           parsed.public_strategy,
           emitted.strategy,
           (chars) => withEpoch({ type: 'strategy_delta' as const, chars }),
         );
-        for (const item of scanCompletedArrayItems(buffer, 'trial_candidates')) {
-          if (item.end <= consumedCandidatesEnd) continue;
-          const candidate = parseTrialCandidate(item.raw);
-          if (!candidate) break;
-          emit(withEpoch({
-            type: 'reading_node_added' as const,
-            ordinal: emittedCandidates + 1,
-            ...candidate,
-          }));
-          consumedCandidatesEnd = item.end;
-          emittedCandidates += 1;
+        if (hasCompletedNamedString(buffer, 'public_strategy')) {
+          for (const item of scanCompletedArrayItems(buffer, 'trial_candidates')) {
+            if (item.end <= consumedCandidatesEnd) continue;
+            const candidate = parseTrialCandidate(item.raw);
+            if (!candidate) break;
+            emit(withEpoch({
+              type: 'reading_node_added' as const,
+              ordinal: emittedCandidates + 1,
+              ...candidate,
+            }));
+            consumedCandidatesEnd = item.end;
+            emittedCandidates += 1;
+          }
         }
         return;
       }
@@ -1109,7 +1161,7 @@ export type ReadingSetupCallMetrics = {
   outputChars: number | null;
 };
 
-const READING_SETUP_SYSTEM_PROMPT = `你是 ReadTailor 的单本书访谈与处理方式 Agent。你只处理当前用户与当前书的阅读准备，不修改原文。每轮必须调用一个宿主工具结束：信息不足时调用 present_interview_question；信息足够或已达到问题上限时调用 finish_interview。问题必须直接服务于本书处理方式，不重复长期画像中的明确信息，每次只问一题，给出 2-5 个清晰选项并允许文字补充。访谈是轻快的口语对话，务必言简意赅、克制不铺陈，不要长篇大论：acknowledgment 用一句短话真实回应用户上一答（30 字以内，不复述整段、不堆砌寒暄，首问留空串）；prompt 用一句话把问题问清楚（一般 40 字以内，不加铺垫、背景解释或多余修饰）；hint 一句话说明为什么问这道题、它会如何影响本书处理方式（40 字以内，贴着当前问题写、不空泛）；每个选项 label 是一个简短短语（15 字以内，不写成整句）；sufficiency 给出 0-100 的信息充足度自评（可随判断诚实回落）。finish_interview 必须提交本书画像、个性化读前简报、用户可读的处理方式和结构化策略。读前简报 briefing 是给读者读正文前看的四段结构化短内容，务必简洁，每段只写 1-2 句、不铺陈：book_identity（这是一本什么书——它的定位与真正价值）；arc（全书怎么走——整体脉络或推进方式）；assumed_knowledge（假设你已经知道——读它默认你具备的背景，可结合该读者已有画像点明落差）；reading_advice（建议你的读法——针对这位读者的一句具体读法建议）。四段都要贴着本书与该读者写，不空泛、不复述处理方式细节。结构化策略要如实产出：整体处理目标 goals、表达原则 expression_principles（说明增强内容如何与原文协作、克制到什么程度）；导读 guide、裁读注 annotations、节后助读 after_reading 三段各自用 enabled 明确决定是否启用——启用时给出对应要点（guide.objectives / annotations.focuses 与 exclusions / after_reading.objectives），认为某段对本书无价值就把该段 enabled 设为 false 并把要点留空，不要为了填满而编造。trial_candidates 从 book profile 候选池中选择恰好三个不同候选，覆盖进入门槛、典型内容和较高难度内容。你没有确认权限，不能批准试读或创建正式策略。`;
+const READING_SETUP_SYSTEM_PROMPT = `你是 ReadTailor 的单本书访谈与处理方式 Agent。你只处理当前用户与当前书的阅读准备，不修改原文。每轮必须调用一个宿主工具结束：信息不足时调用 present_interview_question；信息足够或已达到问题上限时调用 finish_interview。问题必须直接服务于本书处理方式，不重复长期画像中的明确信息，每次只问一题，给出 2-5 个清晰选项并允许文字补充。访谈是轻快的口语对话，务必言简意赅、克制不铺陈，不要长篇大论：acknowledgment 用一句短话真实回应用户上一答（30 字以内，不复述整段、不堆砌寒暄，首问留空串）；prompt 用一句话把问题问清楚（一般 40 字以内，不加铺垫、背景解释或多余修饰）；hint 一句话说明为什么问这道题、它会如何影响本书处理方式（40 字以内，贴着当前问题写、不空泛）；每个选项 label 是一个简短短语（15 字以内，不写成整句）；sufficiency 给出 0-100 的信息充足度自评（可随判断诚实回落）。finish_interview 必须提交本书画像、个性化读前简报、用户可读的处理方式和结构化策略。调用 finish_interview 时严格按 briefing、public_strategy、strategy、book_reader_profile、reader_profile_patch 的字段顺序生成，让读者先看到简报，再看到处理方式，最后看到试读候选。读前简报 briefing 是给读者读正文前看的四段结构化短内容，务必简洁，每段只写 1-2 句、不铺陈：book_identity（这是一本什么书——它的定位与真正价值）；arc（全书怎么走——整体脉络或推进方式）；assumed_knowledge（假设你已经知道——读它默认你具备的背景，可结合该读者已有画像点明落差）；reading_advice（建议你的读法——针对这位读者的一句具体读法建议）。四段都要贴着本书与该读者写，不空泛、不复述处理方式细节。结构化策略要如实产出：整体处理目标 goals、表达原则 expression_principles（说明增强内容如何与原文协作、克制到什么程度）；导读 guide、裁读注 annotations、节后助读 after_reading 三段各自用 enabled 明确决定是否启用——启用时给出对应要点（guide.objectives / annotations.focuses 与 exclusions / after_reading.objectives），认为某段对本书无价值就把该段 enabled 设为 false 并把要点留空，不要为了填满而编造。trial_candidates 从 book profile 候选池中选择恰好三个不同候选，覆盖进入门槛、典型内容和较高难度内容。你没有确认权限，不能批准试读或创建正式策略。`;
 
 function userTurnMessage(text: string): AgentMessage {
   return { role: 'user', content: text, timestamp: Date.now() };

@@ -575,6 +575,34 @@ describe('createReadingSetupStreamParser', () => {
     });
   }
 
+  it('buffers out-of-order tool fields into briefing, strategy, then candidate events', () => {
+    const value = JSON.parse(finish) as Record<string, unknown>;
+    const outOfOrder = JSON.stringify({
+      public_strategy: value.public_strategy,
+      strategy: value.strategy,
+      briefing: value.briefing,
+      book_reader_profile: value.book_reader_profile,
+    });
+    const events: ReadingSetupStreamDelta[] = [];
+    const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+    parser.onToolStart('finish_interview');
+    for (const part of chunk(outOfOrder, 3)) parser.onDelta(part);
+
+    const visible = events.filter((event) => (
+      event.type === 'briefing_delta'
+      || event.type === 'strategy_delta'
+      || event.type === 'reading_node_added'
+    ));
+    const firstStrategy = visible.findIndex((event) => event.type === 'strategy_delta');
+    const firstCandidate = visible.findIndex((event) => event.type === 'reading_node_added');
+    const lastBriefing = visible.findLastIndex((event) => event.type === 'briefing_delta');
+    const lastStrategy = visible.findLastIndex((event) => event.type === 'strategy_delta');
+
+    expect(firstStrategy).toBeGreaterThan(lastBriefing);
+    expect(firstCandidate).toBeGreaterThan(lastStrategy);
+    expect(visible.filter((event) => event.type === 'reading_node_added')).toHaveLength(3);
+  });
+
   it('never emits a candidate before its real closing brace arrives', () => {
     const events: ReadingSetupStreamDelta[] = [];
     const parser = createReadingSetupStreamParser((delta) => events.push(delta));
