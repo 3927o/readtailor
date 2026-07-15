@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AssistanceContent } from '../user-books/components';
 import {
   confirmQaProposal,
   feedbackQaProposal,
@@ -58,6 +59,14 @@ const QA_TOOL_LABELS: Record<string, string> = {
 
 export function qaToolLabel(name: string): string {
   return QA_TOOL_LABELS[name] ?? '使用阅读辅助工具';
+}
+
+export function QaAnswerContent({ content }: { content: string }) {
+  return (
+    <div className="reader-askai-answer">
+      <AssistanceContent content={content} />
+    </div>
+  );
 }
 
 export function mergeQaToolEvent(current: QaToolCall[], event: QaToolStreamEvent): QaToolCall[] {
@@ -540,7 +549,7 @@ export function AskAiPanel({
                   ))}
                 </div>
               ) : null}
-              {turn.answer ? <p className="reader-askai-answer">{turn.answer}</p> : null}
+              {turn.answer ? <QaAnswerContent content={turn.answer} /> : null}
               {turn.streaming && !turn.answer ? (
                 <p className="reader-askai-answer reader-askai-typing">
                   {turn.toolCalls.length ? '正在组织回答…' : '正在思考…'}
