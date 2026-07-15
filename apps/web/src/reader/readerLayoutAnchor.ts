@@ -37,6 +37,7 @@ interface ReaderLayoutAnchorOptions {
   version: string;
   getPosition(): ReaderLogicalPosition | null;
   getPhase(): ReaderScrollPhase;
+  onScrollWrite?(scrollTop: number): void;
   geometry?: ReaderAnchorGeometry;
 }
 
@@ -156,6 +157,7 @@ export function compensateReaderLayoutAnchor(
   snapshot: ReaderLayoutAnchorSnapshot,
   phase: ReaderScrollPhase,
   geometry?: ReaderAnchorGeometry,
+  onScrollWrite?: (scrollTop: number) => void,
 ): number | null {
   if (phase === 'restoring') return null;
   if (Math.abs(root.scrollTop - snapshot.scrollTop) > 0.5) return null;
@@ -167,7 +169,15 @@ export function compensateReaderLayoutAnchor(
   );
   if (viewportTop === null) return null;
   const delta = viewportTop - snapshot.viewportTop;
+  if (Math.abs(delta) <= 0.5) return 0;
+  // `.reader-scroll` uses smooth scrolling for deliberate jumps. Layout compensation must be
+  // immediate: an animated correction emits a stream of scroll events that looks like user input
+  // and can feed another focus request back into the bootstrap update loop.
+  const previousScrollBehavior = root.style.scrollBehavior;
+  root.style.scrollBehavior = 'auto';
   root.scrollTop += delta;
+  onScrollWrite?.(root.scrollTop);
+  root.style.scrollBehavior = previousScrollBehavior;
   return delta;
 }
 
@@ -189,6 +199,12 @@ export function useReaderLayoutAnchor(options: ReaderLayoutAnchorOptions): void 
     pendingAnchor.current = null;
     const root = options.root.current;
     if (!root || !snapshot) return;
-    compensateReaderLayoutAnchor(root, snapshot, options.getPhase(), options.geometry);
+    compensateReaderLayoutAnchor(
+      root,
+      snapshot,
+      options.getPhase(),
+      options.geometry,
+      options.onScrollWrite,
+    );
   }, [options.version]);
 }

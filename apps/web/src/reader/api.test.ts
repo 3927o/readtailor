@@ -114,6 +114,25 @@ function bootstrap(strategyVersion: number, observedAt = '2026-07-15T00:00:00.00
   };
 }
 
+function enhancement(
+  generationId: string,
+  status: ReaderBootstrap['enhancements'][number]['status'],
+): ReaderBootstrap['enhancements'][number] {
+  return {
+    generationId,
+    strategyVersionId: 'strategy-2',
+    sectionId: 'chapter',
+    segment: 1,
+    status,
+    tailoredContent: status === 'ready' ? {
+      guide: '导读',
+      annotations: [],
+      afterReading: '',
+    } : null,
+    errorSummary: null,
+  };
+}
+
 describe('mergeReaderBootstrap', () => {
   it('rejects a late bootstrap from an older strategy version', () => {
     const current = bootstrap(3);
@@ -127,5 +146,25 @@ describe('mergeReaderBootstrap', () => {
 
     expect(merged.strategyVersion).toBe(3);
     expect(merged.resumePosition).toBe(current.resumePosition);
+  });
+
+  it('does not let a stale response regress a ready generation', () => {
+    const current = bootstrap(2);
+    current.enhancements = [enhancement('generation-1', 'ready')];
+    const incoming = bootstrap(2);
+    incoming.enhancements = [enhancement('generation-1', 'generating')];
+
+    const merged = mergeReaderBootstrap(current, incoming);
+
+    expect(merged.enhancements).toEqual(current.enhancements);
+  });
+
+  it('accepts a replacement generation even when the previous one was ready', () => {
+    const current = bootstrap(2);
+    current.enhancements = [enhancement('generation-1', 'ready')];
+    const incoming = bootstrap(2);
+    incoming.enhancements = [enhancement('generation-2', 'generating')];
+
+    expect(mergeReaderBootstrap(current, incoming).enhancements).toEqual(incoming.enhancements);
   });
 });

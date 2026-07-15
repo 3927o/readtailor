@@ -129,6 +129,38 @@ describe('reader logical layout anchor', () => {
     root.remove();
   });
 
+  it('applies compensation instantly and reports the internal scroll destination', () => {
+    const root = readerRoot();
+    let top = ANCHOR_TOP;
+    let scrollTop = 0;
+    let behaviorDuringWrite = '';
+    root.style.scrollBehavior = 'smooth';
+    Object.defineProperty(root, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        behaviorDuringWrite = root.style.scrollBehavior;
+        scrollTop = value;
+      },
+    });
+    const probe = geometry(() => top);
+    const snapshot = captureReaderLayoutAnchor(root, position, probe)!;
+    top += 48;
+    let reported: number | null = null;
+
+    expect(compensateReaderLayoutAnchor(
+      root,
+      snapshot,
+      'normal',
+      probe,
+      (value) => { reported = value; },
+    )).toBe(48);
+    expect(behaviorDuringWrite).toBe('auto');
+    expect(root.style.scrollBehavior).toBe('smooth');
+    expect(reported).toBe(48);
+    root.remove();
+  });
+
   it('compensates an enhancement commit after the real restore session settles', async () => {
     const host = document.createElement('div');
     document.body.append(host);

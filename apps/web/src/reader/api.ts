@@ -302,12 +302,26 @@ export function mergeReaderBootstrap(
 ): ReaderBootstrap {
   if (!previous) return incoming;
   if (incoming.strategyVersion < previous.strategyVersion) return previous;
+  const previousEnhancements = new Map(
+    previous.enhancements.map((enhancement) => [enhancement.generationId, enhancement]),
+  );
+  const enhancements = incoming.strategyVersion === previous.strategyVersion
+    ? incoming.enhancements.map((enhancement) => {
+        const current = previousEnhancements.get(enhancement.generationId);
+        // `ready` is terminal for one generation. A slower reader/focus response may have taken its
+        // DB snapshot while the same generation was still queued/generating; never let that stale
+        // response remove already-rendered assistance content and reflow the reader backwards.
+        return current?.status === 'ready' && enhancement.status !== 'ready'
+          ? current
+          : enhancement;
+      })
+    : incoming.enhancements;
   const previousResume = previous.resumePosition;
   if (previousResume && (!incoming.resumePosition
     || previousResume.clientObservedAt > incoming.resumePosition.clientObservedAt)) {
-    return { ...incoming, resumePosition: previousResume };
+    return { ...incoming, enhancements, resumePosition: previousResume };
   }
-  return incoming;
+  return enhancements === incoming.enhancements ? incoming : { ...incoming, enhancements };
 }
 
 // Reports the reader's current (or jumped-to) node so the host grows the lazy-loading window

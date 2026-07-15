@@ -275,10 +275,16 @@ function LiveReader({ document }: { document: Awaited<ReturnType<typeof getReade
   const queryClient = useQueryClient();
   const bootstrap = useQuery({
     queryKey: ['reader-bootstrap', document.userBookId],
-    queryFn: async () => mergeReaderBootstrap(
-      queryClient.getQueryData<ReaderBootstrap>(['reader-bootstrap', document.userBookId]),
-      await getReaderBootstrap(document.userBookId),
-    ),
+    queryFn: async () => {
+      const incoming = await getReaderBootstrap(document.userBookId);
+      // Read the cache after the request resolves. A focus mutation may have installed a newer
+      // bootstrap while this poll was in flight; merging against the request-start snapshot would
+      // overwrite it and make enhancement content flicker in/out.
+      return mergeReaderBootstrap(
+        queryClient.getQueryData<ReaderBootstrap>(['reader-bootstrap', document.userBookId]),
+        incoming,
+      );
+    },
     initialData: document.bootstrap,
     refetchInterval: (current) => current.state.data?.enhancements.some((item) => (
       item.status === 'queued' || item.status === 'generating'
@@ -352,7 +358,10 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   // scrollTop and warm/scroll position saves are suppressed; on `settled`/`cancelled`/`normal` the
   // layout-anchor and the save链路 resume. Fresh opens (no resume anchor) stay `normal` throughout.
   const restorePhaseRef = useRef<ReaderScrollPhase>('normal');
-  const restoreScrollTopRef = useRef<number | null>(null);
+  // Expected destination of an internal scroll write (restore or layout-anchor compensation).
+  // Its matching scroll event updates passive progress only; it must not hide chrome, dismiss
+  // overlays, count as activity, or schedule another focus request.
+  const internalScrollTopRef = useRef<number | null>(null);
   const reportFocus = useRef<(order: number, position?: ReaderPosition) => void>(() => {});
   reportFocus.current = (order, position) => {
     if (!Number.isFinite(order)) return;
@@ -580,6 +589,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     version: enhancementVersion,
     getPosition: () => computeAnchorRef.current()?.position ?? null,
     getPhase: () => restorePhaseRef.current,
+    onScrollWrite: (scrollTop) => { internalScrollTopRef.current = scrollTop; },
   });
 
   // §11.5 / §2.4 position restore: on first mount, resolve the saved anchor and hand it to the
@@ -655,7 +665,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       anchorTop: READING_ANCHOR_TOP,
       targetElement: () => resolveReaderAnchorTarget(root, restoreTarget)?.element ?? null,
       onPhaseChange: (phase) => { restorePhaseRef.current = phase; },
-      onScrollWrite: (scrollTop) => { restoreScrollTopRef.current = scrollTop; },
+      onScrollWrite: (scrollTop) => { internalScrollTopRef.current = scrollTop; },
       onSettle: () => {
         // The session flips phase before this callback, so the final stable-anchor save is allowed.
         reportObservation.current();
@@ -929,11 +939,13 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const handleScroll = () => {
     const root = scrollRoot.current;
     if (!root) return;
-    const expectedRestoreScrollTop = restoreScrollTopRef.current;
-    const isRestoreScroll = isRestoreScrollEvent(expectedRestoreScrollTop, root.scrollTop);
-    if (expectedRestoreScrollTop !== null) restoreScrollTopRef.current = null;
+    const expectedInternalScrollTop = internalScrollTopRef.current;
+    const isInternalScroll = isRestoreScrollEvent(expectedInternalScrollTop, root.scrollTop);
+    if (expectedInternalScrollTop !== null) internalScrollTopRef.current = null;
     setChapterProgress(computeChapterProgress());
     const delta = root.scrollTop - lastScrollTop.current;
+    lastScrollTop.current = root.scrollTop;
+    if (isInternalScroll) return;
     if (delta > 4 && root.scrollTop > 180
       && !tocOpen && !settingsOpen && !briefOpen && !notebookOpen && !searchOpen && !askAiOpen && !popover) {
       setChromeHidden(true);
@@ -943,17 +955,16 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     // §11.8/§11.10 activity: a downward scroll is forward reading (keeps forward-time eligible); an
     // upward scroll is still activity but not forward. The programmatic restore scroll (§2.4) is not
     // user activity, so it must not open an interval or accrue time.
-    if (delta !== 0 && restorePhaseRef.current !== 'restoring' && !isRestoreScroll) {
+    if (delta !== 0 && restorePhaseRef.current !== 'restoring') {
       sessionRef.current?.recordActivity(Date.now(), delta > 0);
     }
-    lastScrollTop.current = root.scrollTop;
     setPopover(null);
     // Anchored overlays (§11.7) misalign once the page scrolls, so dismiss them like the note popover.
     setSelectionDraft(null);
     setHighlightEditor(null);
     // Debounced position report (§11.5): saves intra-node scroll position and grows the window
     // when the settled node changes.
-    if (restorePhaseRef.current !== 'restoring' && !isRestoreScroll) schedulePositionReport();
+    if (restorePhaseRef.current !== 'restoring') schedulePositionReport();
   };
 
   const jumpToOrder = (order: number) => {
