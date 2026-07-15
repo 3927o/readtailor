@@ -78,7 +78,8 @@ export function interviewStreamReducer(
   if (action.type === 'recover') return { ...state, mode: 'recovering', error: null };
   if (action.type === 'reconcile') {
     if (action.snapshot.currentQuestion) return IDLE_INTERVIEW_STREAM;
-    if (action.snapshot.status === 'failed') {
+    if (action.snapshot.status === 'completed') return IDLE_INTERVIEW_STREAM;
+    if (action.snapshot.status === 'cancelled') {
       return { ...state, mode: 'error', error: action.snapshot.errorSummary };
     }
     return state;

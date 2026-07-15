@@ -88,7 +88,7 @@ describe('interview progressive stream reducer', () => {
     state = interviewStreamReducer(state, {
       type: 'reconcile',
       snapshot: {
-        status: 'asking',
+        status: 'active',
         turnInProgress: false,
         canResume: false,
         history: [],
@@ -113,7 +113,7 @@ describe('interview progressive stream reducer', () => {
     const state = interviewStreamReducer(recovering, {
       type: 'reconcile',
       snapshot: {
-        status: 'generating',
+        status: 'active',
         turnInProgress: true,
         canResume: false,
         history: [],

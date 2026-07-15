@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UserBookDetail } from './api/http';
-import { ReadingSetupRoute } from './ReadingSetupRoute';
+import { mergeUserBookDetail, ReadingSetupRoute } from './ReadingSetupRoute';
 import { userBookQueryKeys } from './queryKeys';
 import { routeForWorkflow } from './routes';
 import { applyTransition } from './transitions';
@@ -91,6 +91,23 @@ describe('ReadingSetupRoute', () => {
 
     await waitFor(() => {
       expect(host.textContent).toBe('/user-books/book-1/strategy|strategy_review');
+    });
+  });
+
+  it('accepts a later server workflow even when an old cache entry has a newer timestamp', () => {
+    const cached = {
+      ...detail('interviewing'),
+      updatedAt: '2026-07-16T00:10:00.000Z',
+    };
+    const completed = {
+      ...detail('strategy_review'),
+      updatedAt: '2026-07-16T00:09:59.000Z',
+    };
+
+    expect(mergeUserBookDetail(cached, completed)).toMatchObject({
+      workflowStatus: 'strategy_review',
+      currentStrategyDraftVersionId: 'draft-1',
+      updatedAt: cached.updatedAt,
     });
   });
 

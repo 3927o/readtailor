@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useParams } from 'react-router';
 import { WorkflowMessage, WorkflowPage } from './components';
-import { ProgressiveStrategyView } from './ProgressiveStrategyView';
+import { StrategyReviewView } from './StrategyReviewView';
 import { useInterviewController, type InterviewChoice } from './useInterviewController';
 import { useReadingSetupWorkflow } from './useReadingSetupWorkflow';
 
@@ -58,8 +58,47 @@ export function InterviewPage() {
   if (controller.loadError) {
     return <WorkflowPage book={book} kicker="A CONVERSATION · 本书访谈" title="先聊几句" hideHeader><WorkflowMessage title="访谈暂时没有打开" action={<button className="button button-ghost" type="button" onClick={controller.retryLoad}>重新读取</button>}>{controller.loadError.message}</WorkflowMessage></WorkflowPage>;
   }
+  if (controller.completed) {
+    return <WorkflowPage book={book} kicker="BEFORE YOU READ · 读前准备" title="读之前，先看地图"><WorkflowMessage title="正在打开策略确认">访谈结果已经保存，正在读取最终草稿。</WorkflowMessage></WorkflowPage>;
+  }
   const snapshot = controller.snapshot!;
   const stream = controller.stream;
+
+  if (controller.draftView) {
+    return <StrategyReviewView
+      book={book}
+      model={{
+        mode: stream.finalStrategy
+          ? 'committed'
+          : stream.mode === 'error'
+            ? 'failed'
+            : (
+                stream.mode === 'recovering'
+                || (stream.mode !== 'draft_streaming' && (snapshot.turnInProgress || snapshot.canResume))
+              )
+              ? 'recovering'
+              : 'streaming',
+        source: 'interview',
+        briefing: stream.briefing,
+        strategySummary: stream.strategySummary,
+        nodes: stream.nodes,
+        ...(stream.finalStrategy ? { draftVersion: stream.finalStrategy.draftVersion } : {}),
+        ...(stream.error ? { error: stream.error } : {}),
+      }}
+      feedback=""
+      onFeedbackChange={() => undefined}
+      onFeedbackSubmit={() => undefined}
+      feedbackPending={false}
+      feedbackDisabled
+      canAdjust
+      adjustmentCount={0}
+      adjustmentLimit={stream.finalStrategy?.adjustmentLimit ?? 5}
+      approvePending={false}
+      approveDisabled
+      approveLabel="正在完成策略…"
+      onApprove={() => undefined}
+    />;
+  }
 
   return (
     <WorkflowPage book={book} kicker="A CONVERSATION · 本书访谈" title="先聊几句" hideHeader>
@@ -70,7 +109,7 @@ export function InterviewPage() {
           <span className="interview-suff">信息充足度 {controller.sufficiency === null ? '—' : `${clampPercent(controller.sufficiency)}%`}</span>
         </div>
 
-        {!controller.draftView && controller.history.length ? (
+        {controller.history.length ? (
           <div className="interview-history" aria-label="之前的回答">
             {controller.history.map((item, index) => (
               <div className="interview-hist" key={item.questionId ?? `${index}:${item.answer}`}>
@@ -86,22 +125,6 @@ export function InterviewPage() {
             title="整理暂时停住了"
             action={<button className="button button-primary" type="button" disabled={controller.isFetching} onClick={controller.retryLoad}>{controller.isFetching ? '正在重新读取…' : '重新读取'}</button>}
           >{stream.error || snapshot.errorSummary || '已经提交的回答都还在，可以从这里继续。'}</WorkflowMessage>
-        ) : controller.draftView ? (
-          <ProgressiveStrategyView model={{
-            mode: stream.finalStrategy
-              ? 'committed'
-              : stream.mode === 'error'
-                ? 'failed'
-                : stream.mode === 'recovering' || snapshot.status === 'generating'
-                  ? 'recovering'
-                  : 'streaming',
-            source: 'interview',
-            briefing: stream.briefing,
-            strategySummary: stream.strategySummary,
-            nodes: stream.nodes,
-            ...(stream.finalStrategy ? { draftVersion: stream.finalStrategy.draftVersion } : {}),
-            ...(stream.error ? { error: stream.error } : {}),
-          }} />
         ) : (
           <div className="interview-turn" key={`turn-${controller.turnSeq}`}>
             {controller.turnAck ? <p className="interview-ack"><Typeset text={controller.turnAck} /></p> : null}
@@ -152,7 +175,7 @@ export function InterviewPage() {
           </div>
         )}
 
-        {!controller.draftView && !controller.failedView ? (
+        {!controller.failedView ? (
           <p className="interview-note">问几个由我判断——信息够了，我就不再多问。</p>
         ) : null}
       </section>

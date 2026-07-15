@@ -29,7 +29,7 @@ export interface InterviewHistoryItem {
 }
 
 export interface InterviewSnapshot {
-  status: 'asking' | 'generating' | 'failed';
+  status: 'active' | 'completed' | 'cancelled';
   turnInProgress: boolean;
   canResume: boolean;
   history: InterviewHistoryItem[];
@@ -64,9 +64,7 @@ interface RawInterviewSnapshot {
 
 function mapInterview(raw: RawInterviewSnapshot): InterviewSnapshot {
   return {
-    status: raw.status === 'active'
-      ? raw.currentQuestion ? 'asking' : 'generating'
-      : raw.status === 'completed' ? 'generating' : 'failed',
+    status: raw.status,
     turnInProgress: raw.turnInProgress,
     canResume: raw.status === 'active' && !raw.currentQuestion && !raw.turnInProgress,
     history: raw.answers.map((answer, index) => ({

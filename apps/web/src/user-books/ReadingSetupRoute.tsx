@@ -6,12 +6,26 @@ import { userBookQueryKeys } from './queryKeys';
 import { routeForUserBook } from './routes';
 import type { ReadingSetupWorkflowContext } from './useReadingSetupWorkflow';
 
+const WORKFLOW_STAGE: Record<UserBookDetail['workflowStatus'], number> = {
+  on_shelf: 0,
+  interviewing: 1,
+  strategy_review: 2,
+  trial_generating: 3,
+  trial_generation_failed: 3,
+  trial_review: 4,
+  active_reading: 5,
+};
+
 export function mergeUserBookDetail(
   previous: UserBookDetail | undefined,
   next: UserBookDetail,
 ): UserBookDetail {
   if (!previous) return next;
-  return next.updatedAt > previous.updatedAt ? next : previous;
+  if (next.updatedAt > previous.updatedAt) return next;
+  if (WORKFLOW_STAGE[next.workflowStatus] > WORKFLOW_STAGE[previous.workflowStatus]) {
+    return { ...next, updatedAt: previous.updatedAt };
+  }
+  return previous;
 }
 
 export function ReadingSetupRoute() {
