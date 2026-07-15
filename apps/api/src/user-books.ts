@@ -6,8 +6,6 @@ import type {
   AdoptTrialResponse,
   ApproveStrategyRequest,
   AskQuestionRequest,
-  BookReaderProfile,
-  Briefing,
   CreateHighlightRequest,
   DeleteHighlightResponse,
   Highlight,
@@ -15,9 +13,6 @@ import type {
   HighlightResponse,
   HeartbeatRequest,
   HeartbeatResponse,
-  InterviewQuestion,
-  InterviewStateResponse,
-  InterviewStreamEvent,
   MarkReadNodeRequest,
   MarkReadNodeResponse,
   MarkTrialSegmentViewedRequest,
@@ -51,7 +46,6 @@ import type {
   TextRange,
   UpdateHighlightNoteRequest,
   TrialCandidate,
-  SubmitInterviewAnswerRequest,
   SubmitStrategyFeedbackRequest,
   SubmitTrialFeedbackRequest,
   TrialReviewResponse,
@@ -67,7 +61,6 @@ import {
   bookReaderProfileVersions,
   dailyReadingTotals,
   highlights,
-  interviewAnswers,
   interviewMessages,
   interviewSessions,
   nodeGenerations,
@@ -105,6 +98,8 @@ import type { BookService } from './books';
 import type { ReadingSetupEngine } from './reading-setup-engine';
 import { ADJUSTMENT_LIMIT } from './user-books/domain/reading-setup-state';
 import { UserBookError } from './user-books/errors';
+import { createSetupContextStore } from './user-books/context/setup-context';
+import { createInterviewService } from './user-books/interview/service';
 import {
   createSetupOperationStore,
   ReadingSetupLeaseLostError,
@@ -452,13 +447,6 @@ export interface ContentGenerationEnqueuer {
 // importers of it from this module keep working.
 export type { ReaderBootstrap };
 
-class InterviewTurnLeaseLostError extends Error {
-  constructor() {
-    super('interview turn lease lost');
-    this.name = 'InterviewTurnLeaseLostError';
-  }
-}
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type QaSessionCursor = { updatedAt: string; sessionId: string };
@@ -646,61 +634,6 @@ async function getManifestMeta(books: BookService, sharedBookId: string): Promis
   }
   manifestMetaCache.set(sharedBookId, meta);
   return meta;
-}
-
-function mapQuestion(value: {
-  id: string;
-  acknowledgment: string;
-  prompt: string;
-  hint?: string;
-  options: Array<{ id: string; label: string }>;
-  allow_text: true;
-  profile_dimension: string;
-  sufficiency: number;
-}): InterviewQuestion {
-  return {
-    id: value.id,
-    acknowledgment: value.acknowledgment,
-    prompt: value.prompt,
-    ...(value.hint ? { hint: value.hint } : {}),
-    options: value.options,
-    allowFreeText: true,
-    profileDimension: value.profile_dimension,
-    sufficiency: value.sufficiency,
-  };
-}
-
-function mapBookReaderProfile(value: {
-  summary: string;
-  motivations: string[];
-  prior_knowledge: string[];
-  reading_goals: string[];
-  likely_barriers: string[];
-}): BookReaderProfile {
-  return {
-    purpose: value.motivations.join('；'),
-    existingKnowledge: value.prior_knowledge,
-    desiredDepthOrOutcome: value.reading_goals.join('；'),
-    likelyObstacles: value.likely_barriers,
-    expectedCommitment: '按实际阅读进度持续推进，不要求一次生成整本书。',
-    otherConclusions: [value.summary],
-  };
-}
-
-function mapBriefing(value: {
-  book_identity: string;
-  arc: string;
-  assumed_knowledge: string;
-  reading_advice: string;
-}): Briefing {
-  // snake_case (agent ReadingBriefingSchema) → camelCase contracts Briefing. Stored as jsonb
-  // and rendered by the frontend BriefCard as four labelled sections.
-  return {
-    bookIdentity: value.book_identity,
-    arc: value.arc,
-    assumedKnowledge: value.assumed_knowledge,
-    readingAdvice: value.reading_advice,
-  };
 }
 
 function mapStrategy(value: {
@@ -1141,27 +1074,6 @@ type RequestContext = {
   requestId?: string;
 };
 
-type InterviewTurnClaim = {
-  sessionId: string;
-  leaseId: string;
-  questionCount: number;
-  conversationVersion: number;
-};
-
-type InterviewTurnStreamDelta =
-  | Exclude<ReadingSetupStreamDelta, { type: 'reading_node_added' }>
-  | {
-      type: 'reading_node_added';
-      speculativeEpoch: number;
-      node: ReadingNodePreview;
-    };
-
-type InterviewStreamPayload = InterviewStreamEvent extends infer Event
-  ? Event extends InterviewStreamEvent
-    ? Omit<Event, 'userBookId' | 'streamId' | 'sequence'>
-    : never
-  : never;
-
 type RevisionTurnStreamDelta =
   | Extract<ReadingSetupStreamDelta, { type: 'speculative_reset' | 'draft_started' | 'strategy_delta' }>
   | {
@@ -1191,9 +1103,6 @@ type TrialSelectionStreamPayload = TrialSelectionStreamEvent extends infer Event
     ? Omit<Event, 'userBookId' | 'operationId' | 'operationAttempt' | 'sequence'>
     : never
   : never;
-
-const INTERVIEW_TURN_LEASE_SQL = sql`interval '6 minutes'`;
-const INTERVIEW_TURN_RENEW_INTERVAL_MS = 60_000;
 
 export function createUserBookService(options: UserBookServiceOptions) {
   return {
@@ -1232,6 +1141,12 @@ function createUserBookServiceForUser(
     project: projectReadingSetupOperation,
     current: currentReadingSetupOperation,
   } = setupOperationStore;
+  const { getReaderProfile, getSetupContext } = createSetupContextStore({
+    db,
+    books: options.books,
+    userId,
+    getOwnedBook,
+  });
 
   const shelfItem = (row: { userBook: typeof userBooks.$inferSelect; sharedBook: typeof sharedBooks.$inferSelect }): UserBookShelfItem => ({
     id: row.userBook.id,
@@ -1246,267 +1161,6 @@ function createUserBookServiceForUser(
     progress: null,
     lastActivityAt: row.userBook.updatedAt.toISOString(),
   });
-
-  const getReaderProfile = async (userId: string) => {
-    const [row] = await db
-      .select({ version: readerProfileVersions })
-      .from(readerProfiles)
-      .innerJoin(readerProfileVersions, eq(readerProfileVersions.id, readerProfiles.currentVersionId))
-      .where(eq(readerProfiles.userId, userId))
-      .limit(1);
-    if (!row) throw new UserBookError('长期画像不存在', 409);
-    return row.version;
-  };
-
-  const getSetupContext = async (userBookId: string) => {
-    const owned = await getOwnedBook(userBookId);
-    const [readerProfile, bookProfile, messages] = await Promise.all([
-      getReaderProfile(userId),
-      options.books.getProfile(owned.sharedBook.id),
-      owned.userBook.currentInterviewSessionId
-        ? db
-            .select()
-            .from(interviewMessages)
-            .where(eq(interviewMessages.interviewSessionId, owned.userBook.currentInterviewSessionId))
-            .orderBy(asc(interviewMessages.sequence))
-        : Promise.resolve([]),
-    ]);
-    if (!bookProfile) throw new UserBookError('共享书籍画像不存在', 409);
-    return {
-      owned,
-      readerProfile,
-      context: {
-        book: {
-          id: owned.sharedBook.id,
-          title: owned.sharedBook.title,
-          authors: owned.sharedBook.authors,
-          language: owned.sharedBook.language,
-        },
-        bookProfile,
-        readerProfile: readerProfile.profile,
-        messages: messages.map((message) => ({
-          role: message.role,
-          kind: message.kind,
-          content: message.content,
-          payload: message.payload,
-        })),
-      },
-    };
-  };
-
-  const emptyTurnLease = {
-    turnLeaseId: null,
-    turnLeaseVersion: null,
-    turnLeaseClaimedAt: null,
-    turnLeaseExpiresAt: null,
-  } as const;
-
-  const claimInterviewTurn = async (sessionId: string): Promise<InterviewTurnClaim | null> => {
-    const leaseId = randomUUID();
-    const [claimed] = await db
-      .update(interviewSessions)
-      .set({
-        turnLeaseId: leaseId,
-        turnLeaseVersion: sql`${interviewSessions.conversationVersion}`,
-        turnLeaseClaimedAt: sql`now()`,
-        turnLeaseExpiresAt: sql`now() + ${INTERVIEW_TURN_LEASE_SQL}`,
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(interviewSessions.id, sessionId),
-        eq(interviewSessions.status, 'active'),
-        sql`${interviewSessions.conversationVersion} = ${interviewSessions.questionCount} * 2`,
-        or(
-          isNull(interviewSessions.turnLeaseId),
-          sql`${interviewSessions.turnLeaseExpiresAt} <= now()`,
-        ),
-      ))
-      .returning({
-        sessionId: interviewSessions.id,
-        questionCount: interviewSessions.questionCount,
-        conversationVersion: interviewSessions.conversationVersion,
-      });
-    return claimed ? { ...claimed, leaseId } : null;
-  };
-
-  const releaseInterviewTurn = async (claim: InterviewTurnClaim) => {
-    await db
-      .update(interviewSessions)
-      .set({ ...emptyTurnLease, updatedAt: new Date() })
-      .where(and(
-        eq(interviewSessions.id, claim.sessionId),
-        eq(interviewSessions.turnLeaseId, claim.leaseId),
-        eq(interviewSessions.turnLeaseVersion, claim.conversationVersion),
-      ));
-  };
-
-  const renewInterviewTurn = async (claim: InterviewTurnClaim) => {
-    const [renewed] = await db
-      .update(interviewSessions)
-      .set({
-        turnLeaseExpiresAt: sql`now() + ${INTERVIEW_TURN_LEASE_SQL}`,
-        updatedAt: sql`now()`,
-      })
-      .where(and(
-        eq(interviewSessions.id, claim.sessionId),
-        eq(interviewSessions.status, 'active'),
-        eq(interviewSessions.turnLeaseId, claim.leaseId),
-        eq(interviewSessions.turnLeaseVersion, claim.conversationVersion),
-        sql`${interviewSessions.turnLeaseExpiresAt} > now()`,
-      ))
-      .returning({ id: interviewSessions.id });
-    return Boolean(renewed);
-  };
-
-  const startInterviewTurnLeaseRenewal = (claim: InterviewTurnClaim) => {
-    let stopped = false;
-    let lost = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const schedule = () => {
-      timer = setTimeout(async () => {
-        if (stopped) return;
-        try {
-          lost = !(await renewInterviewTurn(claim));
-        } catch {
-          lost = true;
-        }
-        if (!lost && !stopped) schedule();
-      }, INTERVIEW_TURN_RENEW_INTERVAL_MS);
-      timer.unref?.();
-    };
-    schedule();
-    return {
-      assertActive() {
-        if (lost) throw new InterviewTurnLeaseLostError();
-      },
-      stop() {
-        stopped = true;
-        if (timer) clearTimeout(timer);
-      },
-    };
-  };
-
-  const saveSetupOutcome = async (
-    userBookId: string,
-    outcome: Awaited<ReturnType<ReadingSetupEngine['runTurn']>>,
-    claim: InterviewTurnClaim,
-  ) => {
-    if (outcome.type === 'question') {
-      const committed = await db.transaction(async (tx) => {
-        const sequence = claim.conversationVersion + 1;
-        const advanced = await tx
-          .update(interviewSessions)
-          .set({
-            questionCount: claim.questionCount + 1,
-            conversationVersion: sequence,
-            ...emptyTurnLease,
-            updatedAt: new Date(),
-          })
-          .where(and(
-            eq(interviewSessions.id, claim.sessionId),
-            eq(interviewSessions.status, 'active'),
-            eq(interviewSessions.questionCount, claim.questionCount),
-            eq(interviewSessions.conversationVersion, claim.conversationVersion),
-            eq(interviewSessions.turnLeaseId, claim.leaseId),
-            eq(interviewSessions.turnLeaseVersion, claim.conversationVersion),
-            sql`${interviewSessions.turnLeaseExpiresAt} > now()`,
-          ))
-          .returning({ id: interviewSessions.id });
-        if (advanced.length !== 1) return false;
-        await tx.insert(interviewMessages).values({
-          interviewSessionId: claim.sessionId,
-          sequence,
-          role: 'assistant',
-          kind: 'question',
-          content: outcome.question.prompt,
-          payload: mapQuestion(outcome.question),
-        });
-        return true;
-      });
-      return { committed };
-    }
-    if (outcome.type !== 'completed') throw new Error('unexpected reading setup outcome during interview');
-    const draftId = await db.transaction(async (tx) => {
-      const completed = await tx
-        .update(interviewSessions)
-        .set({
-          status: 'completed',
-          completedAt: new Date(),
-          ...emptyTurnLease,
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(interviewSessions.id, claim.sessionId),
-          eq(interviewSessions.status, 'active'),
-          eq(interviewSessions.questionCount, claim.questionCount),
-          eq(interviewSessions.conversationVersion, claim.conversationVersion),
-          eq(interviewSessions.turnLeaseId, claim.leaseId),
-          eq(interviewSessions.turnLeaseVersion, claim.conversationVersion),
-          sql`${interviewSessions.turnLeaseExpiresAt} > now()`,
-        ))
-        .returning({ id: interviewSessions.id });
-      if (completed.length !== 1) return null;
-      const [profile] = await tx
-        .insert(bookReaderProfileVersions)
-        .values({
-          userBookId,
-          interviewSessionId: claim.sessionId,
-          version: 1,
-          profile: mapBookReaderProfile(outcome.bookReaderProfile),
-        })
-        .returning();
-      if (!profile) throw new Error('failed to save book reader profile');
-      const [draft] = await tx
-        .insert(strategyDraftVersions)
-        .values({
-          userBookId,
-          bookReaderProfileVersionId: profile.id,
-          version: 1,
-          status: 'draft',
-          readingBriefing: mapBriefing(outcome.briefing),
-          userFacingSummary: outcome.publicStrategy,
-          strategy: mapStrategy(outcome.strategy),
-        })
-        .returning();
-      if (!draft) throw new Error('failed to save strategy draft');
-      if (outcome.readerProfilePatch) {
-        const [reader] = await tx
-          .select({ profile: readerProfiles, version: readerProfileVersions })
-          .from(readerProfiles)
-          .innerJoin(readerProfileVersions, eq(readerProfileVersions.id, readerProfiles.currentVersionId))
-          .where(eq(readerProfiles.userId, (await tx.select({ userId: userBooks.userId }).from(userBooks).where(eq(userBooks.id, userBookId)).limit(1))[0]!.userId))
-          .limit(1);
-        if (reader) {
-          const nextProfile = applyReaderProfilePatch(reader.version.profile, outcome.readerProfilePatch);
-          const [nextVersion] = await tx.insert(readerProfileVersions).values({
-            readerProfileId: reader.profile.id,
-            version: reader.version.version + 1,
-            profile: nextProfile,
-            changeSource: 'interview',
-          }).returning();
-          if (nextVersion) {
-            await tx.update(readerProfiles).set({ currentVersionId: nextVersion.id, updatedAt: new Date() }).where(eq(readerProfiles.id, reader.profile.id));
-          }
-        }
-      }
-      // §6.5 guard: the session active→completed flip above already serializes completion, so
-      // the book is invariably 'interviewing' here — assert it instead of blind-writing by id,
-      // so an impossible stray state surfaces rather than silently diverging from the session.
-      const activated = await tx
-        .update(userBooks)
-        .set({
-          workflowStatus: 'strategy_review',
-          currentBookReaderProfileVersionId: profile.id,
-          currentStrategyDraftVersionId: draft.id,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(userBooks.id, userBookId), eq(userBooks.workflowStatus, 'interviewing')))
-        .returning({ id: userBooks.id });
-      if (activated.length !== 1) throw new UserBookError('访谈状态已经变化', 409);
-      return draft.id;
-    });
-    return { committed: draftId !== null, ...(draftId ? { draftId } : {}) };
-  };
 
   const createReadingNodeProjector = (
     manifest: ReadingManifest,
@@ -1543,324 +1197,6 @@ function createUserBookServiceForUser(
         reason: candidate.reason,
       };
     };
-  };
-
-  // Runs one claimed interviewing turn (agent → next question or finish) and fences the
-  // commit with the lease token. The model call never holds a database transaction open.
-  const generateNextQuestion = async (
-    userBookId: string,
-    claim: InterviewTurnClaim,
-    onStream?: (delta: InterviewTurnStreamDelta) => void,
-  ) => {
-    const lease = startInterviewTurnLeaseRenewal(claim);
-    try {
-      const setup = await getSetupContext(userBookId);
-      const manifestValue = await options.books.getManifest(setup.owned.sharedBook.id);
-      if (!manifestValue) throw new UserBookError('书籍阅读索引不存在', 409);
-      const manifest = asManifest(manifestValue);
-      const projectNode = createReadingNodeProjector(manifest, setup.context.bookProfile);
-      let streamedEpoch = 0;
-      let streamedNodes = new Set<string>();
-      const outcome = await options.setupEngine.runTurn({
-        sessionId: claim.sessionId,
-        phase: 'interviewing',
-        askedCount: claim.questionCount,
-        conversationVersion: claim.conversationVersion,
-        context: setup.context,
-        ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
-        ...(onStream ? {
-          onStream: (delta: ReadingSetupStreamDelta) => {
-            lease.assertActive();
-            if (delta.type === 'speculative_reset') {
-              streamedEpoch = delta.speculativeEpoch;
-              streamedNodes = new Set<string>();
-              onStream(delta);
-              return;
-            }
-            if (delta.speculativeEpoch < streamedEpoch) return;
-            if (delta.type === 'reading_node_added') {
-              try {
-                onStream({
-                  type: 'reading_node_added',
-                  speculativeEpoch: delta.speculativeEpoch,
-                  node: projectNode(delta, streamedNodes),
-                });
-              } catch (error) {
-                if (!(error instanceof UserBookError)) throw error;
-              }
-              return;
-            }
-            onStream(delta);
-          },
-        } : {}),
-      });
-      lease.assertActive();
-      if (outcome.type === 'completed') {
-        const finalNodes = new Set<string>();
-        outcome.strategy.trial_candidates.forEach((candidate, index) => projectNode({
-          ordinal: index + 1,
-          sectionId: candidate.section_id,
-          segment: candidate.segment,
-          reason: candidate.reason,
-        }, finalNodes));
-      }
-      const saved = await saveSetupOutcome(userBookId, outcome, claim);
-      if (!saved.committed) throw new InterviewTurnLeaseLostError();
-      return { outcome, ...saved };
-    } catch (error) {
-      try {
-        await releaseInterviewTurn(claim);
-      } catch {
-        // The lease expiry is the crash-safe fallback when an explicit release also fails.
-      }
-      throw error;
-    } finally {
-      lease.stop();
-    }
-  };
-
-  const ensureInterviewSession = async (userBookId: string) => {
-    const owned = await getOwnedBook(userBookId);
-    if (owned.sharedBook.status !== 'ready') throw new UserBookError('书籍尚未处理完成', 409);
-    if (!['on_shelf', 'interviewing'].includes(owned.userBook.workflowStatus)) {
-      throw new UserBookError('当前阶段不能开始访谈', 409);
-    }
-    let sessionId = owned.userBook.currentInterviewSessionId;
-    if (!sessionId) {
-      await db.insert(interviewSessions).values({ userBookId }).onConflictDoNothing({ target: interviewSessions.userBookId });
-      const [session] = await db.select().from(interviewSessions).where(eq(interviewSessions.userBookId, userBookId)).limit(1);
-      if (!session) throw new UserBookError('访谈初始化失败', 503);
-      sessionId = session.id;
-      // §6.5 guard: only start interviewing from the two valid prior states (checked above).
-      // A concurrent advance makes this a no-op; the next call re-links the session (self-heal).
-      await db
-        .update(userBooks)
-        .set({ workflowStatus: 'interviewing', currentInterviewSessionId: session.id, updatedAt: new Date() })
-        .where(and(
-          eq(userBooks.id, userBookId),
-          inArray(userBooks.workflowStatus, ['on_shelf', 'interviewing']),
-        ));
-    }
-    return sessionId;
-  };
-
-  const resumePendingInterviewTurn = async (
-    userBookId: string,
-    sessionId: string,
-  ) => {
-    const claim = await claimInterviewTurn(sessionId);
-    if (!claim) return false;
-    await generateNextQuestion(userBookId, claim);
-    return true;
-  };
-
-  // Read-only projection of the persisted interview. Generation is owned exclusively by the
-  // explicit start/resume commands and the answer transaction's leased turn.
-  const readInterviewState = async (userBookId: string): Promise<InterviewStateResponse> => {
-    const owned = await getOwnedBook(userBookId);
-    const sessionId = owned.userBook.currentInterviewSessionId;
-    if (!sessionId) throw new UserBookError('访谈尚未建立', 409);
-    const [session, messages, answers] = await Promise.all([
-      db.select().from(interviewSessions).where(eq(interviewSessions.id, sessionId)).limit(1).then((rows) => rows[0]),
-      db.select().from(interviewMessages).where(eq(interviewMessages.interviewSessionId, sessionId)).orderBy(asc(interviewMessages.sequence)),
-      db.select({ answer: interviewAnswers, question: interviewMessages })
-        .from(interviewAnswers)
-        .innerJoin(interviewMessages, eq(interviewMessages.id, interviewAnswers.questionMessageId))
-        .where(eq(interviewAnswers.interviewSessionId, sessionId))
-        .orderBy(asc(interviewAnswers.createdAt)),
-    ]);
-    if (!session) throw new UserBookError('访谈不存在', 404);
-    const answeredQuestionIds = new Set(answers.map((row) => String(row.question.payload.id ?? '')));
-    const currentMessage = [...messages]
-      .reverse()
-      .find((message) => message.kind === 'question' && !answeredQuestionIds.has(String(message.payload.id ?? '')));
-    return {
-      sessionId,
-      status: session.status,
-      turnInProgress: Boolean(
-        session.turnLeaseId
-        && session.turnLeaseExpiresAt
-        && session.turnLeaseExpiresAt.getTime() > Date.now()
-      ),
-      questionCount: session.questionCount,
-      maxQuestions: 7,
-      currentQuestion: currentMessage ? currentMessage.payload as InterviewQuestion : null,
-      sufficiency: currentMessage
-        ? (currentMessage.payload as { sufficiency?: number }).sufficiency ?? null
-        : null,
-      answers: answers.map(({ answer, question }) => {
-        // Resolve the human-readable history row from the joined question payload — the raw
-        // answer only stores option ids and free text, so without this the client can only
-        // show placeholders ("第 N 问") and opaque option slugs ("understand").
-        const payload = question.payload as InterviewQuestion;
-        const labels = answer.selectedOptionIds
-          .map((id) => payload.options?.find((option) => option.id === id)?.label ?? id);
-        const answerText = [...labels, answer.freeText?.trim()].filter(Boolean).join('；');
-        return {
-          id: answer.id,
-          questionId: String(payload.id ?? ''),
-          question: payload.prompt ?? '',
-          selectedOptionIds: answer.selectedOptionIds,
-          freeText: answer.freeText,
-          answerText,
-          createdAt: answer.createdAt.toISOString(),
-        };
-      }),
-    };
-  };
-
-  const interviewState = readInterviewState;
-
-  // Persists one answer and atomically leases the following model turn. Locking the session
-  // serializes different idempotency keys for the same question before either can call the model.
-  const commitInterviewAnswer = async (
-    userBookId: string,
-    input: SubmitInterviewAnswerRequest,
-  ): Promise<{ inserted: boolean; sessionId: string; claim?: InterviewTurnClaim }> => {
-    const owned = await getOwnedBook(userBookId);
-    const sessionId = owned.userBook.currentInterviewSessionId;
-    if (owned.userBook.workflowStatus !== 'interviewing' || !sessionId) {
-      throw new UserBookError('当前没有可回答的问题', 409);
-    }
-    const normalizedFreeText = input.freeText?.trim() || null;
-    const selected = new Set(input.selectedOptionIds);
-    return db.transaction(async (tx) => {
-      const [session] = await tx
-        .select()
-        .from(interviewSessions)
-        .where(eq(interviewSessions.id, sessionId))
-        .limit(1)
-        .for('update');
-      if (!session || session.status !== 'active') throw new UserBookError('访谈状态已经变化', 409);
-
-      const [existing] = await tx
-        .select()
-        .from(interviewAnswers)
-        .where(and(eq(interviewAnswers.interviewSessionId, sessionId), eq(interviewAnswers.idempotencyKey, input.idempotencyKey)))
-        .limit(1);
-      if (existing) {
-        const [existingQuestion] = await tx
-          .select()
-          .from(interviewMessages)
-          .where(eq(interviewMessages.id, existing.questionMessageId))
-          .limit(1);
-        if (
-          String(existingQuestion?.payload.id ?? '') !== input.questionId
-          || !isDeepStrictEqual(existing.selectedOptionIds, input.selectedOptionIds)
-          || existing.freeText !== normalizedFreeText
-        ) {
-          throw new UserBookError('幂等键已用于不同的访谈回答', 409);
-        }
-        return { inserted: false, sessionId };
-      }
-
-      const [questionMessage] = await tx
-        .select()
-        .from(interviewMessages)
-        .where(and(
-          eq(interviewMessages.interviewSessionId, sessionId),
-          eq(interviewMessages.kind, 'question'),
-        ))
-        .orderBy(desc(interviewMessages.sequence))
-        .limit(1);
-      if (
-        !questionMessage
-        || questionMessage.sequence !== session.conversationVersion
-        || String(questionMessage.payload.id ?? '') !== input.questionId
-      ) {
-        throw new UserBookError('问题已经更新，请刷新后继续', 409);
-      }
-      const [answered] = await tx
-        .select({ id: interviewAnswers.id })
-        .from(interviewAnswers)
-        .where(eq(interviewAnswers.questionMessageId, questionMessage.id))
-        .limit(1);
-      if (answered) throw new UserBookError('问题已经回答，请刷新后继续', 409);
-
-      const question = questionMessage.payload as unknown as InterviewQuestion;
-      if (input.selectedOptionIds.some((id) => !question.options.some((option) => option.id === id))) {
-        throw new UserBookError('回答包含无效选项', 400);
-      }
-      if (selected.size === 0 && !normalizedFreeText) {
-        throw new UserBookError('请选择一个选项或填写补充内容', 400);
-      }
-
-      await tx.insert(interviewAnswers).values({
-        interviewSessionId: sessionId,
-        questionMessageId: questionMessage.id,
-        selectedOptionIds: input.selectedOptionIds,
-        freeText: normalizedFreeText,
-        idempotencyKey: input.idempotencyKey,
-      });
-      const labels = question.options.filter((option) => selected.has(option.id)).map((option) => option.label);
-      const content = [...labels, normalizedFreeText].filter(Boolean).join('；');
-      const conversationVersion = session.conversationVersion + 1;
-      await tx.insert(interviewMessages).values({
-        interviewSessionId: sessionId,
-        sequence: conversationVersion,
-        role: 'user',
-        kind: 'answer',
-        content,
-        payload: input,
-      });
-      const leaseId = randomUUID();
-      await tx
-        .update(interviewSessions)
-        .set({
-          conversationVersion,
-          turnLeaseId: leaseId,
-          turnLeaseVersion: conversationVersion,
-          turnLeaseClaimedAt: sql`now()`,
-          turnLeaseExpiresAt: sql`now() + ${INTERVIEW_TURN_LEASE_SQL}`,
-          updatedAt: new Date(),
-        })
-        .where(eq(interviewSessions.id, sessionId));
-      return {
-        inserted: true,
-        sessionId,
-        claim: {
-          sessionId,
-          leaseId,
-          questionCount: session.questionCount,
-          conversationVersion,
-        },
-      };
-    });
-  };
-
-  const createInterviewStreamEmitter = (userBookId: string, streamId: string) => {
-    let sequence = 0;
-    return (payload: InterviewStreamPayload): InterviewStreamEvent => ({
-      userBookId,
-      streamId,
-      sequence: sequence += 1,
-      ...payload,
-    } as InterviewStreamEvent);
-  };
-
-  // Closes a streamed turn from persisted state so question/final pointers remain authoritative.
-  const terminalInterviewEvents = async function* (
-    userBookId: string,
-    emit: (payload: InterviewStreamPayload) => InterviewStreamEvent,
-  ): AsyncGenerator<InterviewStreamEvent> {
-    const owned = await getOwnedBook(userBookId);
-    if (owned.userBook.workflowStatus !== 'interviewing') {
-      yield emit({ type: 'done', workflowStatus: owned.userBook.workflowStatus });
-      return;
-    }
-    const state = await readInterviewState(userBookId);
-    if (state.currentQuestion) {
-      yield emit({
-        type: 'question_final',
-        question: state.currentQuestion,
-        ordinal: Math.max(1, Math.min(state.maxQuestions, state.questionCount)),
-        maxQuestions: state.maxQuestions,
-      });
-    } else {
-      // No question yet (a concurrent turn, or a turn that produced nothing) — tell the client
-      // to fall back to GET /interview.
-      yield emit({ type: 'done', workflowStatus: owned.userBook.workflowStatus });
-    }
   };
 
   const strategyStateByDraftId = async (
@@ -1914,118 +1250,20 @@ function createUserBookServiceForUser(
     return strategyStateByDraftId(userBookId, draftId);
   };
 
-  const streamClaimedInterviewTurn = async function* (
-    userBookId: string,
-    claim: InterviewTurnClaim,
-  ): AsyncGenerator<InterviewStreamEvent> {
-    const emit = createInterviewStreamEmitter(userBookId, claim.leaseId);
-    const bridge = createStreamBridge<InterviewStreamEvent>();
-    let result: Awaited<ReturnType<typeof generateNextQuestion>> | undefined;
-    let turnError: unknown;
-    const running = generateNextQuestion(userBookId, claim, (delta) => {
-      switch (delta.type) {
-        case 'speculative_reset':
-          bridge.push(emit({
-            type: 'speculative_reset',
-            speculativeEpoch: delta.speculativeEpoch,
-            phase: 'interviewing',
-          }));
-          break;
-        case 'ack_delta':
-        case 'prompt_delta':
-        case 'hint_delta':
-        case 'strategy_delta':
-          bridge.push(emit({
-            type: delta.type,
-            speculativeEpoch: delta.speculativeEpoch,
-            chars: delta.chars,
-          }));
-          break;
-        case 'option_added':
-          bridge.push(emit({
-            type: delta.type,
-            speculativeEpoch: delta.speculativeEpoch,
-            id: delta.id,
-            label: delta.label,
-          }));
-          break;
-        case 'sufficiency':
-          bridge.push(emit({
-            type: delta.type,
-            speculativeEpoch: delta.speculativeEpoch,
-            value: delta.value,
-          }));
-          break;
-        case 'draft_started':
-          if (delta.source === 'interview') {
-            bridge.push(emit({
-              type: delta.type,
-              speculativeEpoch: delta.speculativeEpoch,
-              conversationVersion: claim.conversationVersion,
-            }));
-          }
-          break;
-        case 'briefing_delta':
-          bridge.push(emit({
-            type: delta.type,
-            speculativeEpoch: delta.speculativeEpoch,
-            field: delta.field,
-            chars: delta.chars,
-          }));
-          break;
-        case 'reading_node_added':
-          bridge.push(emit({
-            type: delta.type,
-            speculativeEpoch: delta.speculativeEpoch,
-            node: delta.node,
-          }));
-          break;
-        case 'selection_started':
-        case 'fragment_added':
-          break;
-      }
-    })
-      .then((value) => {
-        result = value;
-      })
-      .catch((error: unknown) => {
-        turnError = error;
-      })
-      .finally(() => bridge.end());
-
-    for await (const event of bridge.drain()) yield event;
-    await running;
-    if (turnError) {
-      const code: ReadingSetupStreamErrorCode = turnError instanceof InterviewTurnLeaseLostError
-        ? 'lease_lost'
-        : turnError instanceof UserBookError
-          ? 'validation_failed'
-          : 'agent_failed';
-      yield emit({
-        type: 'error',
-        code,
-        message: turnError instanceof UserBookError
-          ? turnError.message
-          : code === 'lease_lost'
-            ? '访谈处理已由新的恢复请求接管。'
-            : '生成下一步时出错，请稍后重试。',
-      });
-      return;
-    }
-    if (!result) {
-      yield emit({ type: 'error', code: 'internal_error', message: '访谈处理结果缺失。' });
-      return;
-    }
-    if (result.outcome.type === 'completed') {
-      if (!result.draftId) {
-        yield emit({ type: 'error', code: 'internal_error', message: '处理方式草稿结果缺失。' });
-        return;
-      }
-      const strategy = await strategyStateByDraftId(userBookId, result.draftId);
-      yield emit({ type: 'draft_final', strategy });
-    }
-    yield* terminalInterviewEvents(userBookId, emit);
-  };
+  const interviewService = createInterviewService({
+    db,
+    books: options.books,
+    setupEngine: options.setupEngine,
+    getOwnedBook,
+    getSetupContext,
+    createReadingNodeProjector: (manifestValue, bookProfile) => (
+      createReadingNodeProjector(asManifest(manifestValue), bookProfile)
+    ),
+    mapStrategy,
+    applyReaderProfilePatch,
+    loadStrategyState: strategyStateByDraftId,
+    ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
+  });
 
   // §6.4 / §10.7 shared revision engine. Runs the revision LLM FIRST (no writes), then applies
   // the whole change in ONE transaction: supersede the current draft, insert the revised draft,
@@ -3548,7 +2786,7 @@ function createUserBookServiceForUser(
       },
       async getReaderContext() {
         const [readerProfile, bookReaderProfile, strategy] = await Promise.all([
-          getReaderProfile(userId).catch(() => null),
+          getReaderProfile().catch(() => null),
           owned.userBook.currentBookReaderProfileVersionId
             ? db
                 .select()
@@ -4163,55 +3401,11 @@ function createUserBookServiceForUser(
 
     resumeReadingSetupOperation,
 
-    interviewState,
-
-    async startInterview(userBookId: string): Promise<InterviewStateResponse> {
-      const sessionId = await ensureInterviewSession(userBookId);
-      await resumePendingInterviewTurn(userBookId, sessionId);
-      return readInterviewState(userBookId);
-    },
-
-    async resumeInterview(userBookId: string): Promise<InterviewStateResponse> {
-      const owned = await getOwnedBook(userBookId);
-      const sessionId = owned.userBook.currentInterviewSessionId;
-      if (owned.userBook.workflowStatus !== 'interviewing' || !sessionId) {
-        throw new UserBookError('当前访谈不需要恢复', 409);
-      }
-      await resumePendingInterviewTurn(userBookId, sessionId);
-      return readInterviewState(userBookId);
-    },
-
-    async *streamResumeInterview(userBookId: string): AsyncGenerator<InterviewStreamEvent> {
-      const owned = await getOwnedBook(userBookId);
-      const sessionId = owned.userBook.currentInterviewSessionId;
-      if (owned.userBook.workflowStatus !== 'interviewing' || !sessionId) {
-        throw new UserBookError('当前访谈不需要恢复', 409);
-      }
-      const claim = await claimInterviewTurn(sessionId);
-      if (!claim) throw new UserBookError('访谈仍在处理中', 409);
-      yield* streamClaimedInterviewTurn(userBookId, claim);
-    },
-
-    // Streaming answer endpoint (§4). Commits the answer, then runs the interviewing turn,
-    // yielding token-level deltas as the model streams the next question, or progressive draft
-    // fields followed by `draft_final` when it finishes. Validation errors are thrown before the
-    // first yield so the route can still surface them as HTTP status codes; failures after the
-    // stream opens become an in-band `error` event.
-    async *streamInterviewAnswer(
-      userBookId: string,
-      input: SubmitInterviewAnswerRequest,
-    ): AsyncGenerator<InterviewStreamEvent> {
-      const committed = await commitInterviewAnswer(userBookId, input);
-      const claim = committed.claim ?? await claimInterviewTurn(committed.sessionId);
-      if (claim) {
-        yield* streamClaimedInterviewTurn(userBookId, claim);
-        return;
-      }
-      yield* terminalInterviewEvents(
-        userBookId,
-        createInterviewStreamEmitter(userBookId, randomUUID()),
-      );
-    },
+    interviewState: interviewService.state,
+    startInterview: interviewService.start,
+    resumeInterview: interviewService.resume,
+    streamResumeInterview: interviewService.streamResume,
+    streamInterviewAnswer: interviewService.streamAnswer,
 
     strategyState,
     strategyStateByDraftId,
