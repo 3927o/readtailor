@@ -1,6 +1,6 @@
 {
-  "id": "577e49c5-51bc-401b-9c10-ff0ad9edfa4d",
-  "prevId": "2713f8ae-aa36-4bcb-926c-756e73939987",
+  "id": "467b218b-38b8-48e3-ab0d-315a8a93d61c",
+  "prevId": "577e49c5-51bc-401b-9c10-ff0ad9edfa4d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1810,7 +1810,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"node_generations\".\"generation_scope\" = 'formal'",
+          "where": "\"node_generations\".\"generation_scope\" = 'formal' and \"node_generations\".\"status\" <> 'superseded'",
           "concurrently": false,
           "method": "btree",
           "with": {}

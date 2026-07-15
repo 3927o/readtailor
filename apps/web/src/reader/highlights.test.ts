@@ -8,7 +8,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Highlight } from './api';
 import type { TailoredAnnotation } from '../user-books/api';
-import { applyReaderMarks, rangeFromSelection, readingBlocks } from './content';
+import {
+  applyReaderMarks,
+  quoteForReaderRange,
+  rangeFromSelection,
+  readerBlockText,
+  readingBlocks,
+} from './content';
 
 function fragment(html: string): DocumentFragment {
   const template = document.createElement('template');
@@ -153,6 +159,23 @@ describe('rangeFromSelection', () => {
     range.setStart(text, 2);
     range.setEnd(text, 2);
     expect(rangeFromSelection(root, range)).toBeNull();
+    root.remove();
+  });
+});
+
+describe('question-context quote projection', () => {
+  it('slices a cross-block range in the same UTF-16 coordinates as highlights', () => {
+    const root = contentRoot('<p>甲😀乙<br>丙</p><p>第二段内容</p>');
+    expect(quoteForReaderRange(root, {
+      start: { blockIndex: 1, offset: 1 },
+      end: { blockIndex: 2, offset: 3 },
+    })).toBe('😀乙\n丙\n第二段');
+    root.remove();
+  });
+
+  it('skips a nested list when projecting its owning list item', () => {
+    const root = contentRoot('<ul><li id="outer">前<ul><li>子项</li></ul>后</li></ul>');
+    expect(readerBlockText(root.querySelector('#outer')!)).toBe('前后');
     root.remove();
   });
 });

@@ -23,7 +23,7 @@ import {
   createAgentReadingSetupEngine,
   createFakeReadingSetupEngine,
 } from './reading-setup-engine';
-import { createAgentAskAiEngine, createFakeAskAiEngine } from './ask-ai-engine';
+import { createAgentAskAiEngine } from './ask-ai-engine';
 import { createUserBookService } from './user-books';
 
 const config = loadApiConfig();
@@ -119,13 +119,16 @@ const readingSetupEngine = readingSetupEndpoint
     })
   : createFakeReadingSetupEngine();
 const askAiEndpoint = requireCompleteModelEndpoint(config.askAiModel, 'ask-ai');
-const askAiEngine = askAiEndpoint
-  ? createAgentAskAiEngine({
-      apiBaseUrl: askAiEndpoint.baseUrl,
-      apiKey: askAiEndpoint.apiKey,
-      modelName: askAiEndpoint.modelName,
-    })
-  : createFakeAskAiEngine();
+if (!askAiEndpoint) {
+  throw new Error(
+    'ask-ai model is required: configure QA_AI_MODEL_API_BASE_URL, QA_AI_MODEL_API_KEY and QA_AI_MODEL_NAME (or the global MODEL_* fallback)',
+  );
+}
+const askAiEngine = createAgentAskAiEngine({
+  apiBaseUrl: askAiEndpoint.baseUrl,
+  apiKey: askAiEndpoint.apiKey,
+  modelName: askAiEndpoint.modelName,
+});
 const userBooks =
   database && books && contentGenerationQueue
     ? createUserBookService({

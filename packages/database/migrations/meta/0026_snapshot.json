@@ -1,6 +1,6 @@
 {
-  "id": "577e49c5-51bc-401b-9c10-ff0ad9edfa4d",
-  "prevId": "2713f8ae-aa36-4bcb-926c-756e73939987",
+  "id": "a87d1290-4a8a-49ea-9bd7-e505247c530b",
+  "prevId": "467b218b-38b8-48e3-ab0d-315a8a93d61c",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1810,7 +1810,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"node_generations\".\"generation_scope\" = 'formal'",
+          "where": "\"node_generations\".\"generation_scope\" = 'formal' and \"node_generations\".\"status\" <> 'superseded'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -4201,6 +4201,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "is_preset": {
+          "name": "is_preset",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -4228,6 +4235,22 @@
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "shared_books_preset_idx": {
+          "name": "shared_books_preset_idx",
+          "columns": [
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"shared_books\".\"is_preset\"",
           "concurrently": false,
           "method": "btree",
           "with": {}

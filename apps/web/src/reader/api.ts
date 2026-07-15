@@ -1,4 +1,22 @@
-import type { Briefing } from '@readtailor/contracts';
+import type {
+  AskQuestionRequest,
+  Briefing,
+  ProposalActionResponse,
+  ProposalDecisionRequest,
+  ProposalFeedbackRequest,
+  QaSessionListResponse,
+  QaSessionResponse,
+  QaStreamEvent,
+} from '@readtailor/contracts';
+export type {
+  QaMessage,
+  QaProposalRevisionSummary,
+  QaProposalSummary,
+  QaQuestionContext,
+  QaSessionListItem,
+  QaSessionResponse,
+  StrategyChangeProposalStatus,
+} from '@readtailor/contracts';
 import type { TailoredContent, TextRange, WorkflowStatus } from '../user-books/api';
 import type { ActivitySlicePayload, HeartbeatPayload } from './session';
 
@@ -57,6 +75,8 @@ export interface ReaderDocument {
 export type NodeEnhancementStatus = 'not_applicable' | 'queued' | 'generating' | 'ready' | 'failed';
 
 export interface ReaderNodeEnhancement {
+  generationId: string;
+  strategyVersionId: string;
   sectionId: string;
   segment: number;
   status: NodeEnhancementStatus;
@@ -133,6 +153,8 @@ export interface ReaderBootstrap {
   userBookId: string;
   sharedBookId: string;
   workflowStatus: WorkflowStatus;
+  strategyVersionId: string;
+  strategyVersion: number;
   enhancements: ReaderNodeEnhancement[];
   // Structured pre-reading briefing (BriefCard sections). strategySummary stays a raw string.
   briefing: Briefing;
@@ -220,6 +242,8 @@ interface RawReaderBootstrap {
   userBookId: string;
   sharedBookId: string;
   workflowStatus: 'active_reading';
+  strategyVersionId: string;
+  strategyVersion: number;
   briefing: Briefing;
   strategySummary: string;
   resumePosition: ReaderResumePosition | null;
@@ -227,6 +251,8 @@ interface RawReaderBootstrap {
   readNodes: ReadNode[];
   highlights: Highlight[];
   enhancements: Array<{
+    generationId: string;
+    strategyVersionId: string;
     sectionId: string;
     segment: number;
     status: 'queued' | 'generating' | 'ready' | 'failed' | 'retrying' | 'superseded';
@@ -239,6 +265,8 @@ function mapReaderBootstrap(raw: RawReaderBootstrap): ReaderBootstrap {
     userBookId: raw.userBookId,
     sharedBookId: raw.sharedBookId,
     workflowStatus: raw.workflowStatus,
+    strategyVersionId: raw.strategyVersionId,
+    strategyVersion: raw.strategyVersion,
     briefing: raw.briefing,
     strategySummary: raw.strategySummary,
     resumePosition: raw.resumePosition ?? null,
@@ -246,6 +274,8 @@ function mapReaderBootstrap(raw: RawReaderBootstrap): ReaderBootstrap {
     readNodes: raw.readNodes ?? [],
     highlights: raw.highlights ?? [],
     enhancements: raw.enhancements.map((enhancement) => ({
+      generationId: enhancement.generationId,
+      strategyVersionId: enhancement.strategyVersionId,
       sectionId: enhancement.sectionId,
       segment: enhancement.segment,
       status: enhancement.status === 'retrying'
@@ -264,6 +294,20 @@ export async function getReaderBootstrap(userBookId: string): Promise<ReaderBoot
     `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/reader`,
     { credentials: 'include' },
   )));
+}
+
+export function mergeReaderBootstrap(
+  previous: ReaderBootstrap | undefined,
+  incoming: ReaderBootstrap,
+): ReaderBootstrap {
+  if (!previous) return incoming;
+  if (incoming.strategyVersion < previous.strategyVersion) return previous;
+  const previousResume = previous.resumePosition;
+  if (previousResume && (!incoming.resumePosition
+    || previousResume.clientObservedAt > incoming.resumePosition.clientObservedAt)) {
+    return { ...incoming, resumePosition: previousResume };
+  }
+  return incoming;
 }
 
 // Reports the reader's current (or jumped-to) node so the host grows the lazy-loading window
@@ -407,74 +451,126 @@ export function sendActivitySlice(userBookId: string, payload: ActivitySlicePayl
   }
 }
 
-// §8 问 AI — the anchor a question is asked against: a highlighted selection or the current
-// on-screen node. `sectionId`/`segment` locate the reader's node.
-export interface QaAnchor {
-  anchor: 'highlight' | 'screen';
-  sectionId: string;
-  segment: number;
-  highlightedText?: string;
-}
-
-type QaStreamEvent =
-  | { type: 'session'; sessionId: string; conversationVersion: number }
-  | { type: 'answer_delta'; chars: string }
-  | { type: 'proposal'; publicSummary: string }
-  | { type: 'profile_updated' }
-  | { type: 'done'; sessionId: string; messageId: string }
-  | { type: 'error'; message: string };
+export type QaProposalStreamEvent = Extract<QaStreamEvent, { type: 'proposal' }>;
 
 export interface QaStreamHandlers {
-  onSession?(sessionId: string): void;
+  onSession?(sessionId: string, conversationVersion: number): void;
   onAnswer?(chars: string): void;
-  onProposal?(publicSummary: string): void;
+  onProposal?(proposal: QaProposalStreamEvent): void;
   onProfileUpdated?(): void;
-  onDone?(messageId: string): void;
+  onDone?(messageId: string, sessionId: string): void;
   onError?(message: string): void;
 }
 
-function dispatchQaFrame(frame: string, handlers: QaStreamHandlers): void {
+type QaStreamTerminalEvent = 'done' | 'error';
+
+function dispatchQaFrame(frame: string, handlers: QaStreamHandlers): QaStreamTerminalEvent | null {
   const dataLine = frame.split('\n').find((line) => line.startsWith('data:'));
-  if (!dataLine) return; // SSE comment / heartbeat
+  if (!dataLine) return null; // SSE comment / heartbeat
   const payload = dataLine.slice(5).trim();
-  if (!payload) return;
+  if (!payload) return null;
   let event: QaStreamEvent;
   try {
     event = JSON.parse(payload) as QaStreamEvent;
   } catch {
-    return;
+    return null;
   }
   switch (event.type) {
-    case 'session': handlers.onSession?.(event.sessionId); break;
+    case 'session': handlers.onSession?.(event.sessionId, event.conversationVersion); break;
     case 'answer_delta': handlers.onAnswer?.(event.chars); break;
-    case 'proposal': handlers.onProposal?.(event.publicSummary); break;
+    case 'proposal': handlers.onProposal?.(event); break;
     case 'profile_updated': handlers.onProfileUpdated?.(); break;
-    case 'done': handlers.onDone?.(event.messageId); break;
-    case 'error': handlers.onError?.(event.message); break;
+    case 'done':
+      handlers.onDone?.(event.messageId, event.sessionId);
+      return 'done';
+    case 'error':
+      handlers.onError?.(event.message);
+      return 'error';
   }
+  return null;
 }
 
-// §8 问 AI — asks a question (new thread, with `anchor`) or a follow-up (`sessionId`), consuming
-// the SSE turn. Resolves when the stream ends. Pre-stream failures reject; in-band failures after
-// the stream opened arrive via handlers.onError.
-export async function streamQaAnswer(
+function qaRoot(userBookId: string): string {
+  return `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/qa`;
+}
+
+export async function listQaSessions(
   userBookId: string,
-  input: { sessionId?: string; question: string; anchor?: QaAnchor },
-  handlers: QaStreamHandlers,
-  signal?: AbortSignal,
-): Promise<void> {
-  const response = await fetch(
-    `${apiBaseUrl}/v1/user-books/${encodeURIComponent(userBookId)}/qa`,
+  options: { cursor?: string; limit?: number } = {},
+): Promise<QaSessionListResponse> {
+  const query = new URLSearchParams();
+  if (options.cursor) query.set('cursor', options.cursor);
+  if (options.limit) query.set('limit', String(options.limit));
+  const suffix = query.size ? `?${query.toString()}` : '';
+  return readJson<QaSessionListResponse>(await fetch(`${qaRoot(userBookId)}${suffix}`, {
+    credentials: 'include',
+  }));
+}
+
+export async function getQaSession(userBookId: string, sessionId: string): Promise<QaSessionResponse> {
+  return readJson<QaSessionResponse>(await fetch(
+    `${qaRoot(userBookId)}/${encodeURIComponent(sessionId)}`,
+    { credentials: 'include' },
+  ));
+}
+
+async function proposalAction(
+  userBookId: string,
+  proposalId: string,
+  action: 'feedback' | 'confirm' | 'reject',
+  input: ProposalFeedbackRequest | ProposalDecisionRequest,
+): Promise<ProposalActionResponse> {
+  return readJson<ProposalActionResponse>(await fetch(
+    `${qaRoot(userBookId)}/proposals/${encodeURIComponent(proposalId)}/${action}`,
     {
       method: 'POST',
       credentials: 'include',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        idempotencyKey: crypto.randomUUID(),
-        question: input.question,
-        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-        ...(input.anchor ? { context: input.anchor } : {}),
-      }),
+      body: JSON.stringify(input),
+    },
+  ));
+}
+
+export function feedbackQaProposal(
+  userBookId: string,
+  proposalId: string,
+  input: ProposalFeedbackRequest,
+): Promise<ProposalActionResponse> {
+  return proposalAction(userBookId, proposalId, 'feedback', input);
+}
+
+export function confirmQaProposal(
+  userBookId: string,
+  proposalId: string,
+  input: ProposalDecisionRequest,
+): Promise<ProposalActionResponse> {
+  return proposalAction(userBookId, proposalId, 'confirm', input);
+}
+
+export function rejectQaProposal(
+  userBookId: string,
+  proposalId: string,
+  input: ProposalDecisionRequest,
+): Promise<ProposalActionResponse> {
+  return proposalAction(userBookId, proposalId, 'reject', input);
+}
+
+// §8 问 AI — asks a question (new thread, with `anchor`) or a follow-up (`sessionId`), consuming
+// the SSE turn. Resolves only after a terminal done/error event. Pre-stream failures and a stream
+// that closes before either terminal event reject; in-band failures arrive via handlers.onError.
+export async function streamQaAnswer(
+  userBookId: string,
+  input: AskQuestionRequest,
+  handlers: QaStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(
+    qaRoot(userBookId),
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
       ...(signal ? { signal } : {}),
     },
   );
@@ -487,6 +583,7 @@ export async function streamQaAnswer(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let terminalEvent: QaStreamTerminalEvent | null = null;
   try {
     for (;;) {
       const { done, value } = await reader.read();
@@ -494,12 +591,17 @@ export async function streamQaAnswer(
       buffer += decoder.decode(value, { stream: true });
       let boundary = buffer.indexOf('\n\n');
       while (boundary >= 0) {
-        dispatchQaFrame(buffer.slice(0, boundary), handlers);
+        terminalEvent = dispatchQaFrame(buffer.slice(0, boundary), handlers) ?? terminalEvent;
         buffer = buffer.slice(boundary + 2);
         boundary = buffer.indexOf('\n\n');
       }
     }
+    buffer += decoder.decode();
+    if (buffer.trim()) terminalEvent = dispatchQaFrame(buffer, handlers) ?? terminalEvent;
   } finally {
     reader.releaseLock();
+  }
+  if (!terminalEvent) {
+    throw new Error('问 AI 连接提前结束，请重试。');
   }
 }

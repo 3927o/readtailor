@@ -12,6 +12,8 @@ import {
   nodeGenerations,
   readerProfiles,
   readerProfileVersions,
+  readerReadNodes,
+  readerStates,
   sharedBooks,
   strategyDraftVersions,
   strategyVersions,
@@ -112,6 +114,67 @@ function createModelClient(
   };
 }
 
+type FormalGeneration = {
+  id: string;
+  userBookId: string;
+  strategyVersionId: string | null;
+  sectionId: string;
+  segment: number;
+};
+
+export async function discardUnexpectedFormalGeneration(
+  db: Pick<Database, 'select' | 'update'>,
+  generation: FormalGeneration,
+): Promise<boolean> {
+  const book = await db
+    .select({ strategyVersionId: userBooks.currentStrategyVersionId })
+    .from(userBooks)
+    .where(eq(userBooks.id, generation.userBookId))
+    .limit(1)
+    .for('share')
+    .then((rows) => rows[0]);
+  const state = await db
+    .select({ sectionId: readerStates.sectionId, segment: readerStates.segment })
+    .from(readerStates)
+    .where(eq(readerStates.userBookId, generation.userBookId))
+    .limit(1)
+    .for('share')
+    .then((rows) => rows[0]);
+  const readNode = await db
+    .select({ strategyVersionId: readerReadNodes.strategyVersionId })
+    .from(readerReadNodes)
+    .where(and(
+      eq(readerReadNodes.userBookId, generation.userBookId),
+      eq(readerReadNodes.sectionId, generation.sectionId),
+      eq(readerReadNodes.segment, generation.segment),
+    ))
+    .limit(1)
+    .for('share')
+    .then((rows) => rows[0]);
+  const isCurrentNode = state?.sectionId === generation.sectionId
+    && state.segment === generation.segment;
+  const expectedStrategyVersionId = isCurrentNode || !readNode
+    ? book?.strategyVersionId ?? null
+    : readNode.strategyVersionId;
+  if (generation.strategyVersionId === expectedStrategyVersionId) return false;
+
+  const now = new Date();
+  const discarded = await db
+    .update(nodeGenerations)
+    .set({
+      status: 'superseded',
+      result: null,
+      completedAt: now,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(nodeGenerations.id, generation.id),
+      inArray(nodeGenerations.status, ['queued', 'retrying', 'generating']),
+    ))
+    .returning({ id: nodeGenerations.id });
+  return discarded.length > 0;
+}
+
 export async function executeContentGeneration(options: {
   db: Database;
   storage: ObjectStorage;
@@ -134,6 +197,10 @@ export async function executeContentGeneration(options: {
     .limit(1);
   if (!row) throw new Error('content generation does not exist');
   if (row.generation.status === 'ready' || row.generation.status === 'superseded') return;
+  if (
+    row.generation.generationScope === 'formal'
+    && await options.db.transaction((tx) => discardUnexpectedFormalGeneration(tx, row.generation))
+  ) return;
 
   const [reader, bookReader, draft, formalStrategy, segment] = await Promise.all([
     options.db
@@ -304,6 +371,10 @@ export async function executeContentGeneration(options: {
     afterReading: generated.after_reading,
   };
   await options.db.transaction(async (tx) => {
+    if (
+      row.generation.generationScope === 'formal'
+      && await discardUnexpectedFormalGeneration(tx, row.generation)
+    ) return;
     const [current] = await tx
       .update(nodeGenerations)
       .set({ status: 'ready', result, completedAt: new Date(), errorSummary: null, updatedAt: new Date() })

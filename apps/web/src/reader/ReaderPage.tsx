@@ -17,6 +17,7 @@ import {
   getReaderBootstrap,
   getReaderDocument,
   markReadNode,
+  mergeReaderBootstrap,
   putReadingSettings,
   reportReaderFocus,
   saveReaderPositionBeacon,
@@ -27,7 +28,7 @@ import type {
   ContentWidthSetting,
   Highlight,
   ObservedReaderAnchor,
-  QaAnchor,
+  QaQuestionContext,
   ReaderBootstrap,
   ReaderNode,
   ReaderNodeEnhancement,
@@ -44,7 +45,9 @@ import {
   getOutlineDepth,
   nearestReaderAnchor,
   prepareBookContent,
+  quoteForReaderRange,
   rangeFromSelection,
+  readerBlockLength,
   readingBlocks,
 } from './content';
 import type { AnchorProbe } from './content';
@@ -62,6 +65,7 @@ type PopoverPlacement = Omit<ActivePopover, 'body'>;
 // A finished text selection inside one reading node, ready to become a highlight (§11.7). The range
 // is already folded to block/offset; `placement` positions the floating action toolbar.
 interface SelectionDraft {
+  nodeOrder: number;
   sectionId: string;
   segment: number;
   range: NodeRange;
@@ -258,9 +262,13 @@ export function ReaderPage() {
 }
 
 function LiveReader({ document }: { document: Awaited<ReturnType<typeof getReaderDocument>> }) {
+  const queryClient = useQueryClient();
   const bootstrap = useQuery({
     queryKey: ['reader-bootstrap', document.userBookId],
-    queryFn: () => getReaderBootstrap(document.userBookId),
+    queryFn: async () => mergeReaderBootstrap(
+      queryClient.getQueryData<ReaderBootstrap>(['reader-bootstrap', document.userBookId]),
+      await getReaderBootstrap(document.userBookId),
+    ),
     initialData: document.bootstrap,
     refetchInterval: (current) => current.state.data?.enhancements.some((item) => (
       item.status === 'queued' || item.status === 'generating'
@@ -281,6 +289,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const [notebookOpen, setNotebookOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [askAiOpen, setAskAiOpen] = useState(false);
+  const [qaContext, setQaContext] = useState<QaQuestionContext | null>(null);
   const [tocCollapsed, setTocCollapsed] = useState<Set<string>>(() => defaultTocCollapsed(document.manifest.outline));
   const [searchQuery, setSearchQuery] = useState('');
   const [currentOrder, setCurrentOrder] = useState(document.manifest.nodes[0]?.order ?? 1);
@@ -323,12 +332,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       queryClient.setQueryData<ReaderBootstrap>(
         ['reader-bootstrap', document.userBookId],
         (previous) => {
-          const previousResume = previous?.resumePosition;
-          if (previousResume && (!bootstrap.resumePosition
-            || previousResume.clientObservedAt > bootstrap.resumePosition.clientObservedAt)) {
-            return { ...bootstrap, resumePosition: previousResume };
-          }
-          return bootstrap;
+          return mergeReaderBootstrap(previous, bootstrap);
         },
       );
       void queryClient.invalidateQueries({
@@ -553,8 +557,11 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   // text is included because it flips a mark's dataset; a `<mark>` reflows nothing, but keying on it
   // costs nothing and keeps the anchor honest if that ever changes.
   const enhancementVersion = [
+    `${document.bootstrap.strategyVersion}:${document.bootstrap.strategyVersionId}`,
     document.bootstrap.enhancements
-      .map((item) => `${item.sectionId}:${item.segment}:${item.status}:${item.tailoredContent ? 'content' : 'empty'}`)
+      .map((item) => (
+        `${item.sectionId}:${item.segment}:${item.generationId}:${item.strategyVersionId}:${item.status}:${item.tailoredContent ? 'content' : 'empty'}`
+      ))
       .join('|'),
     highlights.map((item) => `${item.id}:${item.note ? 'n' : '_'}`).join(','),
   ].join('§');
@@ -984,15 +991,17 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       const nodeEl = startRoot.closest<HTMLElement>('[data-node-order]');
       const sectionId = nodeEl?.dataset.sectionId;
       const segment = Number(nodeEl?.dataset.segment ?? Number.NaN);
-      if (!textRange || !sectionId || !Number.isFinite(segment)) {
+      const nodeOrder = Number(nodeEl?.dataset.nodeOrder ?? Number.NaN);
+      if (!textRange || !sectionId || !Number.isFinite(segment) || !Number.isFinite(nodeOrder)) {
         setSelectionDraft(null);
         return;
       }
       setSelectionDraft({
+        nodeOrder,
         sectionId,
         segment,
         range: textRange,
-        text: selection.toString().trim(),
+        text: quoteForReaderRange(startRoot, textRange).slice(0, 12000),
         placement: popoverPlacement(range.getBoundingClientRect()),
       });
     };
@@ -1240,37 +1249,142 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const openSearch = () => {
     openReaderSheet('search');
   };
+  const captureScreenContext = (): QaQuestionContext | null => {
+    const scroll = scrollRoot.current;
+    if (!scroll) return null;
+    const viewport = scroll.getBoundingClientRect();
+    const probeX = viewport.left + viewport.width / 2;
+    const probe = domAnchorProbe();
+    const roots = [...scroll.querySelectorAll<HTMLElement>('.reader-original')];
+    let focusAnchor = nearestReaderAnchor(
+      roots,
+      probeX,
+      viewport.top + READING_ANCHOR_TOP,
+      probe,
+    );
+    if (!focusAnchor) {
+      const fallbackNode = document.manifest.nodes.find((item) => item.order === currentOrderRef.current)
+        ?? document.manifest.nodes[0];
+      const fallbackElement = fallbackNode
+        ? scroll.querySelector<HTMLElement>(`[data-node-order="${fallbackNode.order}"]`)
+        : null;
+      const fallbackRoot = fallbackElement?.querySelector<HTMLElement>('.reader-original');
+      const fallbackBlock = fallbackRoot ? readingBlocks(fallbackRoot)[0] : undefined;
+      if (!fallbackRoot || !fallbackBlock) return null;
+      focusAnchor = { root: fallbackRoot, block: fallbackBlock, blockIndex: 1, offset: 0 };
+    }
+
+    const nodeElement = focusAnchor.root.closest<HTMLElement>('[data-node-order]');
+    const nodeOrder = Number(nodeElement?.dataset.nodeOrder ?? Number.NaN);
+    const sectionId = nodeElement?.dataset.sectionId;
+    const segment = Number(nodeElement?.dataset.segment ?? Number.NaN);
+    if (!sectionId || !Number.isFinite(nodeOrder) || !Number.isFinite(segment)) return null;
+
+    const topAnchor = nearestReaderAnchor(
+      [focusAnchor.root],
+      probeX,
+      viewport.top + 1,
+      probe,
+    ) ?? focusAnchor;
+    const bottomAnchor = nearestReaderAnchor(
+      [focusAnchor.root],
+      probeX,
+      viewport.bottom - 1,
+      probe,
+    ) ?? focusAnchor;
+    const top = { blockIndex: topAnchor.blockIndex, offset: topAnchor.offset };
+    const bottom = { blockIndex: bottomAnchor.blockIndex, offset: bottomAnchor.offset };
+    const topFirst = top.blockIndex < bottom.blockIndex
+      || (top.blockIndex === bottom.blockIndex && top.offset <= bottom.offset);
+    let range: NodeRange | undefined = { start: topFirst ? top : bottom, end: topFirst ? bottom : top };
+    if (range.start.blockIndex === range.end.blockIndex && range.start.offset === range.end.offset) {
+      const blocks = readingBlocks(focusAnchor.root);
+      const block = blocks[focusAnchor.blockIndex - 1];
+      const length = block ? readerBlockLength(block) : 0;
+      range = length > 0
+        ? { start: { blockIndex: focusAnchor.blockIndex, offset: 0 }, end: { blockIndex: focusAnchor.blockIndex, offset: length } }
+        : undefined;
+    }
+    return {
+      anchor: 'screen',
+      precision: 'approximate',
+      nodeOrder,
+      sectionId,
+      segment,
+      focus: { blockIndex: focusAnchor.blockIndex, offset: focusAnchor.offset },
+      ...(range ? { range } : {}),
+      quoteSnapshot: range ? quoteForReaderRange(focusAnchor.root, range).slice(0, 12000) : '',
+      manifestVersion: document.manifest.version,
+    };
+  };
   const openAskAi = () => {
+    setQaContext(captureScreenContext());
     openReaderSheet('ask');
   };
   const askSelection = () => {
     if (!selectionDraft?.text) return;
-    openAskAi();
+    setQaContext({
+      anchor: 'highlight',
+      precision: 'exact',
+      nodeOrder: selectionDraft.nodeOrder,
+      sectionId: selectionDraft.sectionId,
+      segment: selectionDraft.segment,
+      range: selectionDraft.range,
+      quoteSnapshot: selectionDraft.text.slice(0, 12000),
+      manifestVersion: document.manifest.version,
+    });
+    openReaderSheet('ask');
     setSelectionDraft(null);
+    clearNativeSelection();
   };
-  // §8 anchor: the current on-screen node, or the live text selection if one sits inside the
-  // reader. Resolved at ask time so it tracks where the reader actually is.
-  const resolveAnchor = useCallback((): QaAnchor | null => {
-    const nodes = document.manifest.nodes;
-    const node = nodes.find((item) => item.order === currentOrderRef.current) ?? nodes[0];
-    if (!node) return null;
-    const selection = window.getSelection();
-    const selectedText = selection && !selection.isCollapsed ? selection.toString().trim() : '';
-    const withinReader = Boolean(
-      selection
-        && selection.rangeCount > 0
-        && scrollRoot.current?.contains(selection.getRangeAt(0).commonAncestorContainer),
-    );
-    if (selectedText && withinReader) {
-      return {
-        anchor: 'highlight',
-        sectionId: node.section_id,
-        segment: node.segment,
-        highlightedText: selectedText.slice(0, 8000),
-      };
-    }
-    return { anchor: 'screen', sectionId: node.section_id, segment: node.segment };
-  }, [document.manifest.nodes]);
+  const returnToSource = (context: QaQuestionContext) => {
+    setAskAiOpen(false);
+    void flushActivitySlice.current(false, true, true);
+    jumpEndRef.current = Date.now() + JUMP_SETTLE_MS;
+    window.requestAnimationFrame(() => {
+      const scroll = scrollRoot.current;
+      if (!scroll) return;
+      const exactNode = document.manifest.nodes.find((item) => (
+        item.section_id === context.sectionId && item.segment === context.segment
+      ));
+      const targetNode = exactNode
+        ?? nearestNodeByOrder(document.manifest.nodes, context.nodeOrder)
+        ?? document.manifest.nodes[0];
+      if (!targetNode) return;
+      const nodeElement = scroll.querySelector<HTMLElement>(`[data-node-order="${targetNode.order}"]`);
+      if (!nodeElement) return;
+      const versionMatches = !context.manifestVersion || context.manifestVersion === document.manifest.version;
+      const sourcePosition = 'range' in context && context.range
+        ? context.range.start
+        : context.anchor === 'screen'
+          ? context.focus
+          : null;
+      const original = nodeElement.querySelector<HTMLElement>('.reader-original');
+      const block = exactNode && versionMatches && sourcePosition && original
+        ? readingBlocks(original)[sourcePosition.blockIndex - 1]
+        : null;
+      const boundary = block && sourcePosition ? domBoundaryForOffset(block, sourcePosition.offset) : null;
+      let positioned = false;
+      if (boundary) {
+        try {
+          const domRange = window.document.createRange();
+          domRange.setStart(boundary.container, boundary.offset);
+          domRange.collapse(true);
+          const rect = domRange.getBoundingClientRect();
+          const top = rect.top || rect.bottom;
+          if (top) {
+            scroll.scrollTop += top - scroll.getBoundingClientRect().top - READING_ANCHOR_TOP;
+            positioned = true;
+          }
+        } catch {
+          // Continue through the block/node fallback chain.
+        }
+      }
+      if (!positioned) (block ?? nodeElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setCurrentOrder(targetNode.order);
+      currentOrderRef.current = targetNode.order;
+    });
+  };
   const searchHits = useMemo<SearchHit[]>(() => {
     const queryText = searchQuery.trim().toLowerCase();
     if (!queryText) return [];
@@ -1371,7 +1485,15 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       {askAiOpen && (
         <AskAiPanel
           userBookId={document.userBookId}
-          resolveAnchor={resolveAnchor}
+          initialContext={qaContext}
+          returnToSource={returnToSource}
+          strategyStatus={qaContext
+            ? enhancements.get(`${qaContext.sectionId}:${qaContext.segment}`)?.status
+            : undefined}
+          refreshBootstrap={() => queryClient.invalidateQueries({
+            queryKey: ['reader-bootstrap', document.userBookId],
+            refetchType: 'active',
+          })}
           close={() => setAskAiOpen(false)}
         />
       )}

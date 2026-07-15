@@ -289,16 +289,14 @@ function boundaryAt(root: HTMLElement, targetOffset: number, bias: 'start' | 'en
     : null;
 }
 
-function projectionLength(root: HTMLElement): number {
-  // The projected length of a block in the same coordinates boundaryAt walks in,
-  // used to locate the block's end when a cross-block annotation spans through it.
-  // Mirror boundaryAt exactly: <br> counts as one char, and a nested list inside an
-  // <li> is its own block so it is skipped (source.ts textProjection skipNestedLists).
+export function readerBlockText(root: HTMLElement): string {
+  // Mirror packages/tailoring textProjection exactly so client snapshots use the same UTF-16
+  // coordinates the API validates: <br> is a newline and nested lists inside an <li> are skipped.
   const skipNestedLists = root.tagName === 'LI';
-  let count = 0;
+  const pieces: string[] = [];
   const visit = (node: Node, isRoot: boolean): void => {
     if (node.nodeType === Node.TEXT_NODE) {
-      count += (node as Text).data.length;
+      pieces.push((node as Text).data);
       return;
     }
     if (skipNestedLists && !isRoot && node instanceof HTMLElement
@@ -306,13 +304,33 @@ function projectionLength(root: HTMLElement): number {
       return;
     }
     if (node instanceof HTMLBRElement) {
-      count += 1;
+      pieces.push('\n');
       return;
     }
     for (const child of [...node.childNodes]) visit(child, false);
   };
   visit(root, true);
-  return count;
+  return pieces.join('').replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+}
+
+export function readerBlockLength(root: HTMLElement): number {
+  return readerBlockText(root).length;
+}
+
+export function quoteForReaderRange(root: HTMLElement, range: TextRange): string {
+  const blocks = readingBlocks(root);
+  const startIndex = range.start.blockIndex - 1;
+  const endIndex = range.end.blockIndex - 1;
+  if (startIndex < 0 || endIndex < startIndex || endIndex >= blocks.length) return '';
+
+  const pieces: string[] = [];
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    const text = readerBlockText(blocks[index]!);
+    const start = index === startIndex ? Math.min(Math.max(range.start.offset, 0), text.length) : 0;
+    const end = index === endIndex ? Math.min(Math.max(range.end.offset, 0), text.length) : text.length;
+    pieces.push(text.slice(start, Math.max(start, end)));
+  }
+  return pieces.join('\n');
 }
 
 // The ordered block elements of a live reading-node content root, using the same v1 enumeration
@@ -536,7 +554,7 @@ export function nearestReaderAnchor(
   }
   if (!nearest) return null;
 
-  const length = projectionLength(nearest.block);
+  const length = readerBlockLength(nearest.block);
   if (length === 0) {
     return { root: nearest.root, block: nearest.block, blockIndex: nearest.blockIndex, offset: 0 };
   }
@@ -609,7 +627,7 @@ function applyMarks(rawHtml: string, specs: MarkSpec[]): string {
       const from = blockIndex === startBlockIndex ? spec.range.start.offset - sourceOffset : 0;
       const to = blockIndex === endBlockIndex
         ? spec.range.end.offset - sourceOffset
-        : projectionLength(block);
+        : readerBlockLength(block);
       const start = boundaryAt(block, from, 'start');
       const end = boundaryAt(block, to, 'end');
       if (!start || !end) continue;

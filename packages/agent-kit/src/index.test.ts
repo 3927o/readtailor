@@ -474,8 +474,9 @@ describe('createInterviewStreamParser', () => {
 // streamed text answer split into content chunks. One script is consumed per HTTP request,
 // so `[tool, text]` drives the real two-turn non-terminating loop (tool → answer).
 type TurnScript =
-  | { kind: 'tool'; name: string; arguments: string }
-  | { kind: 'text'; chunks: string[] };
+  | { kind: 'tool'; name: string; arguments: string; text?: string }
+  | { kind: 'text'; chunks: string[]; finishReason?: string }
+  | { kind: 'hang'; chunks: string[] };
 
 async function startAskAiServer(scripts: TurnScript[]): Promise<string> {
   const queue = [...scripts];
@@ -494,7 +495,11 @@ async function startAskAiServer(scripts: TurnScript[]): Promise<string> {
         ...base,
         choices: [{
           index: 0,
-          delta: { role: 'assistant', tool_calls: [{ index: 0, id: `call-${script.name}`, type: 'function', function: { name: script.name, arguments: script.arguments } }] },
+          delta: {
+            role: 'assistant',
+            ...(script.text ? { content: script.text } : {}),
+            tool_calls: [{ index: 0, id: `call-${script.name}`, type: 'function', function: { name: script.name, arguments: script.arguments } }],
+          },
           finish_reason: null,
         }],
       })}\n\n`);
@@ -512,9 +517,10 @@ async function startAskAiServer(scripts: TurnScript[]): Promise<string> {
       first = false;
       response.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
     }
+    if (script.kind === 'hang') return;
     response.write(`data: ${JSON.stringify({
       ...base,
-      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      choices: [{ index: 0, delta: {}, finish_reason: script.finishReason ?? 'stop' }],
       usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
     })}\n\n`);
     response.end('data: [DONE]\n\n');
@@ -546,6 +552,9 @@ function stubAskAiToolbox(overrides: Partial<AskAiToolbox> = {}): AskAiToolbox {
 
 const sampleProposal: StrategyChangeProposal = {
   public_summary: '建议在概念密集处增加更细致的解释，并放宽注释克制度。',
+  changed_fields: ['annotations'],
+  reason: '用户明确希望关键术语得到更充分的解释。',
+  evidence: ['能不能多解释一点？'],
   strategy: {
     goals: ['在关键概念处加强解释，降低理解门槛'],
     expression_principles: ['保持原文完整，仅在确有理解价值处补充'],
@@ -589,12 +598,11 @@ describe('runAskAiAgent', () => {
     expect(outcome.proposedStrategyChange).toBeUndefined();
   });
 
-  it('fires onProposal and captures the proposal without terminating the answer', async () => {
+  it('stages a proposal without terminating the answer', async () => {
     const apiBaseUrl = await startAskAiServer([
       { kind: 'tool', name: 'propose_strategy_change', arguments: JSON.stringify(sampleProposal) },
       { kind: 'text', chunks: ['我已经把调整建议提交给你确认。'] },
     ]);
-    const proposals: StrategyChangeProposal[] = [];
     let persisted: unknown;
     const outcome = await runAskAiAgent({
       apiBaseUrl,
@@ -610,17 +618,51 @@ describe('runAskAiAgent', () => {
         },
       }),
       timeoutMs: 5000,
-      onProposal: (payload) => {
-        proposals.push(payload);
-      },
     });
 
-    expect(proposals).toHaveLength(1);
-    expect(proposals[0]).toEqual(sampleProposal);
     expect(persisted).toEqual(sampleProposal);
     expect(outcome.proposedStrategyChange).toEqual(sampleProposal);
     expect(outcome.answer).toBe('我已经把调整建议提交给你确认。');
     expect(outcome.toolCalls).toBe(1);
+  });
+
+  it('union-dedupes profile patches in memory until the answer succeeds', async () => {
+    const apiBaseUrl = await startAskAiServer([
+      {
+        kind: 'tool',
+        name: 'update_reader_profile',
+        arguments: JSON.stringify({ knowledge: ['类型系统'], explanation_preferences: ['先举例'] }),
+      },
+      {
+        kind: 'tool',
+        name: 'update_reader_profile',
+        arguments: JSON.stringify({ knowledge: ['类型系统', '编译器'] }),
+      },
+      { kind: 'text', chunks: ['我会按这个背景继续解释。'] },
+    ]);
+    const acknowledged: unknown[] = [];
+    const outcome = await runAskAiAgent({
+      apiBaseUrl,
+      apiKey: 'test-key',
+      modelName: 'fake-tool-model',
+      sessionId: 'qa-profile',
+      question: '我熟悉类型系统，请先举例。',
+      context: {},
+      toolbox: stubAskAiToolbox({
+        updateReaderProfile: async (patch) => {
+          acknowledged.push(patch);
+          return { text: '已暂存。' };
+        },
+      }),
+      timeoutMs: 5000,
+    });
+
+    expect(acknowledged).toHaveLength(2);
+    expect(outcome.readerProfilePatch).toEqual({
+      knowledge: ['类型系统', '编译器'],
+      explanation_preferences: ['先举例'],
+    });
+    expect(outcome.patchedProfile).toBe(true);
   });
 
   it('answers directly in one turn when no tool is needed', async () => {
@@ -641,6 +683,75 @@ describe('runAskAiAgent', () => {
     expect(outcome.answer).toBe('这是一个直接回答。');
     expect(outcome.turns).toBe(1);
     expect(outcome.toolCalls).toBe(0);
+  });
+
+  it('rejects a final provider error despite staged changes and text from earlier turns', async () => {
+    const apiBaseUrl = await startAskAiServer([
+      {
+        kind: 'tool',
+        name: 'update_reader_profile',
+        arguments: JSON.stringify({ knowledge: ['类型系统'] }),
+        text: '我先记下你的背景。',
+      },
+      {
+        kind: 'tool',
+        name: 'propose_strategy_change',
+        arguments: JSON.stringify(sampleProposal),
+        text: '我也准备了一份调整建议。',
+      },
+      { kind: 'text', chunks: ['这段最终回答尚未完成'], finishReason: 'network_error' },
+    ]);
+    const staged: string[] = [];
+
+    const result = runAskAiAgent({
+      apiBaseUrl,
+      apiKey: 'test-key',
+      modelName: 'fake-tool-model',
+      sessionId: 'qa-provider-error',
+      question: '请按我的背景调整解释。',
+      context: {},
+      toolbox: stubAskAiToolbox({
+        updateReaderProfile: async () => {
+          staged.push('profile');
+          return { text: '已暂存画像。' };
+        },
+        proposeStrategyChange: async () => {
+          staged.push('proposal');
+          return { text: '已暂存建议。' };
+        },
+      }),
+      timeoutMs: 5000,
+    });
+
+    await expect(result).rejects.toThrow(/network_error/);
+    expect(staged).toEqual(['profile', 'proposal']);
+  });
+
+  it('rejects an aborted final turn on timeout despite partial and earlier tool-turn text', async () => {
+    const apiBaseUrl = await startAskAiServer([
+      {
+        kind: 'tool',
+        name: 'update_reader_profile',
+        arguments: JSON.stringify({ explanation_preferences: ['先举例'] }),
+        text: '我会先举例说明。',
+      },
+      { kind: 'hang', chunks: ['这是尚未完成的最终回答'] },
+    ]);
+
+    const result = runAskAiAgent({
+      apiBaseUrl,
+      apiKey: 'test-key',
+      modelName: 'fake-tool-model',
+      sessionId: 'qa-timeout',
+      question: '请继续。',
+      context: {},
+      toolbox: stubAskAiToolbox({
+        updateReaderProfile: async () => ({ text: '已暂存画像。' }),
+      }),
+      timeoutMs: 30,
+    });
+
+    await expect(result).rejects.toThrow('ask ai agent timed out after 30ms');
   });
 });
 

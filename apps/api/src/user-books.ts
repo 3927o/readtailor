@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { isDeepStrictEqual } from 'node:util';
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import type {
   AdoptTrialRequest,
   AdoptTrialResponse,
@@ -21,8 +22,12 @@ import type {
   MarkReadNodeRequest,
   MarkReadNodeResponse,
   MarkTrialSegmentViewedRequest,
+  ProposalActionResponse,
+  ProposalDecisionRequest,
+  ProposalFeedbackRequest,
   ProposedStrategy,
   QaQuestionContext,
+  QaSessionListResponse,
   QaSessionResponse,
   QaStreamEvent,
   ReaderBootstrap,
@@ -39,6 +44,7 @@ import type {
   ReadingStatsQuery,
   Strategy,
   StrategyReviewResponse,
+  TextPosition,
   TextRange,
   UpdateHighlightNoteRequest,
   TrialCandidate,
@@ -72,6 +78,8 @@ import {
   readingSessions,
   sharedBooks,
   strategyChangeProposals,
+  strategyChangeProposalActions,
+  strategyChangeProposalRevisions,
   strategyDraftVersions,
   strategyVersions,
   trialRevisions,
@@ -83,7 +91,6 @@ import {
 import type {
   AskAiOutcome,
   AskAiToolbox,
-  ReaderProfilePatch,
 } from '@readtailor/agent-kit';
 import { extractNodeSourceFromHtml, extractNodeTexts, sliceNodeSource } from '@readtailor/tailoring';
 import type { AskAiEngine } from './ask-ai-engine';
@@ -436,6 +443,38 @@ export class UserBookError extends Error {
   }
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export type QaSessionCursor = { updatedAt: string; sessionId: string };
+
+export function encodeQaSessionCursor(cursor: QaSessionCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+export function decodeQaSessionCursor(cursor: string): QaSessionCursor {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Partial<QaSessionCursor>;
+    if (
+      typeof value.updatedAt !== 'string'
+      || !Number.isFinite(Date.parse(value.updatedAt))
+      || typeof value.sessionId !== 'string'
+      || !UUID_RE.test(value.sessionId)
+    ) {
+      throw new Error('invalid cursor payload');
+    }
+    return { updatedAt: new Date(value.updatedAt).toISOString(), sessionId: value.sessionId };
+  } catch {
+    throw new UserBookError('问答历史游标无效', 400);
+  }
+}
+
+export function proposalActionPayloadMatches(
+  stored: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+): boolean {
+  return isDeepStrictEqual(stored, incoming);
+}
+
 // A concurrent duplicate feedback (same idempotency key) loses the race on the partial unique
 // index `interview_messages_feedback_idempotency_unique`. Surfacing that as an idempotent
 // success — rather than a 500 — is the DB-level backstop behind the fast-path pre-check (§6.5).
@@ -686,6 +725,169 @@ function mapProposedStrategy(value: {
       enabled: value.after_reading.enabled,
       objectives: value.after_reading.objectives,
     },
+  };
+}
+
+function changedStrategyFields(current: Strategy, proposed: ProposedStrategy): string[] {
+  const fields: Array<keyof ProposedStrategy> = [
+    'goals',
+    'expressionPrinciples',
+    'guide',
+    'annotations',
+    'afterReading',
+  ];
+  return fields.filter(
+    (field) => JSON.stringify(current[field]) !== JSON.stringify(proposed[field]),
+  );
+}
+
+type QaContextPrecision = 'exact' | 'approximate' | 'node';
+
+function compareTextPositions(left: TextPosition, right: TextPosition): number {
+  return left.blockIndex === right.blockIndex
+    ? left.offset - right.offset
+    : left.blockIndex - right.blockIndex;
+}
+
+function qaRangeText(
+  html: string,
+  sectionId: string,
+  segment: number,
+  range: TextRange,
+): string {
+  const source = extractNodeSourceFromHtml(html, sectionId, segment);
+  const sliced = sliceNodeSource(source, {
+    start: { block_index: range.start.blockIndex, offset: range.start.offset },
+    end: { block_index: range.end.blockIndex, offset: range.end.offset },
+  });
+  return sliced.blocks.map((block) => block.text).join('\n\n').trim();
+}
+
+function normalizeQaQuestionContext(
+  raw: QaQuestionContext | Record<string, unknown>,
+  manifest: ReadingManifest,
+  html: string,
+  strict: boolean,
+): { context: QaQuestionContext; precision: QaContextPrecision } {
+  const value = raw as Record<string, unknown>;
+  let sectionId = typeof value.sectionId === 'string' ? value.sectionId : '';
+  let segment = typeof value.segment === 'number' ? value.segment : 0;
+  let node = manifest.nodes.find(
+    (candidate) => candidate.section_id === sectionId && candidate.segment === segment,
+  );
+  if (!node && !strict) {
+    const requestedOrder = typeof value.nodeOrder === 'number' ? value.nodeOrder : 1;
+    node = [...manifest.nodes]
+      .sort((left, right) => Math.abs(left.order - requestedOrder) - Math.abs(right.order - requestedOrder))[0];
+    if (node) {
+      sectionId = node.section_id;
+      segment = node.segment;
+    }
+  }
+  if (!node) throw new UserBookError('提问上下文对应的阅读节点不存在', 409);
+  const source = extractNodeSourceFromHtml(html, sectionId, segment);
+  if (source.blocks.length === 0) throw new UserBookError('提问上下文没有可读原文', 409);
+  const first = source.blocks[0]!;
+  const last = source.blocks[source.blocks.length - 1]!;
+  const blockByIndex = new Map(source.blocks.map((block) => [block.block_index, block]));
+  const manifestVersion = manifest.version;
+  const submittedVersion = typeof value.manifestVersion === 'string' ? value.manifestVersion : undefined;
+  if (strict && submittedVersion && manifestVersion && submittedVersion !== manifestVersion) {
+    throw new UserBookError('阅读内容版本已变化，请重新选择原文后提问', 409);
+  }
+  if (strict && typeof value.nodeOrder === 'number' && value.nodeOrder !== node.order) {
+    throw new UserBookError('提问上下文节点位置已变化，请重试', 409);
+  }
+
+  const normalizePoint = (point: unknown, exact: boolean): TextPosition | undefined => {
+    if (typeof point !== 'object' || point === null) return undefined;
+    const candidate = point as Record<string, unknown>;
+    if (typeof candidate.blockIndex !== 'number' || typeof candidate.offset !== 'number') return undefined;
+    const block = blockByIndex.get(candidate.blockIndex);
+    if (!block) return undefined;
+    if (exact && (candidate.offset < 0 || candidate.offset > block.text.length)) return undefined;
+    return {
+      blockIndex: candidate.blockIndex,
+      offset: Math.max(0, Math.min(candidate.offset, block.text.length)),
+    };
+  };
+  const normalizeRange = (candidate: unknown, exact: boolean): TextRange | undefined => {
+    if (typeof candidate !== 'object' || candidate === null) return undefined;
+    const range = candidate as Record<string, unknown>;
+    const start = normalizePoint(range.start, exact);
+    const end = normalizePoint(range.end, exact);
+    if (!start || !end || compareTextPositions(start, end) >= 0) return undefined;
+    return { start, end };
+  };
+
+  if (value.anchor === 'highlight' && value.precision === 'exact') {
+    const range = normalizeRange(value.range, true);
+    if (range) {
+      return {
+        context: {
+          anchor: 'highlight',
+          precision: 'exact',
+          nodeOrder: node.order,
+          sectionId,
+          segment,
+          range,
+          quoteSnapshot: qaRangeText(html, sectionId, segment, range).slice(0, 12000),
+          ...(manifestVersion ? { manifestVersion } : {}),
+        },
+        precision: 'exact',
+      };
+    }
+    if (strict) throw new UserBookError('划线范围已失效，请重新选择原文', 409);
+  }
+
+  if (value.anchor === 'screen' && value.precision === 'approximate') {
+    const focus = normalizePoint(value.focus, false) ?? {
+      blockIndex: first.block_index,
+      offset: 0,
+    };
+    let range = normalizeRange(value.range, false);
+    if (!range) {
+      const focusAt = source.blocks.findIndex((block) => block.block_index === focus.blockIndex);
+      const startBlock = source.blocks[Math.max(0, focusAt - 1)] ?? first;
+      const endBlock = source.blocks[Math.min(source.blocks.length - 1, focusAt + 1)] ?? last;
+      range = {
+        start: { blockIndex: startBlock.block_index, offset: 0 },
+        end: { blockIndex: endBlock.block_index, offset: endBlock.text.length },
+      };
+    }
+    return {
+      context: {
+        anchor: 'screen',
+        precision: 'approximate',
+        nodeOrder: node.order,
+        sectionId,
+        segment,
+        focus,
+        range,
+        quoteSnapshot: qaRangeText(html, sectionId, segment, range).slice(0, 12000),
+        ...(manifestVersion ? { manifestVersion } : {}),
+      },
+      precision: 'approximate',
+    };
+  }
+
+  const fullRange: TextRange = {
+    start: { blockIndex: first.block_index, offset: 0 },
+    end: { blockIndex: last.block_index, offset: last.text.length },
+  };
+  return {
+    context: {
+      anchor: 'screen',
+      precision: 'approximate',
+      nodeOrder: node.order,
+      sectionId,
+      segment,
+      focus: fullRange.start,
+      range: fullRange,
+      quoteSnapshot: qaRangeText(html, sectionId, segment, fullRange).slice(0, 12000),
+      ...(manifestVersion ? { manifestVersion } : {}),
+    },
+    precision: 'node',
   };
 }
 
@@ -1641,14 +1843,35 @@ function createUserBookServiceForUser(
   };
 
   const enqueuePendingFormalGenerations = async (userBookId: string) => {
-    const pending = await db
-      .select({ id: nodeGenerations.id })
-      .from(nodeGenerations)
-      .where(and(
+    const [book, resume, readRows, candidates] = await Promise.all([
+      db.select({ strategyVersionId: userBooks.currentStrategyVersionId })
+        .from(userBooks).where(eq(userBooks.id, userBookId)).limit(1).then((rows) => rows[0]),
+      db.select({ sectionId: readerStates.sectionId, segment: readerStates.segment })
+        .from(readerStates).where(eq(readerStates.userBookId, userBookId)).limit(1).then((rows) => rows[0]),
+      db.select().from(readerReadNodes).where(eq(readerReadNodes.userBookId, userBookId)),
+      db.select({
+        id: nodeGenerations.id,
+        strategyVersionId: nodeGenerations.strategyVersionId,
+        sectionId: nodeGenerations.sectionId,
+        segment: nodeGenerations.segment,
+      }).from(nodeGenerations).where(and(
         eq(nodeGenerations.userBookId, userBookId),
         eq(nodeGenerations.generationScope, 'formal'),
         inArray(nodeGenerations.status, ['queued', 'retrying']),
-      ));
+      )),
+    ]);
+    if (!book?.strategyVersionId) return;
+    const currentKey = resume ? `${resume.sectionId}\0${resume.segment}` : null;
+    const pins = new Map(
+      readRows.map((row) => [`${row.sectionId}\0${row.segment}`, row.strategyVersionId]),
+    );
+    const pending = candidates.filter((generation) => {
+      const key = `${generation.sectionId}\0${generation.segment}`;
+      const expected = key === currentKey
+        ? book.strategyVersionId
+        : pins.get(key) ?? book.strategyVersionId;
+      return generation.strategyVersionId === expected;
+    });
     try {
       await Promise.all(pending.map((generation) => options.generations.enqueue({
         generationId: generation.id,
@@ -1821,20 +2044,38 @@ function createUserBookServiceForUser(
       db.select().from(nodeGenerations).where(and(eq(nodeGenerations.userBookId, userBookId), eq(nodeGenerations.generationScope, 'formal'))).orderBy(asc(nodeGenerations.createdAt)),
       db.select().from(readerStates).where(eq(readerStates.userBookId, userBookId)).limit(1).then((rows) => rows[0]),
       loadReadingSettings(),
-      db.select({ sectionId: readerReadNodes.sectionId, segment: readerReadNodes.segment })
+      db.select({
+        sectionId: readerReadNodes.sectionId,
+        segment: readerReadNodes.segment,
+        strategyVersionId: readerReadNodes.strategyVersionId,
+      })
         .from(readerReadNodes)
         .where(eq(readerReadNodes.userBookId, userBookId)),
       loadHighlights(userBookId),
     ]);
     if (!strategy || !draft) throw new UserBookError('正式处理方式不存在', 409);
+    const currentKey = resume ? `${resume.sectionId}\0${resume.segment}` : null;
+    const readPins = new Map(
+      readRows.map((row) => [`${row.sectionId}\0${row.segment}`, row.strategyVersionId]),
+    );
+    const expectedGenerations = generations.filter((generation) => {
+      const key = `${generation.sectionId}\0${generation.segment}`;
+      const expectedStrategyVersionId = key === currentKey
+        ? strategyVersionId
+        : readPins.get(key) ?? strategyVersionId;
+      return generation.strategyVersionId === expectedStrategyVersionId;
+    });
     return {
       userBookId,
       sharedBookId,
       workflowStatus: 'active_reading',
+      strategyVersionId: strategy.id,
+      strategyVersion: strategy.version,
       briefing: draft.readingBriefing,
       strategySummary: strategy.userFacingSummary,
-      enhancements: generations.map((generation) => ({
+      enhancements: expectedGenerations.map((generation) => ({
         generationId: generation.id,
+        strategyVersionId: generation.strategyVersionId!,
         sectionId: generation.sectionId,
         segment: generation.segment,
         status: generation.status,
@@ -1857,58 +2098,17 @@ function createUserBookServiceForUser(
     };
   };
 
-  // ── 问 AI (§8) — read-only Q&A loop ──────────────────────────────────────────
+  // ── 问 AI (§8) ───────────────────────────────────────────────────────────────
   // Each HTTP request runs one conversational turn; the thread history is rebuilt from
   // qa_messages every turn (stateless-resume, §2.4). The agent may patch the long-term reader
-  // profile and record a *pending* strategy-change proposal — but the read-only loop never lands
-  // it (no new strategy_version, no regeneration; see 步骤 4 暂缓 in docs/project/phase6_ask_ai.md).
-
-  // §8.1 update_reader_profile: union-merge the patch into a new reader_profile_versions row
-  // (changeSource 'question_answer'). Same shape as the interview patch (saveSetupOutcome) but
-  // standalone. Returns whether anything changed.
-  const applyReaderProfilePatch = async (patch: ReaderProfilePatch): Promise<boolean> => {
-    if (!patch.knowledge?.length && !patch.explanation_preferences?.length) return false;
-    return db.transaction(async (tx) => {
-      const [reader] = await tx
-        .select({ profile: readerProfiles, version: readerProfileVersions })
-        .from(readerProfiles)
-        .innerJoin(readerProfileVersions, eq(readerProfileVersions.id, readerProfiles.currentVersionId))
-        .where(eq(readerProfiles.userId, userId))
-        .limit(1);
-      if (!reader) return false;
-      const nextProfile: ReaderProfile = {
-        ...reader.version.profile,
-        knowledge: [...new Set([...reader.version.profile.knowledge, ...(patch.knowledge ?? [])])],
-        explanationPreferences: [
-          ...new Set([
-            ...reader.version.profile.explanationPreferences,
-            ...(patch.explanation_preferences ?? []),
-          ]),
-        ],
-      };
-      const [nextVersion] = await tx
-        .insert(readerProfileVersions)
-        .values({
-          readerProfileId: reader.profile.id,
-          version: reader.version.version + 1,
-          profile: nextProfile,
-          changeSource: 'question_answer',
-        })
-        .returning();
-      if (!nextVersion) return false;
-      await tx
-        .update(readerProfiles)
-        .set({ currentVersionId: nextVersion.id, updatedAt: new Date() })
-        .where(eq(readerProfiles.id, reader.profile.id));
-      return true;
-    });
-  };
+  // profile and stage a pending strategy-change proposal. Only an explicit confirm command creates
+  // a formal strategy version and regenerates the current reading window.
 
   // Per-request toolbox bound to this book's manifest/HTML and the thread's anchor. Read tools
   // reuse extractNodeSourceFromHtml / extractNodeTexts; there is no spoiler guard by design
   // (§8.2 — Q&A may read ahead). propose_strategy_change only validates + acknowledges here; the
   // pending row is written atomically with the answer in saveQaAnswer (so a failed turn leaves
-  // no orphan proposal), and the module surfaces the proposal via the outcome + onProposal.
+  // no orphan proposal), then surfaced with stable persisted IDs.
   const buildAskAiToolbox = (
     owned: { userBook: typeof userBooks.$inferSelect },
     questionContext: QaQuestionContext,
@@ -1945,20 +2145,22 @@ function createUserBookServiceForUser(
     };
     return {
       async getQuestionContext() {
-        const { sectionId, segment, anchor, highlightedText } = questionContext;
+        const { sectionId, segment, anchor } = questionContext;
         const title = nodeTitle(sectionId, segment);
-        let nodeText: string;
+        let contextText: string;
         try {
-          nodeText = readNodeText(sectionId, segment, 6000);
+          contextText = questionContext.range
+            ? qaRangeText(html, sectionId, segment, questionContext.range)
+            : readNodeText(sectionId, segment, 6000);
         } catch {
-          nodeText = '（无法读取当前节点原文）';
+          contextText = readNodeText(sectionId, segment, 6000);
         }
         const lines = [
           `锚点类型：${anchor === 'highlight' ? '用户划线' : '当前屏幕'}`,
+          `定位精度：${questionContext.precision}`,
           `所在节点：section_id=${sectionId} segment=${segment}${title ? ` 标题=${title}` : ''}`,
         ];
-        if (anchor === 'highlight' && highlightedText) lines.push(`划线文本：\n${highlightedText}`);
-        lines.push(`当前节点原文：\n${nodeText}`);
+        lines.push(`${anchor === 'highlight' ? '划线原文' : '当前屏幕原文'}：\n${contextText}`);
         return { text: lines.join('\n\n') };
       },
       async getBookOutline(input) {
@@ -2056,8 +2258,10 @@ function createUserBookServiceForUser(
         };
       },
       async updateReaderProfile(patch) {
-        await applyReaderProfilePatch(patch);
-        return { text: '已更新长期画像（本次回答不受影响，请继续作答）。' };
+        if (!patch.knowledge?.length && !patch.explanation_preferences?.length) {
+          return { text: '画像补丁为空，未记录更新。' };
+        }
+        return { text: '已暂存长期画像更新，将在本次回答成功后统一保存。' };
       },
       async proposeStrategyChange(proposal) {
         // Validate the structured strategy up-front (fails fast on a malformed proposal); the row
@@ -2095,9 +2299,11 @@ function createUserBookServiceForUser(
       session = row;
     } else {
       if (!input.context) throw new UserBookError('发起提问需要提供上下文', 400);
+      const source = await getManifestAndHtml(owned.sharedBook.id);
+      const normalized = normalizeQaQuestionContext(input.context, source.manifest, source.html, true);
       const [created] = await db
         .insert(qaSessions)
-        .values({ userBookId, questionContext: input.context })
+        .values({ userBookId, questionContext: normalized.context })
         .returning();
       if (!created) throw new UserBookError('问答会话创建失败', 503);
       session = created;
@@ -2227,15 +2433,39 @@ function createUserBookServiceForUser(
   // intervening question can't wedge this save. Idempotent: if the question is already answered
   // (e.g. a concurrent duplicate turn), return that answer instead of writing a second. §8.2: at
   // most one pending proposal per book — a new one supersedes the old still-pending one;
-  // read-only never promotes it to a strategy_version.
+  // confirmation is a separate idempotent command and never runs as part of answer persistence.
   const saveQaAnswer = async (
     userBookId: string,
     sessionId: string,
     questionSequence: number,
+    question: string,
     outcome: AskAiOutcome,
-  ): Promise<string> => {
+    observedStrategyVersionId: string | null,
+  ): Promise<{
+    messageId: string;
+    profileUpdated: boolean;
+    proposal?: {
+      proposalId: string;
+      revisionId: string;
+      revision: number;
+      triggeringMessageId: string;
+      publicSummary: string;
+      status: 'pending';
+    };
+  }> => {
     for (let attempt = 0; attempt < 6; attempt += 1) {
-      const result = await db.transaction(async (tx): Promise<{ id: string } | undefined> => {
+      const result = await db.transaction(async (tx): Promise<{
+        messageId: string;
+        profileUpdated: boolean;
+        proposal?: {
+          proposalId: string;
+          revisionId: string;
+          revision: number;
+          triggeringMessageId: string;
+          publicSummary: string;
+          status: 'pending';
+        };
+      } | undefined> => {
         const [existing] = await tx
           .select({ id: qaMessages.id })
           .from(qaMessages)
@@ -2247,9 +2477,13 @@ function createUserBookServiceForUser(
             ),
           )
           .limit(1);
-        if (existing) return { id: existing.id }; // already answered — idempotent
+        if (existing) return { messageId: existing.id, profileUpdated: false };
         const [fresh] = await tx
-          .select({ conversationVersion: qaSessions.conversationVersion, status: qaSessions.status })
+          .select({
+            conversationVersion: qaSessions.conversationVersion,
+            status: qaSessions.status,
+            questionContext: qaSessions.questionContext,
+          })
           .from(qaSessions)
           .where(eq(qaSessions.id, sessionId))
           .limit(1);
@@ -2284,29 +2518,292 @@ function createUserBookServiceForUser(
           })
           .returning();
         if (!message) throw new UserBookError('回答写入失败', 503);
+
+        let profileUpdated = false;
+        if (outcome.readerProfilePatch) {
+          const [profileRow] = await tx
+            .select()
+            .from(readerProfiles)
+            .where(eq(readerProfiles.userId, userId))
+            .for('update')
+            .limit(1);
+          if (profileRow?.currentVersionId) {
+            const [currentProfile] = await tx
+              .select()
+              .from(readerProfileVersions)
+              .where(eq(readerProfileVersions.id, profileRow.currentVersionId))
+              .limit(1);
+            if (currentProfile) {
+              const nextProfile: ReaderProfile = {
+                ...currentProfile.profile,
+                knowledge: [...new Set([
+                  ...currentProfile.profile.knowledge,
+                  ...(outcome.readerProfilePatch.knowledge ?? []),
+                ])],
+                explanationPreferences: [...new Set([
+                  ...currentProfile.profile.explanationPreferences,
+                  ...(outcome.readerProfilePatch.explanation_preferences ?? []),
+                ])],
+              };
+              profileUpdated =
+                JSON.stringify(nextProfile.knowledge) !== JSON.stringify(currentProfile.profile.knowledge)
+                || JSON.stringify(nextProfile.explanationPreferences)
+                  !== JSON.stringify(currentProfile.profile.explanationPreferences);
+              if (profileUpdated) {
+                const [nextVersion] = await tx
+                  .insert(readerProfileVersions)
+                  .values({
+                    readerProfileId: profileRow.id,
+                    version: currentProfile.version + 1,
+                    profile: nextProfile,
+                    changeSource: 'question_answer',
+                    sourceQaSessionId: sessionId,
+                    sourceQaMessageId: message.id,
+                    changeReason: `问答中识别到可复用的长期信息：${question.slice(0, 500)}`,
+                  })
+                  .returning();
+                if (!nextVersion) throw new UserBookError('画像更新保存失败', 503);
+                await tx
+                  .update(readerProfiles)
+                  .set({ currentVersionId: nextVersion.id, updatedAt: new Date() })
+                  .where(eq(readerProfiles.id, profileRow.id));
+              }
+            }
+          }
+        }
+
+        let savedProposal:
+          | {
+              proposalId: string;
+              revisionId: string;
+              revision: number;
+              triggeringMessageId: string;
+              publicSummary: string;
+              status: 'pending';
+            }
+          | undefined;
         if (outcome.proposedStrategyChange) {
-          await tx
-            .update(strategyChangeProposals)
-            .set({ status: 'superseded', supersededAt: new Date(), updatedAt: new Date() })
+          const [book] = await tx
+            .select()
+            .from(userBooks)
+            .where(eq(userBooks.id, userBookId))
+            .for('update')
+            .limit(1);
+          if (
+            !book
+            || book.workflowStatus !== 'active_reading'
+            || !book.currentStrategyVersionId
+            || !book.currentBookReaderProfileVersionId
+          ) {
+            throw new UserBookError('当前正式处理方式不可调整', 409);
+          }
+          if (book.currentStrategyVersionId !== observedStrategyVersionId) {
+            throw new UserBookError('正式处理方式已变化，请重试以基于新方式重新生成建议', 409);
+          }
+          const [baseStrategy] = await tx
+            .select()
+            .from(strategyVersions)
+            .where(eq(strategyVersions.id, book.currentStrategyVersionId))
+            .limit(1);
+          if (!baseStrategy) throw new UserBookError('当前正式处理方式不存在', 409);
+          const [sourceDraft] = await tx
+            .select()
+            .from(strategyDraftVersions)
+            .where(eq(strategyDraftVersions.id, baseStrategy.sourceDraftVersionId))
+            .limit(1);
+          if (!sourceDraft) throw new UserBookError('当前处理方式来源不存在', 409);
+          const proposedStrategy = mapProposedStrategy(outcome.proposedStrategyChange.strategy);
+          const [versionRow] = await tx
+            .select({
+              nextVersion: sql<number>`coalesce(max(${strategyDraftVersions.version}), 0)::int + 1`,
+            })
+            .from(strategyDraftVersions)
+            .where(eq(strategyDraftVersions.userBookId, userBookId));
+          const nextVersion = versionRow?.nextVersion ?? 1;
+          const [candidateDraft] = await tx
+            .insert(strategyDraftVersions)
+            .values({
+              userBookId,
+              bookReaderProfileVersionId: book.currentBookReaderProfileVersionId,
+              sourceQaMessageId: message.id,
+              version: nextVersion,
+              status: 'draft',
+              readingBriefing: sourceDraft.readingBriefing,
+              userFacingSummary: outcome.proposedStrategyChange.public_summary,
+              strategy: {
+                ...proposedStrategy,
+                trialCandidates: baseStrategy.strategy.trialCandidates,
+              },
+            })
+            .returning();
+          if (!candidateDraft) throw new UserBookError('候选处理方式保存失败', 503);
+
+          const [pending] = await tx
+            .select()
+            .from(strategyChangeProposals)
             .where(
               and(
                 eq(strategyChangeProposals.userBookId, userBookId),
                 eq(strategyChangeProposals.status, 'pending'),
               ),
-            );
-          await tx.insert(strategyChangeProposals).values({
-            userBookId,
-            qaSessionId: sessionId,
+            )
+            .limit(1);
+          const reviseExisting =
+            pending?.qaSessionId === sessionId
+            && pending.baseStrategyVersionId === book.currentStrategyVersionId;
+          let proposalId: string;
+          let revision: number;
+          if (reviseExisting && pending) {
+            proposalId = pending.id;
+            revision = pending.revision + 1;
+            await tx
+              .update(strategyDraftVersions)
+              .set({ status: 'superseded', supersededAt: new Date() })
+              .where(
+                and(
+                  eq(strategyDraftVersions.id, pending.currentStrategyDraftVersionId),
+                  eq(strategyDraftVersions.status, 'draft'),
+                ),
+              );
+          } else {
+            if (pending) {
+              await tx
+                .update(strategyDraftVersions)
+                .set({ status: 'superseded', supersededAt: new Date() })
+                .where(
+                  and(
+                    eq(strategyDraftVersions.id, pending.currentStrategyDraftVersionId),
+                    eq(strategyDraftVersions.status, 'draft'),
+                  ),
+                );
+              await tx
+                .update(strategyChangeProposals)
+                .set({ status: 'superseded', supersededAt: new Date(), updatedAt: new Date() })
+                .where(eq(strategyChangeProposals.id, pending.id));
+            }
+            const storedContext = fresh.questionContext as Record<string, unknown>;
+            const [readerState] = await tx
+              .select()
+              .from(readerStates)
+              .where(eq(readerStates.userBookId, userBookId))
+              .limit(1);
+            const originSectionId =
+              typeof storedContext.sectionId === 'string'
+                ? storedContext.sectionId
+                : readerState?.sectionId;
+            const originSegment =
+              typeof storedContext.segment === 'number'
+                ? storedContext.segment
+                : readerState?.segment;
+            if (!originSectionId || !originSegment) {
+              throw new UserBookError('处理方式建议缺少阅读位置', 409);
+            }
+            const [proposal] = await tx
+              .insert(strategyChangeProposals)
+              .values({
+                userBookId,
+                qaSessionId: sessionId,
+                triggeringMessageId: message.id,
+                revision: 1,
+                currentStrategyDraftVersionId: candidateDraft.id,
+                baseStrategyVersionId: book.currentStrategyVersionId,
+                originSectionId,
+                originSegment,
+                originNodeOrder:
+                  typeof storedContext.nodeOrder === 'number'
+                    ? storedContext.nodeOrder
+                    : readerState?.nodeOrder ?? 1,
+                publicSummary: outcome.proposedStrategyChange.public_summary,
+                proposedStrategy,
+              })
+              .returning();
+            if (!proposal) throw new UserBookError('处理方式建议保存失败', 503);
+            proposalId = proposal.id;
+            revision = 1;
+          }
+          const [revisionRow] = await tx
+            .insert(strategyChangeProposalRevisions)
+            .values({
+              proposalId,
+              revision,
+              triggeringMessageId: message.id,
+              strategyDraftVersionId: candidateDraft.id,
+              publicSummary: outcome.proposedStrategyChange.public_summary,
+              changedFields: outcome.proposedStrategyChange.changed_fields.length > 0
+                ? outcome.proposedStrategyChange.changed_fields
+                : changedStrategyFields(baseStrategy.strategy, proposedStrategy),
+              reason: outcome.proposedStrategyChange.reason,
+              evidence: outcome.proposedStrategyChange.evidence.join('\n'),
+            })
+            .returning();
+          if (!revisionRow) throw new UserBookError('处理方式建议修订保存失败', 503);
+          await tx
+            .update(strategyChangeProposals)
+            .set({
+              triggeringMessageId: message.id,
+              revision,
+              currentRevisionId: revisionRow.id,
+              currentStrategyDraftVersionId: candidateDraft.id,
+              baseStrategyVersionId: book.currentStrategyVersionId,
+              publicSummary: outcome.proposedStrategyChange.public_summary,
+              proposedStrategy,
+              feedback: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(strategyChangeProposals.id, proposalId));
+          savedProposal = {
+            proposalId,
+            revisionId: revisionRow.id,
+            revision,
             triggeringMessageId: message.id,
-            publicSummary: outcome.proposedStrategyChange.public_summary,
-            proposedStrategy: mapProposedStrategy(outcome.proposedStrategyChange.strategy),
-          });
+            publicSummary: revisionRow.publicSummary,
+            status: 'pending',
+          };
         }
-        return { id: message.id };
+        return {
+          messageId: message.id,
+          profileUpdated,
+          ...(savedProposal ? { proposal: savedProposal } : {}),
+        };
       });
-      if (result) return result.id;
+      if (result) return result;
     }
     throw new UserBookError('回答写入冲突，请重试', 409);
+  };
+
+  const actionResponse = (value: Record<string, unknown>): ProposalActionResponse => {
+    if (
+      typeof value.proposalId !== 'string'
+      || typeof value.revisionId !== 'string'
+      || !['pending', 'confirmed', 'rejected', 'superseded'].includes(String(value.status))
+    ) {
+      throw new UserBookError('建议操作结果损坏', 409);
+    }
+    return {
+      proposalId: value.proposalId,
+      revisionId: value.revisionId,
+      status: value.status as ProposalActionResponse['status'],
+      resultingStrategyVersionId:
+        typeof value.resultingStrategyVersionId === 'string'
+          ? value.resultingStrategyVersionId
+          : null,
+    };
+  };
+
+  const replayProposalAction = (
+    row: typeof strategyChangeProposalActions.$inferSelect,
+    action: 'feedback' | 'confirm' | 'reject',
+    revisionId: string,
+    payload: Record<string, unknown>,
+  ): ProposalActionResponse => {
+    if (
+      row.action !== action
+      || row.revisionId !== revisionId
+      || !proposalActionPayloadMatches(row.payload, payload)
+    ) {
+      throw new UserBookError('幂等键已用于不同的建议操作', 409);
+    }
+    return actionResponse(row.result);
   };
 
   return {
@@ -2701,6 +3198,37 @@ function createUserBookServiceForUser(
           // Position save is best-effort; it must not block the read (§14.3).
         }
       }
+      try {
+        const meta = await getManifestMeta(options.books, owned.sharedBook.id);
+        const focusedNode = meta.nodesByOrder.get(input.order);
+        if (focusedNode) {
+          await db.transaction(async (tx) => {
+            // Serialize with proposal confirmation. Persisting the position first means that if
+            // confirmation wins second, it sees and repins this same current node; if it wins first,
+            // this transaction reads the newly committed strategy instead of writing a stale pin.
+            const [freshBook] = await tx
+              .select({
+                workflowStatus: userBooks.workflowStatus,
+                strategyVersionId: userBooks.currentStrategyVersionId,
+              })
+              .from(userBooks)
+              .where(eq(userBooks.id, userBookId))
+              .for('update')
+              .limit(1);
+            if (freshBook?.workflowStatus !== 'active_reading' || !freshBook.strategyVersionId) return;
+            await tx
+              .update(readerReadNodes)
+              .set({ strategyVersionId: freshBook.strategyVersionId })
+              .where(and(
+                eq(readerReadNodes.userBookId, userBookId),
+                eq(readerReadNodes.sectionId, focusedNode.sectionId),
+                eq(readerReadNodes.segment, focusedNode.segment),
+              ));
+          });
+        }
+      } catch {
+        // Pin maintenance is recoverable from the next focus/bootstrap.
+      }
       if (!prior || prior.nodeOrder !== input.order) {
         try {
           // Grow/prioritize the lazy-loading window around the reader's position. Never let this
@@ -2747,7 +3275,12 @@ function createUserBookServiceForUser(
       }
       await db
         .insert(readerReadNodes)
-        .values({ userBookId, sectionId: input.sectionId, segment: input.segment })
+        .values({
+          userBookId,
+          sectionId: input.sectionId,
+          segment: input.segment,
+          strategyVersionId: owned.userBook.currentStrategyVersionId!,
+        })
         .onConflictDoNothing();
       const rows = await db
         .select({ sectionId: readerReadNodes.sectionId, segment: readerReadNodes.segment })
@@ -3130,6 +3663,434 @@ function createUserBookServiceForUser(
       };
     },
 
+    async listQaSessions(
+      userBookId: string,
+      cursor?: string,
+      limit = 20,
+    ): Promise<QaSessionListResponse> {
+      await getOwnedBook(userBookId);
+      const pageSize = Math.max(1, Math.min(limit, 50));
+      const boundary = cursor ? decodeQaSessionCursor(cursor) : null;
+      const boundaryAt = boundary ? new Date(boundary.updatedAt) : null;
+      const rows = await db
+        .select()
+        .from(qaSessions)
+        .where(and(
+          eq(qaSessions.userBookId, userBookId),
+          ...(boundary && boundaryAt
+            ? [or(
+                lt(qaSessions.updatedAt, boundaryAt),
+                and(
+                  eq(qaSessions.updatedAt, boundaryAt),
+                  lt(qaSessions.id, boundary.sessionId),
+                ),
+              )!]
+            : []),
+        ))
+        .orderBy(desc(qaSessions.updatedAt), desc(qaSessions.id))
+        .limit(pageSize + 1);
+      const page = rows.slice(0, pageSize);
+      const sessions = await Promise.all(page.map(async (session) => {
+        const messages = await db
+          .select({ content: qaMessages.content, kind: qaMessages.kind })
+          .from(qaMessages)
+          .where(eq(qaMessages.qaSessionId, session.id))
+          .orderBy(asc(qaMessages.sequence));
+        return {
+          sessionId: session.id,
+          status: session.status,
+          question: messages.find((message) => message.kind === 'question')?.content ?? '',
+          updatedAt: session.updatedAt.toISOString(),
+          messageCount: messages.length,
+        };
+      }));
+      return {
+        sessions,
+        nextCursor: rows.length > pageSize
+          ? encodeQaSessionCursor({
+              updatedAt: page.at(-1)!.updatedAt.toISOString(),
+              sessionId: page.at(-1)!.id,
+            })
+          : null,
+      };
+    },
+
+    async feedbackProposal(
+      userBookId: string,
+      proposalId: string,
+      input: ProposalFeedbackRequest,
+    ): Promise<ProposalActionResponse> {
+      await getOwnedBook(userBookId);
+      const feedback = input.feedback.trim();
+      if (!feedback) throw new UserBookError('反馈不能为空', 400);
+      return db.transaction(async (tx) => {
+        const [proposal] = await tx
+          .select()
+          .from(strategyChangeProposals)
+          .where(and(
+            eq(strategyChangeProposals.id, proposalId),
+            eq(strategyChangeProposals.userBookId, userBookId),
+          ))
+          .for('update')
+          .limit(1);
+        if (!proposal) throw new UserBookError('处理方式建议不存在', 404);
+        const payload = { revisionId: input.revisionId, feedback };
+        const [existing] = await tx
+          .select()
+          .from(strategyChangeProposalActions)
+          .where(and(
+            eq(strategyChangeProposalActions.proposalId, proposalId),
+            eq(strategyChangeProposalActions.idempotencyKey, input.idempotencyKey),
+          ))
+          .limit(1);
+        if (existing) return replayProposalAction(existing, 'feedback', input.revisionId, payload);
+        if (
+          proposal.status !== 'pending'
+          || proposal.currentRevisionId !== input.revisionId
+        ) {
+          throw new UserBookError('该建议修订已经失效', 409);
+        }
+        const result: ProposalActionResponse = {
+          proposalId,
+          revisionId: input.revisionId,
+          status: 'pending',
+          resultingStrategyVersionId: null,
+        };
+        await tx
+          .update(strategyChangeProposals)
+          .set({ feedback, updatedAt: new Date() })
+          .where(eq(strategyChangeProposals.id, proposalId));
+        await tx.insert(strategyChangeProposalActions).values({
+          proposalId,
+          revisionId: input.revisionId,
+          action: 'feedback',
+          payload,
+          result,
+          idempotencyKey: input.idempotencyKey,
+        });
+        return result;
+      });
+    },
+
+    async rejectProposal(
+      userBookId: string,
+      proposalId: string,
+      input: ProposalDecisionRequest,
+    ): Promise<ProposalActionResponse> {
+      await getOwnedBook(userBookId);
+      return db.transaction(async (tx) => {
+        const [proposal] = await tx
+          .select()
+          .from(strategyChangeProposals)
+          .where(and(
+            eq(strategyChangeProposals.id, proposalId),
+            eq(strategyChangeProposals.userBookId, userBookId),
+          ))
+          .for('update')
+          .limit(1);
+        if (!proposal) throw new UserBookError('处理方式建议不存在', 404);
+        const payload = { revisionId: input.revisionId };
+        const [existing] = await tx
+          .select()
+          .from(strategyChangeProposalActions)
+          .where(and(
+            eq(strategyChangeProposalActions.proposalId, proposalId),
+            eq(strategyChangeProposalActions.idempotencyKey, input.idempotencyKey),
+          ))
+          .limit(1);
+        if (existing) return replayProposalAction(existing, 'reject', input.revisionId, payload);
+        if (
+          proposal.status !== 'pending'
+          || proposal.currentRevisionId !== input.revisionId
+        ) {
+          throw new UserBookError('该建议修订已经失效', 409);
+        }
+        const result: ProposalActionResponse = {
+          proposalId,
+          revisionId: input.revisionId,
+          status: 'rejected',
+          resultingStrategyVersionId: null,
+        };
+        await tx
+          .update(strategyDraftVersions)
+          .set({ status: 'superseded', supersededAt: new Date() })
+          .where(and(
+            eq(strategyDraftVersions.id, proposal.currentStrategyDraftVersionId),
+            eq(strategyDraftVersions.status, 'draft'),
+          ));
+        const changed = await tx
+          .update(strategyChangeProposals)
+          .set({ status: 'rejected', rejectedAt: new Date(), updatedAt: new Date() })
+          .where(and(
+            eq(strategyChangeProposals.id, proposalId),
+            eq(strategyChangeProposals.status, 'pending'),
+            eq(strategyChangeProposals.currentRevisionId, input.revisionId),
+          ))
+          .returning({ id: strategyChangeProposals.id });
+        if (changed.length !== 1) throw new UserBookError('该建议修订已经失效', 409);
+        await tx.insert(strategyChangeProposalActions).values({
+          proposalId,
+          revisionId: input.revisionId,
+          action: 'reject',
+          payload,
+          result,
+          idempotencyKey: input.idempotencyKey,
+        });
+        return result;
+      });
+    },
+
+    async confirmProposal(
+      userBookId: string,
+      proposalId: string,
+      input: ProposalDecisionRequest,
+    ): Promise<ProposalActionResponse> {
+      const owned = await getOwnedBook(userBookId);
+      const { manifest } = await getManifestAndHtml(owned.sharedBook.id);
+      const result = await db.transaction(async (tx) => {
+        const [book] = await tx
+          .select()
+          .from(userBooks)
+          .where(eq(userBooks.id, userBookId))
+          .for('update')
+          .limit(1);
+        const [proposal] = await tx
+          .select()
+          .from(strategyChangeProposals)
+          .where(and(
+            eq(strategyChangeProposals.id, proposalId),
+            eq(strategyChangeProposals.userBookId, userBookId),
+          ))
+          .for('update')
+          .limit(1);
+        if (!book || !proposal) throw new UserBookError('处理方式建议不存在', 404);
+        const payload = { revisionId: input.revisionId };
+        const [existing] = await tx
+          .select()
+          .from(strategyChangeProposalActions)
+          .where(and(
+            eq(strategyChangeProposalActions.proposalId, proposalId),
+            eq(strategyChangeProposalActions.idempotencyKey, input.idempotencyKey),
+          ))
+          .limit(1);
+        if (existing) {
+          return {
+            response: replayProposalAction(existing, 'confirm', input.revisionId, payload),
+            generations: [] as Array<{ id: string; priority: number }>,
+          };
+        }
+        if (
+          book.workflowStatus !== 'active_reading'
+          || !book.currentStrategyVersionId
+          || proposal.status !== 'pending'
+          || proposal.currentRevisionId !== input.revisionId
+          || proposal.baseStrategyVersionId !== book.currentStrategyVersionId
+        ) {
+          throw new UserBookError('该建议基于的处理方式已经变化，请重新提出建议', 409);
+        }
+        const [revision] = await tx
+          .select()
+          .from(strategyChangeProposalRevisions)
+          .where(and(
+            eq(strategyChangeProposalRevisions.id, input.revisionId),
+            eq(strategyChangeProposalRevisions.proposalId, proposalId),
+          ))
+          .limit(1);
+        if (!revision || revision.strategyDraftVersionId !== proposal.currentStrategyDraftVersionId) {
+          throw new UserBookError('该建议修订已经失效', 409);
+        }
+        const [draft] = await tx
+          .update(strategyDraftVersions)
+          .set({ status: 'confirmed', confirmedAt: new Date() })
+          .where(and(
+            eq(strategyDraftVersions.id, proposal.currentStrategyDraftVersionId),
+            eq(strategyDraftVersions.userBookId, userBookId),
+            eq(strategyDraftVersions.status, 'draft'),
+          ))
+          .returning();
+        if (!draft) throw new UserBookError('候选处理方式已经失效', 409);
+        const [versionRow] = await tx
+          .select({
+            nextVersion: sql<number>`coalesce(max(${strategyVersions.version}), 0)::int + 1`,
+          })
+          .from(strategyVersions)
+          .where(eq(strategyVersions.userBookId, userBookId));
+        const nextVersion = versionRow?.nextVersion ?? 1;
+        const [strategy] = await tx
+          .insert(strategyVersions)
+          .values({
+            userBookId,
+            sourceDraftVersionId: draft.id,
+            version: nextVersion,
+            userFacingSummary: draft.userFacingSummary,
+            strategy: draft.strategy,
+          })
+          .returning();
+        if (!strategy) throw new UserBookError('正式处理方式创建失败', 503);
+        const [state] = await tx
+          .select()
+          .from(readerStates)
+          .where(eq(readerStates.userBookId, userBookId))
+          .for('update')
+          .limit(1);
+        const currentNode = manifest.nodes.find((node) =>
+          state
+            ? node.section_id === state.sectionId && node.segment === state.segment
+            : node.section_id === proposal.originSectionId && node.segment === proposal.originSegment,
+        ) ?? manifest.nodes.find((node) =>
+          node.section_id === proposal.originSectionId && node.segment === proposal.originSegment,
+        ) ?? manifest.nodes[0];
+        if (!currentNode) throw new UserBookError('书籍没有可阅读节点', 409);
+        const eligible = manifest.nodes
+          .filter((node) => node.tailoring_eligible)
+          .sort((left, right) => left.order - right.order);
+        const ahead = eligible
+          .filter((node) => node.order >= currentNode.order)
+          .slice(0, FORMAL_WINDOW_SIZE);
+        const window = ahead.length > 0 ? ahead : eligible.slice(-FORMAL_WINDOW_SIZE);
+        const switched = await tx
+          .update(userBooks)
+          .set({
+            currentStrategyVersionId: strategy.id,
+            currentStrategyDraftVersionId: draft.id,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(userBooks.id, userBookId),
+            eq(userBooks.workflowStatus, 'active_reading'),
+            eq(userBooks.currentStrategyVersionId, proposal.baseStrategyVersionId),
+          ))
+          .returning({ id: userBooks.id });
+        if (switched.length !== 1) throw new UserBookError('正式处理方式已经变化', 409);
+        await tx
+          .update(readerReadNodes)
+          .set({ strategyVersionId: strategy.id })
+          .where(and(
+            eq(readerReadNodes.userBookId, userBookId),
+            eq(readerReadNodes.sectionId, currentNode.section_id),
+            eq(readerReadNodes.segment, currentNode.segment),
+          ));
+        const readRows = await tx
+          .select()
+          .from(readerReadNodes)
+          .where(eq(readerReadNodes.userBookId, userBookId));
+        const preservedReadKeys = new Set(
+          readRows
+            .filter((row) =>
+              row.sectionId !== currentNode.section_id || row.segment !== currentNode.segment,
+            )
+            .map((row) => `${row.sectionId}\0${row.segment}`),
+        );
+        const obsolete = await tx
+          .select({
+            id: nodeGenerations.id,
+            sectionId: nodeGenerations.sectionId,
+            segment: nodeGenerations.segment,
+          })
+          .from(nodeGenerations)
+          .where(and(
+            eq(nodeGenerations.userBookId, userBookId),
+            eq(nodeGenerations.generationScope, 'formal'),
+            inArray(nodeGenerations.status, ['queued', 'retrying', 'generating']),
+          ));
+        const obsoleteIds = obsolete
+          .filter((generation) =>
+            !preservedReadKeys.has(`${generation.sectionId}\0${generation.segment}`),
+          )
+          .map((generation) => generation.id);
+        if (obsoleteIds.length > 0) {
+          await tx
+            .update(nodeGenerations)
+            .set({ status: 'superseded', result: null, completedAt: new Date(), updatedAt: new Date() })
+            .where(inArray(nodeGenerations.id, obsoleteIds));
+        }
+        if (window.length > 0) {
+          await tx
+            .insert(nodeGenerations)
+            .values(window.map((node) => {
+              const id = randomUUID();
+              return {
+                id,
+                userBookId,
+                generationScope: 'formal' as const,
+                strategyVersionId: strategy.id,
+                sectionId: node.section_id,
+                segment: node.segment,
+                status: 'queued' as const,
+                modelConfigId: options.modelConfigId,
+                promptVersion: 'tailoring-content-1.0',
+                cacheKey: `pending:${id}`,
+              };
+            }))
+            .onConflictDoNothing();
+        }
+        const queued = window.length === 0
+          ? []
+          : await tx
+              .select({
+                id: nodeGenerations.id,
+                sectionId: nodeGenerations.sectionId,
+                segment: nodeGenerations.segment,
+              })
+              .from(nodeGenerations)
+              .where(and(
+                eq(nodeGenerations.userBookId, userBookId),
+                eq(nodeGenerations.generationScope, 'formal'),
+                eq(nodeGenerations.strategyVersionId, strategy.id),
+                inArray(nodeGenerations.status, ['queued', 'retrying']),
+              ));
+        const priorityByKey = new Map(
+          window.map((node, index) => [`${node.section_id}\0${node.segment}`, index + 1]),
+        );
+        const response: ProposalActionResponse = {
+          proposalId,
+          revisionId: input.revisionId,
+          status: 'confirmed',
+          resultingStrategyVersionId: strategy.id,
+        };
+        const confirmed = await tx
+          .update(strategyChangeProposals)
+          .set({
+            status: 'confirmed',
+            confirmedAt: new Date(),
+            resultingStrategyVersionId: strategy.id,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(strategyChangeProposals.id, proposalId),
+            eq(strategyChangeProposals.status, 'pending'),
+            eq(strategyChangeProposals.currentRevisionId, input.revisionId),
+          ))
+          .returning({ id: strategyChangeProposals.id });
+        if (confirmed.length !== 1) throw new UserBookError('该建议修订已经失效', 409);
+        await tx.insert(strategyChangeProposalActions).values({
+          proposalId,
+          revisionId: input.revisionId,
+          action: 'confirm',
+          payload,
+          result: response,
+          idempotencyKey: input.idempotencyKey,
+        });
+        return {
+          response,
+          generations: queued.map((generation) => ({
+            id: generation.id,
+            priority: priorityByKey.get(`${generation.sectionId}\0${generation.segment}`)
+              ?? FORMAL_BACKGROUND_PRIORITY,
+          })),
+        };
+      });
+      await Promise.allSettled(result.generations.map((generation) =>
+        options.generations.enqueue({
+          generationId: generation.id,
+          userBookId,
+          scope: 'formal',
+          priority: generation.priority,
+        }),
+      ));
+      return result.response;
+    },
+
     // §8 问 AI streaming endpoint. Commits the question, then runs one turn, bridging the agent's
     // answer deltas and (pending) proposal event onto the SSE stream; persists the answer after
     // the turn. `session` is emitted first so the client learns the thread id for follow-ups.
@@ -3152,10 +4113,16 @@ function createUserBookServiceForUser(
         return;
       }
       const { manifest, html } = await getManifestAndHtml(committed.owned.sharedBook.id);
-      const toolbox = buildAskAiToolbox(committed.owned, committed.questionContext, manifest, html);
+      const normalizedContext = normalizeQaQuestionContext(
+        committed.questionContext as unknown as Record<string, unknown>,
+        manifest,
+        html,
+        false,
+      ).context;
+      const toolbox = buildAskAiToolbox(committed.owned, normalizedContext, manifest, html);
       const context = await buildQaContext(
         committed.sessionId,
-        committed.questionContext,
+        normalizedContext,
         committed.questionSequence,
       );
       const bridge = createStreamBridge<QaStreamEvent>();
@@ -3168,8 +4135,6 @@ function createUserBookServiceForUser(
           context,
           toolbox,
           onAnswerDelta: (chars) => bridge.push({ type: 'answer_delta', chars }),
-          onProposal: (proposal) =>
-            bridge.push({ type: 'proposal', publicSummary: proposal.public_summary }),
         })
         .then((result) => {
           outcome = result;
@@ -3191,14 +4156,17 @@ function createUserBookServiceForUser(
       // answer, so a retry re-runs the turn. A concurrent duplicate turn loses the CAS (409); in
       // that case replay the winner's persisted answer instead of surfacing an error.
       try {
-        const messageId = await saveQaAnswer(
+        const saved = await saveQaAnswer(
           userBookId,
           committed.sessionId,
           committed.questionSequence,
+          committed.question,
           outcome,
+          committed.owned.userBook.currentStrategyVersionId,
         );
-        if (outcome.patchedProfile) yield { type: 'profile_updated' };
-        yield { type: 'done', sessionId: committed.sessionId, messageId };
+        if (saved.proposal) yield { type: 'proposal', ...saved.proposal };
+        if (saved.profileUpdated) yield { type: 'profile_updated' };
+        yield { type: 'done', sessionId: committed.sessionId, messageId: saved.messageId };
       } catch (error) {
         const winner = await findQaAnswer(committed.sessionId, committed.questionSequence);
         if (winner) {
@@ -3212,17 +4180,17 @@ function createUserBookServiceForUser(
       }
     },
 
-    // §8 — the persisted transcript of one question thread (reload/history). `proposal` is the
-    // thread's latest strategy-change proposal, if any (display-only in the read-only loop).
+    // §8 — the persisted transcript of one question thread (reload/history). Proposal revisions
+    // are attached to the assistant messages that created them.
     async qaSession(userBookId: string, sessionId: string): Promise<QaSessionResponse> {
-      await getOwnedBook(userBookId);
+      const owned = await getOwnedBook(userBookId);
       const [session] = await db
         .select()
         .from(qaSessions)
         .where(and(eq(qaSessions.id, sessionId), eq(qaSessions.userBookId, userBookId)))
         .limit(1);
       if (!session) throw new UserBookError('问答会话不存在', 404);
-      const [messages, proposal] = await Promise.all([
+      const [messages, proposals, revisionRows, source] = await Promise.all([
         db
           .select()
           .from(qaMessages)
@@ -3232,15 +4200,54 @@ function createUserBookServiceForUser(
           .select()
           .from(strategyChangeProposals)
           .where(eq(strategyChangeProposals.qaSessionId, sessionId))
-          .orderBy(desc(strategyChangeProposals.createdAt))
-          .limit(1)
-          .then((rows) => rows[0]),
+          .orderBy(desc(strategyChangeProposals.createdAt)),
+        db
+          .select({
+            revision: strategyChangeProposalRevisions,
+            proposal: strategyChangeProposals,
+          })
+          .from(strategyChangeProposalRevisions)
+          .innerJoin(
+            strategyChangeProposals,
+            eq(strategyChangeProposals.id, strategyChangeProposalRevisions.proposalId),
+          )
+          .where(eq(strategyChangeProposals.qaSessionId, sessionId)),
+        getManifestAndHtml(owned.sharedBook.id),
       ]);
+      const normalized = normalizeQaQuestionContext(
+        session.questionContext,
+        source.manifest,
+        source.html,
+        false,
+      );
+      const revisionsByMessage = new Map(
+        revisionRows.map(({ revision, proposal }) => [
+          revision.triggeringMessageId,
+          {
+            id: revision.id,
+            proposalId: proposal.id,
+            revision: revision.revision,
+            triggeringMessageId: revision.triggeringMessageId,
+            strategyDraftVersionId: revision.strategyDraftVersionId,
+            publicSummary: revision.publicSummary,
+            changedFields: revision.changedFields,
+            reason: revision.reason,
+            evidence: revision.evidence,
+            status:
+              proposal.currentRevisionId === revision.id
+                ? proposal.status
+                : ('superseded' as const),
+            createdAt: revision.createdAt.toISOString(),
+          },
+        ]),
+      );
+      const proposal = proposals[0];
       return {
         sessionId,
         status: session.status,
         conversationVersion: session.conversationVersion,
-        questionContext: session.questionContext as QaQuestionContext,
+        questionContext: normalized.context,
+        contextPrecision: normalized.precision,
         messages: messages.map((message) => ({
           id: message.id,
           sequence: message.sequence,
@@ -3248,12 +4255,18 @@ function createUserBookServiceForUser(
           kind: message.kind,
           content: message.content,
           createdAt: message.createdAt.toISOString(),
+          proposalRevision: revisionsByMessage.get(message.id) ?? null,
         })),
-        proposal: proposal
+        proposal: proposal && proposal.currentRevisionId
           ? {
               id: proposal.id,
               status: proposal.status,
               publicSummary: proposal.publicSummary,
+              revision: proposal.revision,
+              currentRevisionId: proposal.currentRevisionId,
+              currentStrategyDraftVersionId: proposal.currentStrategyDraftVersionId,
+              baseStrategyVersionId: proposal.baseStrategyVersionId,
+              resultingStrategyVersionId: proposal.resultingStrategyVersionId,
               createdAt: proposal.createdAt.toISOString(),
             }
           : null,

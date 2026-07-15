@@ -10,12 +10,65 @@ import {
   InterviewQuestionSchema,
   PasswordLoginRequestSchema,
   PasswordRegisterRequestSchema,
+  ProposalDecisionRequestSchema,
+  ProposalFeedbackRequestSchema,
+  QaQuestionContextSchema,
   SharedBookSchema,
   SystemJobPayloadSchema,
   SystemJobSchema,
   TrialReviewResponseSchema,
   UserBookWorkflowResponseSchema,
 } from './index';
+
+describe('ask AI contracts', () => {
+  const range = {
+    start: { blockIndex: 1, offset: 0 },
+    end: { blockIndex: 2, offset: 8 },
+  };
+
+  it('distinguishes exact highlights from approximate screen context', () => {
+    expect(Value.Check(QaQuestionContextSchema, {
+      anchor: 'highlight',
+      precision: 'exact',
+      nodeOrder: 3,
+      sectionId: 'chapter-1',
+      segment: 1,
+      range,
+      quoteSnapshot: 'selected text',
+    })).toBe(true);
+    expect(Value.Check(QaQuestionContextSchema, {
+      anchor: 'screen',
+      precision: 'approximate',
+      nodeOrder: 3,
+      sectionId: 'chapter-1',
+      segment: 1,
+      focus: { blockIndex: 1, offset: 4 },
+      range,
+      quoteSnapshot: 'visible text',
+    })).toBe(true);
+    expect(Value.Check(QaQuestionContextSchema, {
+      anchor: 'highlight',
+      precision: 'approximate',
+      nodeOrder: 3,
+      sectionId: 'chapter-1',
+      segment: 1,
+      range,
+      quoteSnapshot: 'wrong precision',
+    })).toBe(false);
+  });
+
+  it('requires revision and idempotency guards for proposal commands', () => {
+    expect(Value.Check(ProposalFeedbackRequestSchema, {
+      revisionId: 'revision-1',
+      feedback: 'Please keep the annotations shorter.',
+      idempotencyKey: 'feedback-1',
+    })).toBe(true);
+    expect(Value.Check(ProposalDecisionRequestSchema, {
+      revisionId: 'revision-1',
+      idempotencyKey: 'confirm-1',
+    })).toBe(true);
+  });
+});
 
 describe('password authentication contracts', () => {
   it('accepts valid registration and login payloads', () => {

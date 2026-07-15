@@ -4303,6 +4303,97 @@ h1 {
   font-size: 16px;
 }
 
+.reader-askai-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.reader-askai-header-actions button:not([aria-label]) {
+  min-width: auto;
+  padding: 0 8px;
+  color: var(--rt-ink-2);
+  font-size: 12px;
+}
+
+.reader-askai-history {
+  max-height: 210px;
+  margin-bottom: 12px;
+  overflow-y: auto;
+  border-block: 1px solid var(--rt-rule);
+}
+
+.reader-askai-history > p {
+  padding: 10px 2px;
+  color: var(--rt-ink-3);
+  font-size: 12px;
+}
+
+.reader-askai-history > button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 2px;
+  border: 0;
+  border-bottom: 1px solid var(--rt-rule);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.reader-askai-history > button span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-askai-history > button small {
+  flex: none;
+  color: var(--rt-ink-3);
+  font-size: 10px;
+}
+
+.reader-askai-source {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--rt-rule);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--rt-bg) 72%, transparent);
+}
+
+.reader-askai-source summary {
+  color: var(--rt-ink-2);
+  cursor: pointer;
+  font-family: var(--rt-mono);
+  font-size: 10px;
+}
+
+.reader-askai-source blockquote {
+  max-height: 112px;
+  margin: 10px 0;
+  overflow-y: auto;
+  color: var(--rt-ink-2);
+  font-family: var(--rt-serif);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.reader-askai-source button,
+.reader-askai-turn-error button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--rt-green-deep);
+  cursor: pointer;
+  font-size: 12px;
+}
+
 .reader-askai-thread {
   flex: 1;
   min-height: 0;
@@ -4359,6 +4450,12 @@ h1 {
   line-height: 1.6;
 }
 
+.reader-askai-turn-error {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
 .reader-askai-proposal {
   display: flex;
   flex-direction: column;
@@ -4379,6 +4476,42 @@ h1 {
 
 .reader-askai-proposal p { font-size: 14px; line-height: 1.6; }
 .reader-askai-proposal small { color: var(--rt-ink-3); font-size: 11px; }
+
+.reader-askai-proposal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.reader-askai-proposal-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--rt-rule);
+  border-radius: 6px;
+  background: var(--rt-bg-card);
+  color: var(--rt-ink-2);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.reader-askai-proposal-actions button:first-child {
+  border-color: var(--rt-green-deep);
+  background: var(--rt-green-deep);
+  color: #fff;
+}
+
+.reader-askai-proposal-actions button:disabled { opacity: 0.5; }
+
+.reader-askai-confirmed {
+  padding: 12px;
+  border-left: 2px solid var(--rt-green-deep);
+  background: color-mix(in srgb, var(--rt-green-deep) 6%, transparent);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.reader-askai-confirmed p { color: var(--rt-ink-3); }
 
 .reader-askai-compose {
   display: flex;

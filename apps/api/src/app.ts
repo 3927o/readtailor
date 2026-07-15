@@ -34,7 +34,11 @@ import {
   MarkTrialSegmentViewedRequestSchema,
   PasswordLoginRequestSchema,
   PasswordRegisterRequestSchema,
+  ProposalActionResponseSchema,
+  ProposalDecisionRequestSchema,
+  ProposalFeedbackRequestSchema,
   type QaStreamEvent,
+  QaSessionListResponseSchema,
   QaSessionResponseSchema,
   ReaderBootstrapSchema,
   ReaderFocusRequestSchema,
@@ -131,6 +135,7 @@ function assetContentType(path: string): string {
       woff2: 'font/woff2',
     }[extension ?? ''] ?? 'application/octet-stream'
   );
+
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -735,6 +740,36 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     },
   );
 
+  app.get(
+    '/v1/user-books/:id/qa',
+    {
+      schema: {
+        params: userBookIdParams,
+        querystring: Type.Object({
+          cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
+          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+        }),
+        response: {
+          200: QaSessionListResponseSchema,
+          400: ErrorResponseSchema,
+          404: ErrorResponseSchema,
+          409: ErrorResponseSchema,
+          503: ErrorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks
+          .forUser(request.authUser!.id)
+          .listQaSessions(request.params.id, request.query.cursor, request.query.limit);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
   // 问 AI 会话转录（重载/历史）。
   app.get(
     '/v1/user-books/:id/qa/:sessionId',
@@ -753,6 +788,80 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
         return await deps.userBooks
           .forUser(request.authUser!.id)
           .qaSession(request.params.id, request.params.sessionId);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  const proposalParams = Type.Object({
+    id: Type.String({ pattern: UUID_PATTERN }),
+    proposalId: Type.String({ pattern: UUID_PATTERN }),
+  });
+
+  app.post(
+    '/v1/user-books/:id/qa/proposals/:proposalId/feedback',
+    {
+      schema: {
+        params: proposalParams,
+        body: ProposalFeedbackRequestSchema,
+        response: { 200: ProposalActionResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).feedbackProposal(
+          request.params.id,
+          request.params.proposalId,
+          request.body,
+        );
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.post(
+    '/v1/user-books/:id/qa/proposals/:proposalId/confirm',
+    {
+      schema: {
+        params: proposalParams,
+        body: ProposalDecisionRequestSchema,
+        response: { 200: ProposalActionResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).confirmProposal(
+          request.params.id,
+          request.params.proposalId,
+          request.body,
+        );
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.post(
+    '/v1/user-books/:id/qa/proposals/:proposalId/reject',
+    {
+      schema: {
+        params: proposalParams,
+        body: ProposalDecisionRequestSchema,
+        response: { 200: ProposalActionResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id).rejectProposal(
+          request.params.id,
+          request.params.proposalId,
+          request.body,
+        );
       } catch (error) {
         return userBookFailure(error, reply);
       }
