@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import { readOptionalBoolean } from '@readtailor/config';
 import {
   bookPackages,
   bookProfiles,
@@ -238,6 +239,7 @@ async function main(): Promise<void> {
     bucket: process.env.OBJECT_STORAGE_BUCKET?.trim(),
     accessKeyId: process.env.OBJECT_STORAGE_ACCESS_KEY_ID?.trim(),
     secretAccessKey: process.env.OBJECT_STORAGE_SECRET_ACCESS_KEY?.trim(),
+    forcePathStyle: readOptionalBoolean(process.env, 'OBJECT_STORAGE_FORCE_PATH_STYLE'),
   });
   if (!storage) {
     throw new Error('object storage is required (OBJECT_STORAGE_LOCAL_ROOT or OBJECT_STORAGE_BUCKET)');

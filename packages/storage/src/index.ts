@@ -359,6 +359,7 @@ export function createObjectStorage(config: {
   region?: string | undefined;
   accessKeyId?: string | undefined;
   secretAccessKey?: string | undefined;
+  forcePathStyle?: boolean | undefined;
 }): ObjectStorage | undefined {
   if (config.localRoot && config.bucket) {
     throw new Error('configure either OBJECT_STORAGE_LOCAL_ROOT or OBJECT_STORAGE_BUCKET, not both');
@@ -377,6 +378,6 @@ export function createObjectStorage(config: {
     ...(config.endpoint ? { endpoint: config.endpoint } : {}),
     ...(config.accessKeyId ? { accessKeyId: config.accessKeyId } : {}),
     ...(config.secretAccessKey ? { secretAccessKey: config.secretAccessKey } : {}),
-    forcePathStyle: Boolean(config.endpoint),
+    forcePathStyle: config.forcePathStyle ?? Boolean(config.endpoint),
   });
 }

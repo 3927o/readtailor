@@ -1,5 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { readInteger, readModelEndpoint, requireCompleteModelEndpoint } from './index';
+import {
+  readInteger,
+  readModelEndpoint,
+  readOptionalBoolean,
+  requireCompleteModelEndpoint,
+} from './index';
+
+describe('readOptionalBoolean', () => {
+  it('parses explicit boolean values and preserves an unset value', () => {
+    expect(readOptionalBoolean({}, 'FLAG')).toBeUndefined();
+    expect(readOptionalBoolean({ FLAG: 'true' }, 'FLAG')).toBe(true);
+    expect(readOptionalBoolean({ FLAG: ' false ' }, 'FLAG')).toBe(false);
+  });
+
+  it('rejects ambiguous boolean values', () => {
+    expect(() => readOptionalBoolean({ FLAG: 'yes' }, 'FLAG')).toThrow(
+      'Environment variable FLAG must be true or false',
+    );
+  });
+});
 
 describe('readInteger', () => {
   it('reads an integer within the configured range', () => {

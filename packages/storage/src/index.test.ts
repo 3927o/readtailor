@@ -62,4 +62,17 @@ describe('createObjectStorage', () => {
       'must be configured together',
     );
   });
+
+  it('allows virtual-host style when an endpoint is configured', () => {
+    const storage = createObjectStorage({
+      bucket: 'books',
+      endpoint: 'https://s3.example.com',
+      forcePathStyle: false,
+    });
+    const client = (
+      storage as unknown as { client: { config: { forcePathStyle: boolean } } }
+    ).client;
+
+    expect(client.config.forcePathStyle).toBe(false);
+  });
 });

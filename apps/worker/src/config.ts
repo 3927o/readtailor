@@ -3,6 +3,7 @@ import {
   readInteger,
   readLogLevel,
   readModelEndpoint,
+  readOptionalBoolean,
   readOptionalString,
   readString,
 } from '@readtailor/config';
@@ -17,6 +18,13 @@ import {
 // gates compose, so you can run dedicated pools (e.g. a content-generation-only fleet).
 export const WORKER_QUEUE_KINDS = ['system', 'normalization', 'content-generation'] as const;
 export type WorkerQueueKind = (typeof WORKER_QUEUE_KINDS)[number];
+
+export function allEnabledQueuesActive(
+  queues: readonly WorkerQueueKind[],
+  active: Readonly<Record<WorkerQueueKind, boolean>>,
+): boolean {
+  return queues.every((queue) => active[queue]);
+}
 
 export type WorkerConfig = ReturnType<typeof loadWorkerConfig>;
 
@@ -95,6 +103,7 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
     objectStorageBucket: readOptionalString(env, 'OBJECT_STORAGE_BUCKET'),
     objectStorageAccessKeyId: readOptionalString(env, 'OBJECT_STORAGE_ACCESS_KEY_ID'),
     objectStorageSecretAccessKey: readOptionalString(env, 'OBJECT_STORAGE_SECRET_ACCESS_KEY'),
+    objectStorageForcePathStyle: readOptionalBoolean(env, 'OBJECT_STORAGE_FORCE_PATH_STYLE'),
     normalizationMaxAttempts: readInteger(env, 'NORMALIZATION_MAX_ATTEMPTS', 3, { min: 1 }),
     normalizationMaxTurns: readInteger(env, 'NORMALIZATION_MAX_TURNS', 50, { min: 1 }),
     normalizationAttemptTimeoutMs: readInteger(

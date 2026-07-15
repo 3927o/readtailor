@@ -68,6 +68,7 @@ const objectStorage = createObjectStorage({
   region: config.objectStorageRegion,
   accessKeyId: config.objectStorageAccessKeyId,
   secretAccessKey: config.objectStorageSecretAccessKey,
+  forcePathStyle: config.objectStorageForcePathStyle,
 });
 const systemJobs =
   database && systemQueue

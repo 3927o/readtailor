@@ -16,4 +16,9 @@ describe('loadApiConfig', () => {
       'Environment variable API_PORT must be an integer',
     );
   });
+
+  it('supports virtual-host style object storage endpoints', () => {
+    expect(loadApiConfig({ OBJECT_STORAGE_FORCE_PATH_STYLE: 'false' }).objectStorageForcePathStyle)
+      .toBe(false);
+  });
 });

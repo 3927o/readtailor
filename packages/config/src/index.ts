@@ -10,6 +10,23 @@ export function readString(env: NodeJS.ProcessEnv, name: string, fallback: strin
   return readOptionalString(env, name) ?? fallback;
 }
 
+export function readOptionalBoolean(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): boolean | undefined {
+  const value = readOptionalString(env, name);
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  throw new Error(`Environment variable ${name} must be true or false`);
+}
+
 export function requireString(env: NodeJS.ProcessEnv, name: string): string {
   const value = readOptionalString(env, name);
   if (!value) {

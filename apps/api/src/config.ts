@@ -2,6 +2,7 @@ import {
   readInteger,
   readLogLevel,
   readModelEndpoint,
+  readOptionalBoolean,
   readOptionalString,
   readString,
 } from '@readtailor/config';
@@ -20,6 +21,7 @@ export function loadApiConfig(env: NodeJS.ProcessEnv = process.env) {
     objectStorageBucket: readOptionalString(env, 'OBJECT_STORAGE_BUCKET'),
     objectStorageAccessKeyId: readOptionalString(env, 'OBJECT_STORAGE_ACCESS_KEY_ID'),
     objectStorageSecretAccessKey: readOptionalString(env, 'OBJECT_STORAGE_SECRET_ACCESS_KEY'),
+    objectStorageForcePathStyle: readOptionalBoolean(env, 'OBJECT_STORAGE_FORCE_PATH_STYLE'),
     // AI 功能各自可独立配置端点/key/模型，缺省回退到全局 MODEL_* 。
     systemChatModel: readModelEndpoint(env, 'SYSTEM_CHAT'),
     readingSetupModel: readModelEndpoint(env, 'READING_SETUP'),

@@ -94,6 +94,7 @@ set -euo pipefail
 release="$APP_ROOT/releases/$RELEASE_ID"
 previous="$(readlink -f "$APP_ROOT/current" 2>/dev/null || true)"
 switched=0
+services_stopped=0
 
 rollback_on_error() {
   status=$?
@@ -106,6 +107,8 @@ rollback_on_error() {
       rm -f "$APP_ROOT/current"
       systemctl stop readtailor-api.service readtailor-worker.service || true
     fi
+  elif [[ $services_stopped -eq 1 && -n "$previous" && -d "$previous" ]]; then
+    systemctl restart readtailor-api.service readtailor-worker.service || true
   fi
   exit "$status"
 }
@@ -122,6 +125,8 @@ runuser -u "$APP_USER" -- env HOME="$APP_ROOT/shared" \
     install --prod --frozen-lockfile --registry="$REGISTRY"
 runuser -u "$APP_USER" -- "$APP_ROOT/venv/bin/pip" install --disable-pip-version-check \
   --requirement "$release/requirements.txt"
+systemctl stop readtailor-api.service readtailor-worker.service
+services_stopped=1
 runuser -u "$APP_USER" -- "$NODE_BIN" --env-file=/etc/readtailor/readtailor.env \
   "$release/apps/api/dist/migrate.js"
 
@@ -166,7 +171,10 @@ fi
 caddy fmt --overwrite /etc/caddy/Caddyfile
 systemctl reload caddy.service
 
+touch "$release/.deployed"
+chown "$APP_USER:$APP_USER" "$release/.deployed"
 switched=0
+services_stopped=0
 trap - ERR
 rm -f /tmp/readtailor.caddy /tmp/adopt-caddy-site.py "$old_snippet"
 

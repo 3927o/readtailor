@@ -6,6 +6,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import {
   readLogLevel,
   readModelEndpoint,
+  readOptionalBoolean,
   requireCompleteModelEndpoint,
   requireString,
 } from '@readtailor/config';
@@ -84,6 +85,7 @@ async function main(): Promise<void> {
     bucket: optional('OBJECT_STORAGE_BUCKET'),
     accessKeyId: optional('OBJECT_STORAGE_ACCESS_KEY_ID'),
     secretAccessKey: optional('OBJECT_STORAGE_SECRET_ACCESS_KEY'),
+    forcePathStyle: readOptionalBoolean(process.env, 'OBJECT_STORAGE_FORCE_PATH_STYLE'),
   });
   if (!storage) throw new Error('object storage is required');
 

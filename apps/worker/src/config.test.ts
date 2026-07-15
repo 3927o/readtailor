@@ -1,7 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { loadWorkerConfig } from './config';
+import { allEnabledQueuesActive, loadWorkerConfig } from './config';
 
 describe('loadWorkerConfig', () => {
+  it('requires every enabled queue consumer to be active for readiness', () => {
+    expect(
+      allEnabledQueuesActive(['system', 'normalization'], {
+        system: true,
+        normalization: false,
+        'content-generation': true,
+      }),
+    ).toBe(false);
+    expect(
+      allEnabledQueuesActive(['system'], {
+        system: true,
+        normalization: false,
+        'content-generation': false,
+      }),
+    ).toBe(true);
+  });
+
   it('rejects non-positive concurrency', () => {
     expect(() => loadWorkerConfig({ WORKER_CONCURRENCY: '0' })).toThrow(
       'Environment variable WORKER_CONCURRENCY must be at least 1',
@@ -90,5 +107,11 @@ describe('loadWorkerConfig', () => {
     expect(() => loadWorkerConfig({ SANDBOX_PROVIDER: 'local' })).toThrow(
       'Environment variable SANDBOX_PROVIDER must be one of: e2b, ppio',
     );
+  });
+
+  it('supports virtual-host style object storage endpoints', () => {
+    expect(
+      loadWorkerConfig({ OBJECT_STORAGE_FORCE_PATH_STYLE: 'false' }).objectStorageForcePathStyle,
+    ).toBe(false);
   });
 });

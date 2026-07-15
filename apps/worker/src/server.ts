@@ -12,7 +12,7 @@ import {
   createSystemWorker,
 } from '@readtailor/queue';
 import { createObjectStorage } from '@readtailor/storage';
-import { loadWorkerConfig } from './config';
+import { allEnabledQueuesActive, loadWorkerConfig } from './config';
 import { executeNormalizationRun } from './normalization/job';
 import { reconcileOrphanedNormalizationRuns } from './normalization/reconcile';
 import { executeContentGeneration, failContentGeneration } from './tailoring/job';
@@ -47,6 +47,7 @@ const objectStorage = createObjectStorage({
   bucket: config.objectStorageBucket,
   accessKeyId: config.objectStorageAccessKeyId,
   secretAccessKey: config.objectStorageSecretAccessKey,
+  forcePathStyle: config.objectStorageForcePathStyle,
 });
 
 type QueueStatus =
@@ -197,14 +198,16 @@ let queueStatus: QueueStatus = !config.redisUrl
       ? 'connecting'
       : 'not_configured';
 
+const activeConsumers = {
+  system: Boolean(queueWorker),
+  normalization: Boolean(normalizationWorker),
+  'content-generation': Boolean(contentGenerationWorker),
+};
+
 logger.info(
   {
     enabledQueues: [...enabledQueues],
-    active: {
-      system: Boolean(queueWorker),
-      normalization: Boolean(normalizationWorker),
-      'content-generation': Boolean(contentGenerationWorker),
-    },
+    active: activeConsumers,
   },
   'worker queue consumers initialized',
 );
@@ -289,7 +292,8 @@ const probeDatabase = async (): Promise<'ok' | 'error' | 'not_configured'> => {
 
 app.get('/health', async (_request, reply) => {
   const databaseStatus = await probeDatabase();
-  const ready = queueStatus === 'connected' && databaseStatus === 'ok';
+  const consumersReady = allEnabledQueuesActive(config.queues, activeConsumers);
+  const ready = consumersReady && queueStatus === 'connected' && databaseStatus === 'ok';
   if (!ready) {
     reply.code(503);
   }
@@ -299,6 +303,7 @@ app.get('/health', async (_request, reply) => {
     status: ready ? ('ok' as const) : ('degraded' as const),
     queue: queueStatus,
     database: databaseStatus,
+    consumers: activeConsumers,
     version: '0.0.0',
     timestamp: new Date().toISOString(),
   };
