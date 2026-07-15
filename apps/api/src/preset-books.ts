@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull } from 'drizzle-orm';
 import {
   bookReaderProfileVersions,
   bookPackages,
@@ -10,6 +10,7 @@ import {
   trialRevisions,
   trialSegments,
   userBooks,
+  users,
   type Database,
 } from '@readtailor/database';
 import {
@@ -220,4 +221,50 @@ export async function bindPresetBooks(tx: Tx, userId: string): Promise<number> {
     if (template) await hydratePresetUserBook(tx, userBook.id, template);
   }
   return inserted.length;
+}
+
+export type PresetBookBackfillResult = {
+  eligibleUsers: number;
+  changedUsers: number;
+  addedBooks: number;
+  failures: Array<{ userId: string; error: string }>;
+};
+
+export async function backfillPresetBooks(
+  database: Database,
+  options: { userId?: string } = {},
+): Promise<PresetBookBackfillResult> {
+  const eligibility = and(
+    isNotNull(users.readerProfileCompletedAt),
+    isNull(users.disabledAt),
+    options.userId ? eq(users.id, options.userId) : undefined,
+  );
+  const eligibleUsers = await database
+    .select({ id: users.id })
+    .from(users)
+    .where(eligibility)
+    .orderBy(users.createdAt, users.id);
+
+  let changedUsers = 0;
+  let addedBooks = 0;
+  const failures: PresetBookBackfillResult['failures'] = [];
+  for (const user of eligibleUsers) {
+    try {
+      const added = await database.transaction((tx) => bindPresetBooks(tx, user.id));
+      addedBooks += added;
+      if (added > 0) changedUsers += 1;
+    } catch (error) {
+      failures.push({
+        userId: user.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return {
+    eligibleUsers: eligibleUsers.length,
+    changedUsers,
+    addedBooks,
+    failures,
+  };
 }

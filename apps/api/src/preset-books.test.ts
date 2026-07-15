@@ -10,7 +10,7 @@ import {
   userBooks,
 } from '@readtailor/database';
 import type { PresetBookTemplate } from './preset-book-templates';
-import { bindPresetBooks, hydratePresetUserBook } from './preset-books';
+import { backfillPresetBooks, bindPresetBooks, hydratePresetUserBook } from './preset-books';
 
 // A minimal stand-in for the drizzle transaction chain used by bindPresetBooks:
 //   tx.select({...}).from(t).where(cond)                                   → Promise<rows>
@@ -257,6 +257,41 @@ describe('bindPresetBooks', () => {
 
     expect(added).toBe(0);
     expect(insertValues).not.toHaveBeenCalled();
+  });
+});
+
+describe('backfillPresetBooks', () => {
+  it('runs the idempotent binder once per eligible user and aggregates changes', async () => {
+    const transactions: string[] = [];
+    const database = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            orderBy: () => Promise.resolve([{ id: 'user-a' }, { id: 'user-b' }]),
+          }),
+        }),
+      }),
+      transaction: async (callback: (tx: unknown) => Promise<number>) => {
+        const userIndex = transactions.length;
+        const userId = userIndex === 0 ? 'user-a' : 'user-b';
+        const { tx } = fakeTx({
+          presetIds: ['book-a'],
+          insertedIds: userIndex === 0 ? [`${userId}-book-a`] : [],
+        });
+        transactions.push(userId);
+        return callback(tx);
+      },
+    };
+
+    const result = await backfillPresetBooks(database as any);
+
+    expect(transactions).toEqual(['user-a', 'user-b']);
+    expect(result).toEqual({
+      eligibleUsers: 2,
+      changedUsers: 1,
+      addedBooks: 1,
+      failures: [],
+    });
   });
 });
 

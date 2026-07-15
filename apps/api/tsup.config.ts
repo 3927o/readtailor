@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/server.ts', 'src/migrate.ts'],
+  entry: ['src/server.ts', 'src/migrate.ts', 'src/backfill-preset-books.ts'],
   format: ['esm'],
   platform: 'node',
   target: 'node24',

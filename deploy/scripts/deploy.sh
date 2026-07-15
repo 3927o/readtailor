@@ -55,7 +55,9 @@ fi
 for artifact in \
   apps/api/dist/server.js \
   apps/api/dist/migrate.js \
+  apps/api/dist/backfill-preset-books.js \
   apps/worker/dist/server.js \
+  apps/worker/dist/ingest-preset.js \
   apps/web/dist/index.html; do
   [[ -f "$build_root/$artifact" ]] || die "missing build artifact: $artifact"
 done

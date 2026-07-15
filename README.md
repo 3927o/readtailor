@@ -362,7 +362,15 @@ pnpm --filter @readtailor/worker ingest:preset \
   tools/preset_profiles/nahan.book_profile.json
 ```
 
-该命令当前只负责生成并发布书籍包，不会自动把 `shared_books.is_preset` 设为 `true`。只有数据库中已标记为预置的 ready book，才会在用户完成画像时自动加入书架。
+该命令会生成并发布书籍包，并把共享书籍标记为预置书。只有 `ready` 的预置书才会在用户完成画像时自动加入书架。
+
+导入新的预置书后，可以为此前已经完成画像的用户幂等补录：
+
+```bash
+pnpm --filter @readtailor/api preset-book:backfill
+```
+
+该命令不会复活用户已经删除的预置书；重复执行只会补充仍缺失的书架记录。
 
 ### 正式 Agent 规范化
 

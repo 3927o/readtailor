@@ -8,6 +8,7 @@
     "build": "tsup",
     "start": "node --env-file-if-exists=../../.env dist/server.js",
     "preset-book:export": "tsx --env-file-if-exists=../../.env src/export-preset-book-template.ts",
+    "preset-book:backfill": "tsx --env-file-if-exists=../../.env src/backfill-preset-books.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
   },
   "dependencies": {
