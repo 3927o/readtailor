@@ -17,3 +17,6 @@ readtailor-handoff-*.zip
 
 # 一次性数据库/沙箱排查脚本，硬编码 UUID，不入库
 packages/database/rt-*.mjs
+
+# 本地预置书籍 EPUB，不入库
+fixtures/preset/
