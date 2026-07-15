@@ -12,14 +12,14 @@ import type { PerfSink } from '@readtailor/observability';
 import type { ObjectStorage } from '@readtailor/storage';
 import { classifyNormalizationFailure, runFormalNormalization } from './coordinator';
 import { publishValidatedNormalization } from './publication';
+import type { NormalizationSandboxConfig } from './sandbox';
 
 export interface NormalizationExecutionOptions {
   db: Database;
   storage: ObjectStorage;
   normalizationRunId: string;
   repoRoot: string;
-  e2bApiKey: string;
-  e2bTemplate?: string;
+  sandbox: NormalizationSandboxConfig;
   normalizationModel: ResolvedModelEndpoint;
   analysisModel: ResolvedModelEndpoint;
   maxAttempts: number;
@@ -77,8 +77,7 @@ export async function executeNormalizationRun(options: NormalizationExecutionOpt
       normalizationRunId: options.normalizationRunId,
       sourceEpub,
       repoRoot: options.repoRoot,
-      e2bApiKey: options.e2bApiKey,
-      ...(options.e2bTemplate ? { e2bTemplate: options.e2bTemplate } : {}),
+      sandbox: options.sandbox,
       modelApiBaseUrl: options.normalizationModel.baseUrl,
       modelApiKey: options.normalizationModel.apiKey,
       modelName: options.normalizationModel.modelName,

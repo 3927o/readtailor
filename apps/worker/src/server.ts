@@ -83,11 +83,12 @@ const queueWorker = config.redisUrl && database && enabledQueues.has('system')
 
 const normalizationModel = requireCompleteModelEndpoint(config.normalizationModel, 'normalization');
 const analysisModel = requireCompleteModelEndpoint(config.analysisModel, 'book-analysis');
+const normalizationSandbox = config.normalizationSandbox;
 const normalizationConfigured = Boolean(
   config.redisUrl &&
     database &&
     objectStorage &&
-    config.e2bApiKey &&
+    normalizationSandbox &&
     normalizationModel &&
     analysisModel,
 );
@@ -105,7 +106,7 @@ const normalizationWorker =
   config.redisUrl &&
   database &&
   objectStorage &&
-  config.e2bApiKey &&
+  normalizationSandbox &&
   normalizationModel &&
   analysisModel
     ? createNormalizationWorker({
@@ -118,8 +119,7 @@ const normalizationWorker =
             storage: objectStorage,
             normalizationRunId: job.data.runId,
             repoRoot,
-            e2bApiKey: config.e2bApiKey!,
-            ...(config.e2bTemplate ? { e2bTemplate: config.e2bTemplate } : {}),
+            sandbox: normalizationSandbox,
             normalizationModel: normalizationModel!,
             analysisModel: analysisModel!,
             maxAttempts: config.normalizationMaxAttempts,
@@ -177,7 +177,7 @@ if (enabledQueues.has('system') && !queueWorker) {
 }
 if (enabledQueues.has('normalization') && !normalizationWorker) {
   logger.warn(
-    'normalization queue consumer disabled: Redis, database, object storage, E2B and model configuration are required',
+    `normalization queue consumer disabled: Redis, database, object storage, ${config.sandboxProvider} sandbox and model configuration are required`,
   );
 }
 if (enabledQueues.has('content-generation') && !contentGenerationWorker) {

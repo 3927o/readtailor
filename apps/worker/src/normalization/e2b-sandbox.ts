@@ -1,11 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import {
-  CommandExitError,
-  Sandbox,
-  type CommandResult,
-  type CommandStartOpts,
-} from '@e2b/code-interpreter';
 import type {
   NormalizationFinishBinding,
   ToolTextResult,
@@ -20,8 +14,16 @@ import {
 } from '@readtailor/normalized-book';
 import type {
   NormalizationArtifactSink,
+  NormalizationSandboxConfig,
+  NormalizationSandboxProvider,
   NormalizationSandboxSession,
 } from './sandbox';
+import {
+  createNormalizationSandboxTransport,
+  type NormalizationSandboxTransport,
+  type SandboxCommandOptions,
+  type SandboxCommandResult,
+} from './sandbox-transport';
 
 const ROOT = '/tmp/readtailor';
 const SOURCE_EPUB = `${ROOT}/source/source.epub`;
@@ -64,27 +66,14 @@ function countOccurrences(source: string, expected: string): number {
 }
 
 async function runAllowingExit(
-  sandbox: Sandbox,
+  sandbox: NormalizationSandboxTransport,
   command: string,
-  options: CommandStartOpts,
-): Promise<CommandResult> {
-  try {
-    return await sandbox.commands.run(command, { ...options, background: false });
-  } catch (error) {
-    if (error instanceof CommandExitError) {
-      return {
-        exitCode: error.exitCode,
-        stdout: error.stdout,
-        stderr: error.stderr,
-        ...(error.error ? { error: error.error } : {}),
-      };
-    }
-    throw error;
-  }
+  options: SandboxCommandOptions,
+): Promise<SandboxCommandResult> {
+  return sandbox.run(command, options);
 }
 
-export class E2BNormalizationSandbox implements NormalizationSandboxSession {
-  readonly provider = 'e2b';
+export class RemoteNormalizationSandbox implements NormalizationSandboxSession {
   private scriptRevision = 0;
   private runSequence = 0;
   private currentScriptSha256: string | undefined;
@@ -104,27 +93,24 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
   private closed = false;
 
   constructor(
-    private readonly sandbox: Sandbox,
+    private readonly sandbox: NormalizationSandboxTransport,
+    readonly provider: NormalizationSandboxProvider,
     private readonly sourceEpubSha256: string,
     private readonly artifactSink?: NormalizationArtifactSink,
   ) {}
 
   get id(): string {
-    return this.sandbox.sandboxId;
+    return this.sandbox.id;
   }
 
   private assertOpen(): void {
     if (this.closed) throw new Error('normalization sandbox is closed');
   }
 
-  private requestOptions(signal?: AbortSignal) {
-    return signal ? { signal } : {};
-  }
-
   private commandOptions(options: {
     timeoutMs: number;
     signal?: AbortSignal | undefined;
-    user?: string | undefined;
+    user?: 'root' | 'user' | undefined;
     envs?: Record<string, string> | undefined;
   }) {
     return {
@@ -177,11 +163,11 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
     }
     const result = await runAllowingExit(
       this.sandbox,
-      `python3 ${HELPER} run-shell`,
+      `runuser --user ${NORMALIZER_USER} -- env -i HOME=${ROOT}/work LANG=C.UTF-8 LC_ALL=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/bin SHELL_COMMAND="$SHELL_COMMAND" SHELL_TIMEOUT_SECONDS="$SHELL_TIMEOUT_SECONDS" python3 ${HELPER} run-shell`,
       this.commandOptions({
         timeoutMs: (timeoutSeconds + 15) * 1000,
         signal,
-        user: NORMALIZER_USER,
+        user: 'root',
         envs: {
           SHELL_COMMAND: input.command,
           SHELL_TIMEOUT_SECONDS: String(timeoutSeconds),
@@ -239,7 +225,7 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
       throw new Error('normalize.py must contain 1 to 500000 non-NUL characters');
     }
     const bytes = encode(input.content);
-    await this.sandbox.files.write(NORMALIZER, input.content, this.requestOptions(signal));
+    await this.sandbox.write(NORMALIZER, input.content, signal);
     this.scriptRevision += 1;
     this.invalidateAfterScriptChange(bytes);
     await this.artifactSink?.({
@@ -259,7 +245,7 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
     signal?: AbortSignal,
   ): Promise<ToolTextResult> {
     this.assertOpen();
-    const current = await this.sandbox.files.read(NORMALIZER, this.requestOptions(signal));
+    const current = await this.sandbox.readText(NORMALIZER, signal);
     const occurrences = countOccurrences(current, input.expected);
     if (occurrences !== 1) {
       throw new Error(`patch expected text must occur exactly once; found ${occurrences}`);
@@ -319,8 +305,8 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
       truncated: { stdout: boolean; stderr: boolean };
     };
     const [stdoutBytes, stderrBytes] = await Promise.all([
-      this.sandbox.files.read(`${ROOT}/normalizer-logs/normalizer.stdout`, { format: 'bytes' }),
-      this.sandbox.files.read(`${ROOT}/normalizer-logs/normalizer.stderr`, { format: 'bytes' }),
+      this.sandbox.readBytes(`${ROOT}/normalizer-logs/normalizer.stdout`),
+      this.sandbox.readBytes(`${ROOT}/normalizer-logs/normalizer.stderr`),
     ]);
     const stdout = new TextDecoder().decode(stdoutBytes);
     const stderr = new TextDecoder().decode(stderrBytes);
@@ -389,10 +375,7 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
     if (![0, 1, 2].includes(result.exitCode)) {
       throw new Error(`nb_check failed unexpectedly with exit ${result.exitCode}`);
     }
-    const reportBytes = await this.sandbox.files.read(VALIDATION_JSON, {
-      format: 'bytes',
-      ...this.requestOptions(signal),
-    });
+    const reportBytes = await this.sandbox.readBytes(VALIDATION_JSON, signal);
     const report = JSON.parse(new TextDecoder().decode(reportBytes)) as {
       version: string;
       totals: { errors: number; warnings: number };
@@ -490,10 +473,7 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
   private async assertValidMetadata(signal?: AbortSignal): Promise<void> {
     let raw: string;
     try {
-      raw = await this.sandbox.files.read(
-        `${OUTPUT_ROOT}/${BOOK_METADATA_FILE}`,
-        this.requestOptions(signal),
-      );
+      raw = await this.sandbox.readText(`${OUTPUT_ROOT}/${BOOK_METADATA_FILE}`, signal);
     } catch {
       throw new Error(`${BOOK_METADATA_FILE} could not be read from the normalized output`);
     }
@@ -508,7 +488,7 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
 
   async readNormalizer(): Promise<Uint8Array> {
     this.assertOpen();
-    return this.sandbox.files.read(NORMALIZER, { format: 'bytes' });
+    return this.sandbox.readBytes(NORMALIZER);
   }
 
   getFinishBinding(): NormalizationFinishBinding | undefined {
@@ -526,7 +506,7 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
     await mkdir(destinationRoot, { recursive: true });
     for (const entry of inventory.files) {
       const path = assertSafeRelativePath(entry.path);
-      const bytes = await this.sandbox.files.read(`${OUTPUT_ROOT}/${path}`, { format: 'bytes' });
+      const bytes = await this.sandbox.readBytes(`${OUTPUT_ROOT}/${path}`);
       if (bytes.byteLength !== entry.byteSize || sha256(bytes) !== entry.sha256) {
         throw new Error(`sandbox artifact changed during download: ${path}`);
       }
@@ -543,24 +523,19 @@ export class E2BNormalizationSandbox implements NormalizationSandboxSession {
   }
 }
 
-export async function createE2BNormalizationSandbox(options: {
-  apiKey: string;
+export async function createNormalizationSandbox(options: {
+  config: NormalizationSandboxConfig;
   sourceEpub: Uint8Array;
   repoRoot: string;
   attemptId: string;
   timeoutMs?: number;
-  template?: string;
   artifactSink?: NormalizationArtifactSink;
-}): Promise<E2BNormalizationSandbox> {
-  const createOptions = {
-    apiKey: options.apiKey,
+}): Promise<RemoteNormalizationSandbox> {
+  const sandbox = await createNormalizationSandboxTransport({
+    config: options.config,
+    attemptId: options.attemptId,
     timeoutMs: options.timeoutMs ?? 30 * 60_000,
-    allowInternetAccess: false,
-    metadata: { readtailor_attempt_id: options.attemptId },
-  };
-  const sandbox = options.template
-    ? await Sandbox.create(options.template, createOptions)
-    : await Sandbox.create(createOptions);
+  });
 
   try {
     const [spec, helper, linter, checker] = await Promise.all([
@@ -569,7 +544,7 @@ export async function createE2BNormalizationSandbox(options: {
       readFile(join(options.repoRoot, 'tools/nb_linter.py')),
       readFile(join(options.repoRoot, 'tools/nb_check.py')),
     ]);
-    await sandbox.files.write([
+    await sandbox.writeMany([
       { path: SOURCE_EPUB, data: toArrayBuffer(options.sourceEpub) },
       { path: SPEC, data: toArrayBuffer(spec) },
       { path: HELPER, data: toArrayBuffer(helper) },
@@ -582,9 +557,16 @@ export async function createE2BNormalizationSandbox(options: {
       { cwd: ROOT, timeoutMs: 120_000, user: 'root' },
     );
     if (prepare.exitCode !== 0) {
-      throw new Error(`failed to prepare E2B sandbox: ${(prepare.stdout + prepare.stderr).slice(-4000)}`);
+      throw new Error(
+        `failed to prepare ${options.config.provider} sandbox: ${(prepare.stdout + prepare.stderr).slice(-4000)}`,
+      );
     }
-    return new E2BNormalizationSandbox(sandbox, sha256(options.sourceEpub), options.artifactSink);
+    return new RemoteNormalizationSandbox(
+      sandbox,
+      options.config.provider,
+      sha256(options.sourceEpub),
+      options.artifactSink,
+    );
   } catch (error) {
     await sandbox.kill().catch(() => false);
     throw error;

@@ -21,6 +21,7 @@ import {
 import { createLogger } from '@readtailor/observability';
 import { sha256 } from '@readtailor/normalized-book';
 import { createObjectStorage, ObjectNotFoundError } from '@readtailor/storage';
+import { loadNormalizationSandboxConfig } from './config';
 import { runFormalNormalization } from './normalization/coordinator';
 import { publishValidatedNormalization } from './normalization/publication';
 
@@ -48,7 +49,14 @@ async function main(): Promise<void> {
   }
   const epubSha256 = sha256(source);
   const databaseUrl = requireString(process.env, 'DATABASE_URL');
-  const e2bApiKey = requireString(process.env, 'E2B_API_KEY');
+  const loadedSandbox = loadNormalizationSandboxConfig(process.env);
+  if (!loadedSandbox.sandbox) {
+    const keyName = loadedSandbox.provider === 'ppio' ? 'PPIO_API_KEY' : 'E2B_API_KEY';
+    throw new Error(
+      `${keyName} is required when SANDBOX_PROVIDER=${loadedSandbox.provider}`,
+    );
+  }
+  const normalizationSandbox = loadedSandbox.sandbox;
   const normalizationModel = requireCompleteModelEndpoint(
     readModelEndpoint(process.env, 'NORMALIZATION'),
     'normalization',
@@ -67,7 +75,6 @@ async function main(): Promise<void> {
       'book-analysis model not configured: set MODEL_API_BASE_URL, MODEL_API_KEY and MODEL_NAME (or the BOOK_ANALYSIS_MODEL_* overrides)',
     );
   }
-  const e2bTemplate = optional('E2B_TEMPLATE');
   const storage = createObjectStorage({
     localRoot: optional('OBJECT_STORAGE_LOCAL_ROOT')
       ? resolve(REPO_ROOT, requireString(process.env, 'OBJECT_STORAGE_LOCAL_ROOT'))
@@ -265,8 +272,7 @@ async function main(): Promise<void> {
       normalizationRunId: currentRunId,
       sourceEpub: source,
       repoRoot: REPO_ROOT,
-      e2bApiKey,
-      ...(e2bTemplate ? { e2bTemplate } : {}),
+      sandbox: normalizationSandbox,
       modelApiBaseUrl: normalizationModel.baseUrl,
       modelApiKey: normalizationModel.apiKey,
       modelName: normalizationModel.modelName,

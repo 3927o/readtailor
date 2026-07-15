@@ -3,6 +3,23 @@ import type {
   NormalizationFinishBinding,
 } from '@readtailor/agent-kit';
 
+export const NORMALIZATION_SANDBOX_PROVIDERS = ['e2b', 'ppio'] as const;
+export type NormalizationSandboxProvider = (typeof NORMALIZATION_SANDBOX_PROVIDERS)[number];
+
+export type NormalizationSandboxConfig =
+  | {
+      provider: 'e2b';
+      apiKey: string;
+      template?: string;
+      domain: string;
+    }
+  | {
+      provider: 'ppio';
+      apiKey: string;
+      template?: string;
+      domain: string;
+    };
+
 export type NormalizationArtifact = {
   kind:
     | 'normalizer_script'
@@ -18,7 +35,7 @@ export type NormalizationArtifact = {
 
 export interface NormalizationSandboxSession extends NormalizationAgentToolbox {
   readonly id: string;
-  readonly provider: string;
+  readonly provider: NormalizationSandboxProvider;
   downloadOutput(destination: string): Promise<void>;
   readNormalizer(): Promise<Uint8Array>;
   getFinishBinding(): NormalizationFinishBinding | undefined;
