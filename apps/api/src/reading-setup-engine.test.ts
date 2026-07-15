@@ -2,7 +2,7 @@ import { createServer, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentCallPerfEvent, PerfSink } from '@readtailor/observability';
-import { createAgentReadingSetupEngine } from './reading-setup-engine';
+import { createAgentReadingSetupEngine, createFakeReadingSetupEngine } from './reading-setup-engine';
 
 const servers: ReturnType<typeof createServer>[] = [];
 
@@ -48,6 +48,66 @@ function writeToolCall(
 }
 
 describe('createAgentReadingSetupEngine', () => {
+  it('emits epoch-aware strategy revision deltas in fake mode', async () => {
+    const engine = createFakeReadingSetupEngine();
+    const eventTypes: string[] = [];
+    const outcome = await engine.runTurn({
+      sessionId: 'session-fake',
+      phase: 'strategy_review',
+      askedCount: 0,
+      feedback: '更简短',
+      context: {
+        book: { title: 'Book' },
+        bookProfile: {
+          trial_candidates: [1, 2, 3].map((segment) => ({
+            section_id: 'chapter-1',
+            segment,
+            reason: `reason-${segment}`,
+          })),
+        },
+      },
+      onStream: (event) => eventTypes.push(event.type),
+    });
+
+    expect(outcome.type).toBe('revised');
+    expect(eventTypes).toEqual([
+      'speculative_reset',
+      'draft_started',
+      'strategy_delta',
+      'reading_node_added',
+      'reading_node_added',
+      'reading_node_added',
+    ]);
+  });
+
+  it('streams all three trial fragments in fake mode', async () => {
+    const engine = createFakeReadingSetupEngine();
+    const events: Array<{ type: string; speculativeEpoch: number }> = [];
+    const outcome = await engine.runTurn({
+      sessionId: 'session-fake',
+      phase: 'select_trial',
+      askedCount: 0,
+      context: {
+        trialNodeContents: [1, 2, 3].map((segment) => ({
+          section_id: 'chapter-1',
+          segment,
+          blocks: [{ block_index: 1, text: `candidate-${segment}` }],
+        })),
+      },
+      onStream: (event) => events.push(event),
+    });
+
+    expect(outcome.type).toBe('fragments');
+    expect(events.map((event) => event.type)).toEqual([
+      'speculative_reset',
+      'selection_started',
+      'fragment_added',
+      'fragment_added',
+      'fragment_added',
+    ]);
+    expect(new Set(events.map((event) => event.speculativeEpoch))).toEqual(new Set([1]));
+  });
+
   it('persists ordered, queryable tool traces without prompt or raw argument content', async () => {
     const question = {
       id: 'goal',
@@ -63,6 +123,7 @@ describe('createAgentReadingSetupEngine', () => {
     };
     let requestNo = 0;
     let providerPromptChars = 0;
+    let finishPropertyOrder: string[] = [];
     const server = createServer(async (request, response) => {
       let body = '';
       for await (const chunk of request) body += String(chunk);
@@ -70,6 +131,11 @@ describe('createAgentReadingSetupEngine', () => {
       const promptPayload: Record<string, unknown> = {};
       if (payload.messages !== undefined) promptPayload.messages = payload.messages;
       if (payload.tools !== undefined) promptPayload.tools = payload.tools;
+      const tools = Array.isArray(payload.tools) ? payload.tools as Array<{
+        function?: { name?: string; parameters?: { properties?: Record<string, unknown> } };
+      }> : [];
+      const finishTool = tools.find((tool) => tool.function?.name === 'finish_interview');
+      finishPropertyOrder = Object.keys(finishTool?.function?.parameters?.properties ?? {});
       providerPromptChars += JSON.stringify(promptPayload).length;
       requestNo += 1;
       if (requestNo === 1) {
@@ -108,7 +174,6 @@ describe('createAgentReadingSetupEngine', () => {
       modelName: 'fake-tool-model',
       perfSink,
     });
-    const streamEventTypes: string[] = [];
     const result = await engine.runTurn({
       sessionId: 'session-1',
       phase: 'interviewing',
@@ -116,11 +181,16 @@ describe('createAgentReadingSetupEngine', () => {
       conversationVersion: 7,
       requestId: 'request-1',
       context: { book: { title: 'Book' } },
-      onStream: (event) => streamEventTypes.push(event.type),
     });
 
     expect(result).toEqual({ type: 'question', question });
-    expect(streamEventTypes).not.toContain('concluding');
+    expect(finishPropertyOrder).toEqual([
+      'briefing',
+      'public_strategy',
+      'strategy',
+      'book_reader_profile',
+      'reader_profile_patch',
+    ]);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       requestId: 'request-1',

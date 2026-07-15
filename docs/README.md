@@ -23,8 +23,9 @@ docs/
 `project/reading_stats_architecture.md` 记录阅读统计从当前 heartbeat 实现演进到可重建 slice
 模型的架构方案。
 
-`project/progressive_reading_setup_flow.md` 记录访谈结束、临时策略确认、试读切片、
-逐段裁读展示以及样章反馈回环的渐进式交互与实施方案。
+`project/progressive_reading_setup_flow.md` 记录已落地的访谈结束、策略修订、试读切片、逐段裁读展示、
+失败恢复和样章反馈回环。阅读准备 operation、lease/attempt、SSE、精确版本缓存和 retry 语义以该文档
+及 `architecture/technical_architecture_v2.md` §10/§16.1 为准。
 
 `product/product_mvp_plan.md` 保存产品方向和背景说明。用户可见行为发生冲突时，以
 `product/product_prd.md` 为准。

@@ -1,5 +1,13 @@
 import { type Static, Type } from '@sinclair/typebox';
 
+export const UuidSchema = Type.String({
+  pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+});
+export type Uuid = Static<typeof UuidSchema>;
+
+export const IdempotencyKeySchema = Type.String({ minLength: 1, maxLength: 200, pattern: '\\S' });
+export type IdempotencyKey = Static<typeof IdempotencyKeySchema>;
+
 export const DependencyStatusSchema = Type.Union([Type.Literal('ok'), Type.Literal('error')]);
 export type DependencyStatus = Static<typeof DependencyStatusSchema>;
 
@@ -339,7 +347,7 @@ export const SubmitInterviewAnswerRequestSchema = Type.Object({
   questionId: Type.String({ minLength: 1 }),
   selectedOptionIds: Type.Array(Type.String({ minLength: 1 }), { maxItems: 5 }),
   freeText: Type.Union([Type.String({ minLength: 1, maxLength: 4000 }), Type.Null()]),
-  idempotencyKey: Type.String({ minLength: 1, maxLength: 200 }),
+  idempotencyKey: IdempotencyKeySchema,
 });
 export type SubmitInterviewAnswerRequest = Static<
   typeof SubmitInterviewAnswerRequestSchema
@@ -358,23 +366,6 @@ export const InterviewStateResponseSchema = Type.Object({
   answers: Type.Array(InterviewAnswerSchema),
 });
 export type InterviewStateResponse = Static<typeof InterviewStateResponseSchema>;
-
-// SSE wire events for the streaming interview endpoint (§4.2). Each frame is
-// `data: <json>\n\n` with the discriminator in `type`, mirroring the system-chat stream.
-// The stream bypasses Fastify serialization, so this is a hand-maintained union rather than
-// a validated TypeBox schema. ack/prompt/option/sufficiency/concluding are token-level
-// deltas; question_final delivers the authoritative next question; done ends the turn;
-// error reports an in-band failure after the stream has opened.
-export type InterviewStreamEvent =
-  | { type: 'ack_delta'; chars: string }
-  | { type: 'prompt_delta'; chars: string }
-  | { type: 'hint_delta'; chars: string }
-  | { type: 'option_added'; id: string; label: string }
-  | { type: 'sufficiency'; value: number }
-  | { type: 'concluding' }
-  | { type: 'question_final'; question: InterviewQuestion; ordinal: number; maxQuestions: number }
-  | { type: 'done'; workflowStatus: UserBookWorkflowStatus }
-  | { type: 'error'; message: string };
 
 export const TextPositionSchema = Type.Object({
   blockIndex: Type.Integer({ minimum: 1 }),
@@ -405,6 +396,15 @@ export const TrialCandidateSchema = Type.Object({
   range: Type.Optional(TextRangeSchema),
 });
 export type TrialCandidate = Static<typeof TrialCandidateSchema>;
+
+export const ReadingNodePreviewSchema = Type.Object({
+  ordinal: Type.Integer({ minimum: 1, maximum: 3 }),
+  sectionId: Type.String({ minLength: 1 }),
+  segment: Type.Integer({ minimum: 1 }),
+  chapterPath: Type.Array(Type.String({ minLength: 1 })),
+  reason: Type.String({ minLength: 1 }),
+});
+export type ReadingNodePreview = Static<typeof ReadingNodePreviewSchema>;
 
 // The tailoring core shared by the full setup Strategy (which adds trialCandidates) and the
 // Q&A ProposedStrategy (§8.2 — a mid-reading adjustment has no trial phase). Camel-cased
@@ -619,13 +619,13 @@ export type QaSessionListResponse = Static<typeof QaSessionListResponseSchema>;
 export const ProposalFeedbackRequestSchema = Type.Object({
   revisionId: Type.String({ minLength: 1 }),
   feedback: Type.String({ minLength: 1, maxLength: 4000 }),
-  idempotencyKey: Type.String({ minLength: 1, maxLength: 200 }),
+  idempotencyKey: IdempotencyKeySchema,
 });
 export type ProposalFeedbackRequest = Static<typeof ProposalFeedbackRequestSchema>;
 
 export const ProposalDecisionRequestSchema = Type.Object({
   revisionId: Type.String({ minLength: 1 }),
-  idempotencyKey: Type.String({ minLength: 1, maxLength: 200 }),
+  idempotencyKey: IdempotencyKeySchema,
 });
 export type ProposalDecisionRequest = Static<typeof ProposalDecisionRequestSchema>;
 
@@ -661,6 +661,7 @@ export const StrategyReviewResponseSchema = Type.Object({
   userBookId: Type.String(),
   workflowStatus: UserBookWorkflowStatusSchema,
   draft: StrategyDraftSchema,
+  trialCandidatePreviews: Type.Array(ReadingNodePreviewSchema, { minItems: 3, maxItems: 3 }),
   adjustmentCount: Type.Integer({ minimum: 0, maximum: 5 }),
   adjustmentLimit: Type.Integer({ minimum: 1 }),
   canAdjust: Type.Boolean(),
@@ -668,29 +669,19 @@ export const StrategyReviewResponseSchema = Type.Object({
 export type StrategyReviewResponse = Static<typeof StrategyReviewResponseSchema>;
 
 export const SubmitStrategyFeedbackRequestSchema = Type.Object({
-  strategyDraftVersionId: Type.String(),
-  feedback: Type.String({ minLength: 1, maxLength: 4000 }),
-  idempotencyKey: Type.String({ minLength: 1, maxLength: 200 }),
+  strategyDraftVersionId: UuidSchema,
+  feedback: Type.String({ minLength: 1, maxLength: 4000, pattern: '\\S' }),
+  idempotencyKey: IdempotencyKeySchema,
 });
 export type SubmitStrategyFeedbackRequest = Static<
   typeof SubmitStrategyFeedbackRequestSchema
 >;
 
-// No idempotencyKey: approval is idempotent by state — a re-approve of an already-approved
-// draft returns the existing trial revision (see approveStrategy), so a dedup key added nothing
-// (and the client sent a fresh UUID each call anyway). §6.5.
 export const ApproveStrategyRequestSchema = Type.Object({
-  strategyDraftVersionId: Type.String(),
+  strategyDraftVersionId: UuidSchema,
+  idempotencyKey: IdempotencyKeySchema,
 });
 export type ApproveStrategyRequest = Static<typeof ApproveStrategyRequestSchema>;
-
-export const ApproveStrategyResponseSchema = Type.Object({
-  userBookId: Type.String(),
-  workflowStatus: UserBookWorkflowStatusSchema,
-  strategyDraftVersionId: Type.String(),
-  trialRevisionId: Type.String(),
-});
-export type ApproveStrategyResponse = Static<typeof ApproveStrategyResponseSchema>;
 
 export const GenerationAnnotationSchema = Type.Object({
   id: Type.String({ minLength: 1 }),
@@ -741,7 +732,7 @@ export const TrialSegmentStatusSchema = Type.Union([
 ]);
 export type TrialSegmentStatus = Static<typeof TrialSegmentStatusSchema>;
 
-export const TrialSegmentSchema = Type.Object({
+const TRIAL_SEGMENT_FIELDS = {
   id: Type.String(),
   ordinal: Type.Integer({ minimum: 1, maximum: 3 }),
   sectionId: Type.String({ minLength: 1 }),
@@ -750,10 +741,31 @@ export const TrialSegmentSchema = Type.Object({
   chapterPath: Type.Array(Type.String({ minLength: 1 })),
   originalHtml: Type.String({ minLength: 1 }),
   selectionReason: Type.String({ minLength: 1 }),
-  status: TrialSegmentStatusSchema,
-  result: Type.Union([GenerationResultSchema, Type.Null()]),
   viewedAt: Type.Union([Type.String(), Type.Null()]),
-});
+};
+
+export const TrialSegmentSchema = Type.Union([
+  Type.Object({
+    ...TRIAL_SEGMENT_FIELDS,
+    status: Type.Literal('pending'),
+    result: Type.Null(),
+  }),
+  Type.Object({
+    ...TRIAL_SEGMENT_FIELDS,
+    status: Type.Literal('generating'),
+    result: Type.Null(),
+  }),
+  Type.Object({
+    ...TRIAL_SEGMENT_FIELDS,
+    status: Type.Literal('ready'),
+    result: GenerationResultSchema,
+  }),
+  Type.Object({
+    ...TRIAL_SEGMENT_FIELDS,
+    status: Type.Literal('failed'),
+    result: Type.Null(),
+  }),
+]);
 export type TrialSegment = Static<typeof TrialSegmentSchema>;
 
 export const TrialReviewResponseSchema = Type.Object({
@@ -771,10 +783,399 @@ export const TrialReviewResponseSchema = Type.Object({
 });
 export type TrialReviewResponse = Static<typeof TrialReviewResponseSchema>;
 
-export const SubmitTrialFeedbackRequestSchema = Type.Object({
-  trialRevisionId: Type.String(),
+export const ProvisionalTrialSampleSchema = Type.Union([
+  Type.Object({
+    ordinal: Type.Literal(1),
+    tag: Type.Literal('threshold'),
+    sectionId: Type.String({ minLength: 1 }),
+    segment: Type.Integer({ minimum: 1 }),
+    range: TextRangeSchema,
+    chapterPath: Type.Array(Type.String({ minLength: 1 })),
+    originalHtml: Type.String({ minLength: 1 }),
+    selectionReason: Type.String({ minLength: 1 }),
+  }),
+  Type.Object({
+    ordinal: Type.Literal(2),
+    tag: Type.Literal('typical'),
+    sectionId: Type.String({ minLength: 1 }),
+    segment: Type.Integer({ minimum: 1 }),
+    range: TextRangeSchema,
+    chapterPath: Type.Array(Type.String({ minLength: 1 })),
+    originalHtml: Type.String({ minLength: 1 }),
+    selectionReason: Type.String({ minLength: 1 }),
+  }),
+  Type.Object({
+    ordinal: Type.Literal(3),
+    tag: Type.Literal('hardest'),
+    sectionId: Type.String({ minLength: 1 }),
+    segment: Type.Integer({ minimum: 1 }),
+    range: TextRangeSchema,
+    chapterPath: Type.Array(Type.String({ minLength: 1 })),
+    originalHtml: Type.String({ minLength: 1 }),
+    selectionReason: Type.String({ minLength: 1 }),
+  }),
+]);
+export type ProvisionalTrialSample = Static<typeof ProvisionalTrialSampleSchema>;
+
+export const ReadingSetupOperationKindSchema = Type.Union([
+  Type.Literal('strategy_revision'),
+  Type.Literal('trial_selection'),
+]);
+export type ReadingSetupOperationKind = Static<typeof ReadingSetupOperationKindSchema>;
+
+export const ReadingSetupOperationSourceSchema = Type.Union([
+  Type.Literal('strategy_feedback'),
+  Type.Literal('trial_feedback'),
+  Type.Literal('strategy_approve'),
+]);
+export type ReadingSetupOperationSource = Static<typeof ReadingSetupOperationSourceSchema>;
+
+export const ReadingSetupOperationStatusSchema = Type.Union([
+  Type.Literal('pending'),
+  Type.Literal('running'),
+  Type.Literal('completed'),
+  Type.Literal('failed'),
+]);
+export type ReadingSetupOperationStatus = Static<typeof ReadingSetupOperationStatusSchema>;
+
+export const ReadingSetupOperationPayloadSchema = Type.Union([
+  Type.Object({
+    source: Type.Literal('strategy_feedback'),
+    strategyDraftVersionId: UuidSchema,
+    feedback: Type.String({ minLength: 1, maxLength: 4000 }),
+  }),
+  Type.Object({
+    source: Type.Literal('trial_feedback'),
+    strategyDraftVersionId: UuidSchema,
+    trialRevisionId: UuidSchema,
+    feedback: Type.String({ minLength: 1, maxLength: 4000 }),
+  }),
+  Type.Object({
+    source: Type.Literal('strategy_approve'),
+    strategyDraftVersionId: UuidSchema,
+  }),
+]);
+export type ReadingSetupOperationPayload = Static<typeof ReadingSetupOperationPayloadSchema>;
+
+export const ReadingSetupRecoverableInputSchema = Type.Object({
   feedback: Type.String({ minLength: 1, maxLength: 4000 }),
-  idempotencyKey: Type.String({ minLength: 1, maxLength: 200 }),
+});
+export type ReadingSetupRecoverableInput = Static<typeof ReadingSetupRecoverableInputSchema>;
+
+const READING_SETUP_OPERATION_RESPONSE_FIELDS = {
+  operationId: UuidSchema,
+  operationAttempt: Type.Integer({ minimum: 0 }),
+  baseDraftId: UuidSchema,
+  canResume: Type.Boolean(),
+};
+
+const READING_SETUP_FEEDBACK_OPERATION_OUTCOME = Type.Union([
+  Type.Object({
+    status: Type.Union([Type.Literal('pending'), Type.Literal('running')]),
+    resultDraftId: Type.Null(),
+    resultTrialRevisionId: Type.Null(),
+    errorSummary: Type.Null(),
+    recoverableInput: ReadingSetupRecoverableInputSchema,
+  }),
+  Type.Object({
+    status: Type.Literal('completed'),
+    resultDraftId: UuidSchema,
+    resultTrialRevisionId: Type.Null(),
+    errorSummary: Type.Null(),
+    recoverableInput: Type.Null(),
+  }),
+  Type.Object({
+    status: Type.Literal('failed'),
+    resultDraftId: Type.Null(),
+    resultTrialRevisionId: Type.Null(),
+    errorSummary: Type.String({ minLength: 1 }),
+    recoverableInput: ReadingSetupRecoverableInputSchema,
+  }),
+]);
+
+const READING_SETUP_APPROVE_OPERATION_OUTCOME = Type.Union([
+  Type.Object({
+    status: Type.Union([Type.Literal('pending'), Type.Literal('running')]),
+    resultDraftId: Type.Null(),
+    resultTrialRevisionId: Type.Null(),
+    errorSummary: Type.Null(),
+    recoverableInput: Type.Null(),
+  }),
+  Type.Object({
+    status: Type.Literal('completed'),
+    resultDraftId: Type.Null(),
+    resultTrialRevisionId: UuidSchema,
+    errorSummary: Type.Null(),
+    recoverableInput: Type.Null(),
+  }),
+  Type.Object({
+    status: Type.Literal('failed'),
+    resultDraftId: Type.Null(),
+    resultTrialRevisionId: Type.Null(),
+    errorSummary: Type.String({ minLength: 1 }),
+    recoverableInput: Type.Null(),
+  }),
+]);
+
+export const ReadingSetupOperationResponseSchema = Type.Union([
+  Type.Intersect([
+    Type.Object({
+      ...READING_SETUP_OPERATION_RESPONSE_FIELDS,
+      kind: Type.Literal('strategy_revision'),
+      source: Type.Literal('strategy_feedback'),
+      baseTrialRevisionId: Type.Null(),
+    }),
+    READING_SETUP_FEEDBACK_OPERATION_OUTCOME,
+  ]),
+  Type.Intersect([
+    Type.Object({
+      ...READING_SETUP_OPERATION_RESPONSE_FIELDS,
+      kind: Type.Literal('strategy_revision'),
+      source: Type.Literal('trial_feedback'),
+      baseTrialRevisionId: UuidSchema,
+    }),
+    READING_SETUP_FEEDBACK_OPERATION_OUTCOME,
+  ]),
+  Type.Intersect([
+    Type.Object({
+      ...READING_SETUP_OPERATION_RESPONSE_FIELDS,
+      kind: Type.Literal('trial_selection'),
+      source: Type.Literal('strategy_approve'),
+      baseTrialRevisionId: Type.Null(),
+    }),
+    READING_SETUP_APPROVE_OPERATION_OUTCOME,
+  ]),
+]);
+export type ReadingSetupOperationResponse = Static<typeof ReadingSetupOperationResponseSchema>;
+
+export const CurrentReadingSetupOperationResponseSchema = Type.Union([
+  ReadingSetupOperationResponseSchema,
+  Type.Null(),
+]);
+export type CurrentReadingSetupOperationResponse = Static<
+  typeof CurrentReadingSetupOperationResponseSchema
+>;
+
+export const ReadingSetupOperationDetailParamsSchema = Type.Object({
+  id: UuidSchema,
+  operationId: UuidSchema,
+});
+export type ReadingSetupOperationDetailParams = Static<
+  typeof ReadingSetupOperationDetailParamsSchema
+>;
+
+export const StrategyDraftSnapshotParamsSchema = Type.Object({
+  id: UuidSchema,
+  draftId: UuidSchema,
+});
+export type StrategyDraftSnapshotParams = Static<typeof StrategyDraftSnapshotParamsSchema>;
+
+export const TrialRevisionSnapshotParamsSchema = Type.Object({
+  id: UuidSchema,
+  trialRevisionId: UuidSchema,
+});
+export type TrialRevisionSnapshotParams = Static<typeof TrialRevisionSnapshotParamsSchema>;
+
+export const ReadingSetupStreamErrorCodeSchema = Type.Union([
+  Type.Literal('agent_failed'),
+  Type.Literal('validation_failed'),
+  Type.Literal('lease_lost'),
+  Type.Literal('internal_error'),
+]);
+export type ReadingSetupStreamErrorCode = Static<typeof ReadingSetupStreamErrorCodeSchema>;
+
+export const ReadingBriefingFieldSchema = Type.Union([
+  Type.Literal('book_identity'),
+  Type.Literal('arc'),
+  Type.Literal('assumed_knowledge'),
+  Type.Literal('reading_advice'),
+]);
+export type ReadingBriefingField = Static<typeof ReadingBriefingFieldSchema>;
+
+const INTERVIEW_STREAM_ENVELOPE = {
+  userBookId: UuidSchema,
+  streamId: UuidSchema,
+  sequence: Type.Integer({ minimum: 1 }),
+};
+
+const INTERVIEW_SPECULATIVE_STREAM_ENVELOPE = {
+  ...INTERVIEW_STREAM_ENVELOPE,
+  speculativeEpoch: Type.Integer({ minimum: 1 }),
+};
+
+// SSE wire contract shared by answer and resume streams. Every frame is tied to one stream
+// and ordered by sequence; provisional tool-call output additionally carries an epoch so a
+// restarted tool call cannot append to stale text from an earlier attempt.
+export const InterviewStreamEventSchema = Type.Union([
+  Type.Object({
+    ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
+    type: Type.Literal('speculative_reset'),
+    phase: Type.Literal('interviewing'),
+  }),
+  Type.Object({ ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE, type: Type.Literal('ack_delta'), chars: Type.String({ minLength: 1 }) }),
+  Type.Object({ ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE, type: Type.Literal('prompt_delta'), chars: Type.String({ minLength: 1 }) }),
+  Type.Object({ ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE, type: Type.Literal('hint_delta'), chars: Type.String({ minLength: 1 }) }),
+  Type.Object({
+    ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
+    type: Type.Literal('option_added'),
+    id: Type.String({ minLength: 1 }),
+    label: Type.String({ minLength: 1 }),
+  }),
+  Type.Object({
+    ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
+    type: Type.Literal('sufficiency'),
+    value: Type.Integer({ minimum: 0, maximum: 100 }),
+  }),
+  Type.Object({
+    ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
+    type: Type.Literal('draft_started'),
+    conversationVersion: Type.Integer({ minimum: 0 }),
+  }),
+  Type.Object({
+    ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
+    type: Type.Literal('briefing_delta'),
+    field: ReadingBriefingFieldSchema,
+    chars: Type.String({ minLength: 1 }),
+  }),
+  Type.Object({ ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE, type: Type.Literal('strategy_delta'), chars: Type.String({ minLength: 1 }) }),
+  Type.Object({
+    ...INTERVIEW_SPECULATIVE_STREAM_ENVELOPE,
+    type: Type.Literal('reading_node_added'),
+    node: ReadingNodePreviewSchema,
+  }),
+  Type.Object({
+    ...INTERVIEW_STREAM_ENVELOPE,
+    type: Type.Literal('question_final'),
+    question: InterviewQuestionSchema,
+    ordinal: Type.Integer({ minimum: 1, maximum: 7 }),
+    maxQuestions: Type.Literal(7),
+  }),
+  Type.Object({
+    ...INTERVIEW_STREAM_ENVELOPE,
+    type: Type.Literal('draft_final'),
+    strategy: StrategyReviewResponseSchema,
+  }),
+  Type.Object({
+    ...INTERVIEW_STREAM_ENVELOPE,
+    type: Type.Literal('done'),
+    workflowStatus: UserBookWorkflowStatusSchema,
+  }),
+  Type.Object({
+    ...INTERVIEW_STREAM_ENVELOPE,
+    type: Type.Literal('error'),
+    code: ReadingSetupStreamErrorCodeSchema,
+    message: Type.String({ minLength: 1 }),
+  }),
+]);
+export type InterviewStreamEvent = Static<typeof InterviewStreamEventSchema>;
+
+const READING_SETUP_OPERATION_STREAM_ENVELOPE = {
+  userBookId: UuidSchema,
+  operationId: UuidSchema,
+  operationAttempt: Type.Integer({ minimum: 1 }),
+  sequence: Type.Integer({ minimum: 1 }),
+};
+
+export const StrategyRevisionStreamEventSchema = Type.Union([
+  Type.Object({
+    ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
+    type: Type.Literal('speculative_reset'),
+    speculativeEpoch: Type.Integer({ minimum: 1 }),
+    phase: Type.Literal('strategy_review'),
+  }),
+  Type.Object({
+    ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
+    type: Type.Literal('revision_started'),
+    speculativeEpoch: Type.Integer({ minimum: 1 }),
+    source: Type.Literal('strategy_feedback'),
+    baseDraftId: UuidSchema,
+    baseTrialRevisionId: Type.Null(),
+  }),
+  Type.Object({
+    ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
+    type: Type.Literal('revision_started'),
+    speculativeEpoch: Type.Integer({ minimum: 1 }),
+    source: Type.Literal('trial_feedback'),
+    baseDraftId: UuidSchema,
+    baseTrialRevisionId: UuidSchema,
+  }),
+  Type.Object({
+    ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
+    type: Type.Literal('strategy_delta'),
+    speculativeEpoch: Type.Integer({ minimum: 1 }),
+    chars: Type.String({ minLength: 1 }),
+  }),
+  Type.Object({
+    ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
+    type: Type.Literal('reading_node_added'),
+    speculativeEpoch: Type.Integer({ minimum: 1 }),
+    node: ReadingNodePreviewSchema,
+  }),
+  Type.Object({
+    ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
+    type: Type.Literal('revision_final'),
+    strategy: StrategyReviewResponseSchema,
+  }),
+  Type.Object({
+    ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
+    type: Type.Literal('error'),
+    code: ReadingSetupStreamErrorCodeSchema,
+    message: Type.String({ minLength: 1 }),
+  }),
+]);
+export type StrategyRevisionStreamEvent = Static<typeof StrategyRevisionStreamEventSchema>;
+
+export const TrialSelectionSlotSchema = Type.Union([
+  Type.Object({ ordinal: Type.Literal(1), tag: Type.Literal('threshold') }),
+  Type.Object({ ordinal: Type.Literal(2), tag: Type.Literal('typical') }),
+  Type.Object({ ordinal: Type.Literal(3), tag: Type.Literal('hardest') }),
+]);
+export type TrialSelectionSlot = Static<typeof TrialSelectionSlotSchema>;
+
+export const TrialSelectionStreamEventSchema = Type.Union([
+  Type.Object({
+    ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
+    type: Type.Literal('speculative_reset'),
+    speculativeEpoch: Type.Integer({ minimum: 1 }),
+    phase: Type.Literal('select_trial'),
+  }),
+  Type.Object({
+    ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
+    type: Type.Literal('selection_started'),
+    speculativeEpoch: Type.Integer({ minimum: 1 }),
+    draftId: UuidSchema,
+    slots: Type.Tuple([
+      Type.Object({ ordinal: Type.Literal(1), tag: Type.Literal('threshold') }),
+      Type.Object({ ordinal: Type.Literal(2), tag: Type.Literal('typical') }),
+      Type.Object({ ordinal: Type.Literal(3), tag: Type.Literal('hardest') }),
+    ]),
+  }),
+  Type.Object({
+    ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
+    type: Type.Literal('fragment_selected'),
+    speculativeEpoch: Type.Integer({ minimum: 1 }),
+    draftId: UuidSchema,
+    sample: ProvisionalTrialSampleSchema,
+  }),
+  Type.Object({
+    ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
+    type: Type.Literal('trial_created'),
+    draftId: UuidSchema,
+    trial: TrialReviewResponseSchema,
+  }),
+  Type.Object({
+    ...READING_SETUP_OPERATION_STREAM_ENVELOPE,
+    type: Type.Literal('error'),
+    code: ReadingSetupStreamErrorCodeSchema,
+    message: Type.String({ minLength: 1 }),
+  }),
+]);
+export type TrialSelectionStreamEvent = Static<typeof TrialSelectionStreamEventSchema>;
+
+export const SubmitTrialFeedbackRequestSchema = Type.Object({
+  trialRevisionId: UuidSchema,
+  feedback: Type.String({ minLength: 1, maxLength: 4000, pattern: '\\S' }),
+  idempotencyKey: IdempotencyKeySchema,
 });
 export type SubmitTrialFeedbackRequest = Static<typeof SubmitTrialFeedbackRequestSchema>;
 

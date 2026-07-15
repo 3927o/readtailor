@@ -5,7 +5,14 @@ import {
   readerStates,
   userBooks,
 } from '@readtailor/database';
-import { discardUnexpectedFormalGeneration } from './job';
+import {
+  discardUnexpectedFormalGeneration,
+  isCurrentTrialGenerationGraph,
+  nextGenerationAttempt,
+  shouldPublishTrialRevision,
+  trialSegmentIdsToFail,
+  type TrialGenerationGraphCheck,
+} from './job';
 
 type Generation = Parameters<typeof discardUnexpectedFormalGeneration>[1] & {
   status: 'queued' | 'superseded';
@@ -81,5 +88,121 @@ describe('formal generation expectation', () => {
       replacement,
     ]);
     expect(transitions).toEqual(['superseded']);
+  });
+});
+
+const currentTrialGraph: TrialGenerationGraphCheck = {
+  generation: {
+    userBookId: 'book-1',
+    generationScope: 'trial',
+    trialSegmentId: 'segment-1',
+    strategyDraftVersionId: 'draft-1',
+    sectionId: 'chapter-1',
+    segment: 1,
+  },
+  segment: {
+    id: 'segment-1',
+    trialRevisionId: 'revision-1',
+    sectionId: 'chapter-1',
+    segment: 1,
+  },
+  revision: {
+    id: 'revision-1',
+    userBookId: 'book-1',
+    strategyDraftVersionId: 'draft-1',
+    status: 'generating',
+  },
+  draft: {
+    id: 'draft-1',
+    status: 'approved_for_trial',
+  },
+  userBook: {
+    id: 'book-1',
+    workflowStatus: 'trial_generating',
+    currentStrategyDraftVersionId: 'draft-1',
+    currentTrialRevisionId: 'revision-1',
+  },
+};
+
+describe('trial generation fencing', () => {
+  it('accepts only the current revision, draft, segment and book pointer graph', () => {
+    expect(isCurrentTrialGenerationGraph(currentTrialGraph)).toBe(true);
+
+    const staleGraphs: TrialGenerationGraphCheck[] = [
+      {
+        ...currentTrialGraph,
+        userBook: { ...currentTrialGraph.userBook, currentTrialRevisionId: 'revision-2' },
+      },
+      {
+        ...currentTrialGraph,
+        userBook: { ...currentTrialGraph.userBook, workflowStatus: 'trial_generation_failed' },
+      },
+      {
+        ...currentTrialGraph,
+        revision: { ...currentTrialGraph.revision, status: 'superseded' },
+      },
+      {
+        ...currentTrialGraph,
+        draft: { ...currentTrialGraph.draft, status: 'superseded' },
+      },
+      {
+        ...currentTrialGraph,
+        generation: { ...currentTrialGraph.generation, trialSegmentId: 'segment-2' },
+      },
+      {
+        ...currentTrialGraph,
+        generation: { ...currentTrialGraph.generation, strategyDraftVersionId: 'draft-2' },
+      },
+      {
+        ...currentTrialGraph,
+        generation: { ...currentTrialGraph.generation, sectionId: 'chapter-2' },
+      },
+    ];
+
+    for (const graph of staleGraphs) {
+      expect(isCurrentTrialGenerationGraph(graph)).toBe(false);
+    }
+  });
+
+  it('issues a monotonic attempt token and refuses claims past maxAttempts', () => {
+    expect(nextGenerationAttempt(0, 3)).toBe(1);
+    expect(nextGenerationAttempt(1, 3)).toBe(2);
+    expect(nextGenerationAttempt(2, 3)).toBe(3);
+    expect(nextGenerationAttempt(3, 3)).toBeNull();
+  });
+
+  it('publishes only one complete set of three unique ready slots', () => {
+    expect(shouldPublishTrialRevision([
+      { ordinal: 1, status: 'ready' },
+      { ordinal: 2, status: 'ready' },
+    ])).toBe(false);
+    expect(shouldPublishTrialRevision([
+      { ordinal: 1, status: 'ready' },
+      { ordinal: 2, status: 'generating' },
+      { ordinal: 3, status: 'ready' },
+    ])).toBe(false);
+    expect(shouldPublishTrialRevision([
+      { ordinal: 1, status: 'ready' },
+      { ordinal: 1, status: 'ready' },
+      { ordinal: 3, status: 'ready' },
+    ])).toBe(false);
+    expect(shouldPublishTrialRevision([
+      { ordinal: 1, status: 'ready' },
+      { ordinal: 2, status: 'ready' },
+      { ordinal: 3, status: 'ready' },
+    ])).toBe(true);
+  });
+
+  it('freezes unfinished siblings after a terminal failure and preserves ready results', () => {
+    expect(trialSegmentIdsToFail([
+      { id: 'segment-1', status: 'ready' },
+      { id: 'segment-2', status: 'generating' },
+      { id: 'segment-3', status: 'pending' },
+    ])).toEqual(['segment-2', 'segment-3']);
+    expect(trialSegmentIdsToFail([
+      { id: 'segment-1', status: 'ready' },
+      { id: 'segment-2', status: 'failed' },
+      { id: 'segment-3', status: 'ready' },
+    ])).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { StrategyRevisionStreamEvent, TrialSelectionStreamEvent } from '@readtailor/contracts';
 import { buildApp as buildApiApp } from './app';
 import type { AuthService } from './auth';
 import { loadApiConfig } from './config';
@@ -70,8 +71,45 @@ const detail = {
   updatedAt: '2026-07-14T00:00:00.000Z',
 };
 
+function strategyReview(draftId = STRATEGY_DRAFT_ID) {
+  return {
+    userBookId: USER_BOOK_ID,
+    workflowStatus: 'strategy_review' as const,
+    draft: {
+      id: draftId,
+      version: 2,
+      status: 'draft' as const,
+      readingBriefing: BRIEFING,
+      userFacingSummary: 'Strategy',
+      strategy: {
+        goals: ['goal'],
+        expressionPrinciples: ['plain'],
+        guide: { enabled: true, objectives: ['orient'] },
+        annotations: { enabled: true, focuses: ['terms'], exclusions: [] },
+        afterReading: { enabled: true, objectives: ['recap'] },
+        trialCandidates: [1, 2, 3].map((segment) => ({ sectionId: 'chapter-1', segment, reason: `reason-${segment}` })),
+      },
+      createdAt: '2026-07-14T00:00:00.000Z',
+      approvedForTrialAt: null,
+    },
+    trialCandidatePreviews: [1, 2, 3].map((segment) => ({
+      ordinal: segment,
+      sectionId: 'chapter-1',
+      segment,
+      chapterPath: ['Chapter 1'],
+      reason: `reason-${segment}`,
+    })),
+    adjustmentCount: 1,
+    adjustmentLimit: 5,
+    canAdjust: true,
+  };
+}
+
 const HIGHLIGHT_ID = '11111111-2222-3333-4444-555555555555';
 const STRATEGY_VERSION_ID = '22222222-3333-4444-8555-666666666666';
+const OPERATION_ID = '44444444-5555-4666-8777-888888888888';
+const STRATEGY_DRAFT_ID = '55555555-6666-4777-8888-999999999999';
+const TRIAL_REVISION_ID = '66666666-7777-4888-8999-aaaaaaaaaaaa';
 const QA_RANGE = { start: { blockIndex: 1, offset: 0 }, end: { blockIndex: 1, offset: 5 } };
 const HIGHLIGHT = {
   id: HIGHLIGHT_ID,
@@ -352,53 +390,203 @@ describe('user book workflow routes', () => {
     expect(response.statusCode).toBe(400);
   });
 
-  it('returns a conflict response for stale workflow commands', async () => {
+  it('rejects malformed reading setup commands before calling the service', async () => {
+    let calls = 0;
     const app = await buildApiApp(config, {
       auth: fakeAuth,
       userBooks: fakeService({
-        async approveStrategy() {
-          throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
-        },
+        async *streamStrategyFeedback() { calls += 1; throw new Error('must not run'); },
+        async *streamApproveStrategy() { calls += 1; throw new Error('must not run'); },
+        async *streamTrialFeedback() { calls += 1; throw new Error('must not run'); },
       }),
     });
-    const response = await app.inject({
-      method: 'POST',
-      url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve`,
-      headers: { origin: 'http://localhost:5173' },
-      payload: { strategyDraftVersionId: SHARED_BOOK_ID },
-    });
+    const requests = [
+      app.inject({
+        method: 'POST',
+        url: `/v1/user-books/${USER_BOOK_ID}/strategy/feedback/stream`,
+        headers: { origin: 'http://localhost:5173' },
+        payload: { strategyDraftVersionId: 'not-a-uuid', feedback: 'clearer', idempotencyKey: 'command-1' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/v1/user-books/${USER_BOOK_ID}/strategy/feedback/stream`,
+        headers: { origin: 'http://localhost:5173' },
+        payload: { strategyDraftVersionId: STRATEGY_DRAFT_ID, feedback: '   ', idempotencyKey: 'command-2' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve/stream`,
+        headers: { origin: 'http://localhost:5173' },
+        payload: { strategyDraftVersionId: STRATEGY_DRAFT_ID, idempotencyKey: '   ' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/v1/user-books/${USER_BOOK_ID}/trial/feedback/stream`,
+        headers: { origin: 'http://localhost:5173' },
+        payload: { trialRevisionId: 'not-a-uuid', feedback: 'clearer', idempotencyKey: 'command-3' },
+      }),
+    ];
 
-    expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({ error: '处理方式已经更新，请刷新后继续' });
+    const responses = await Promise.all(requests);
+    expect(responses.map((response) => response.statusCode)).toEqual([400, 400, 400, 400]);
+    expect(calls).toBe(0);
   });
 
-  // §6.5: approve/adopt dropped their unused idempotencyKey (both are idempotent by state).
-  // A body without the key must still be accepted — the schema no longer requires it.
-  it('approves a strategy without an idempotency key', async () => {
-    let received: unknown;
+  it.each([
+    ['/strategy/feedback', { strategyDraftVersionId: STRATEGY_DRAFT_ID, feedback: 'clearer', idempotencyKey: 'command-1' }],
+    ['/strategy/approve', { strategyDraftVersionId: STRATEGY_DRAFT_ID, idempotencyKey: 'command-2' }],
+    ['/trial/feedback', { trialRevisionId: TRIAL_REVISION_ID, feedback: 'clearer', idempotencyKey: 'command-3' }],
+  ])('does not expose the retired synchronous endpoint %s', async (path, payload) => {
+    const app = await buildApp();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}${path}`,
+      headers: { origin: 'http://localhost:5173' },
+      payload,
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('reads exact strategy and trial versions by pointer', async () => {
+    const calls: string[] = [];
+    const strategy = {
+      userBookId: USER_BOOK_ID,
+      workflowStatus: 'strategy_review' as const,
+      draft: {
+        id: STRATEGY_DRAFT_ID,
+        version: 2,
+        status: 'draft' as const,
+        readingBriefing: BRIEFING,
+        userFacingSummary: 'Strategy',
+        strategy: {
+          goals: ['goal'],
+          expressionPrinciples: ['plain'],
+          guide: { enabled: true, objectives: ['orient'] },
+          annotations: { enabled: true, focuses: ['terms'], exclusions: [] },
+          afterReading: { enabled: true, objectives: ['recap'] },
+          trialCandidates: [1, 2, 3].map((segment) => ({ sectionId: 'chapter-1', segment, reason: `reason-${segment}` })),
+        },
+        createdAt: '2026-07-14T00:00:00.000Z',
+        approvedForTrialAt: null,
+      },
+      trialCandidatePreviews: [1, 2, 3].map((segment) => ({
+        ordinal: segment,
+        sectionId: 'chapter-1',
+        segment,
+        chapterPath: ['Chapter 1'],
+        reason: `reason-${segment}`,
+      })),
+      adjustmentCount: 1,
+      adjustmentLimit: 5,
+      canAdjust: true,
+    };
+    const trial = {
+      userBookId: USER_BOOK_ID,
+      workflowStatus: 'trial_generating' as const,
+      trialRevisionId: TRIAL_REVISION_ID,
+      revision: 3,
+      status: 'generating' as const,
+      strategyDraftVersionId: STRATEGY_DRAFT_ID,
+      segments: [1, 2, 3].map((ordinal) => ({
+        id: `${ordinal}1111111-2222-4333-8444-555555555555`,
+        ordinal,
+        sectionId: 'chapter-1',
+        segment: ordinal,
+        range: { start: { blockIndex: 1, offset: 0 }, end: { blockIndex: 1, offset: 5 } },
+        chapterPath: ['Chapter 1'],
+        originalHtml: '<p>text</p>',
+        selectionReason: `reason-${ordinal}`,
+        status: 'pending' as const,
+        result: null,
+        viewedAt: null,
+      })),
+      adjustmentCount: 1,
+      adjustmentLimit: 5,
+      canAdjust: true,
+      canAdopt: false,
+    };
     const app = await buildApiApp(config, {
       auth: fakeAuth,
       userBooks: fakeService({
-        async approveStrategy(_userBookId, input) {
-          received = input;
-          return {
-            userBookId: USER_BOOK_ID,
-            workflowStatus: 'trial_generating',
-            strategyDraftVersionId: input.strategyDraftVersionId,
-            trialRevisionId: SHARED_BOOK_ID,
-          };
+        async strategyStateByDraftId(_userBookId, draftId) {
+          calls.push(`strategy:${draftId}`);
+          return strategy;
+        },
+        async trialStateByRevisionId(_userBookId, revisionId) {
+          calls.push(`trial:${revisionId}`);
+          return trial;
         },
       }),
     });
-    const response = await app.inject({
-      method: 'POST',
-      url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve`,
-      headers: { origin: 'http://localhost:5173' },
-      payload: { strategyDraftVersionId: SHARED_BOOK_ID },
+
+    const strategyResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/user-books/${USER_BOOK_ID}/strategy/versions/${STRATEGY_DRAFT_ID}`,
     });
-    expect(response.statusCode).toBe(200);
-    expect(received).toEqual({ strategyDraftVersionId: SHARED_BOOK_ID });
-    expect(response.json()).toMatchObject({ workflowStatus: 'trial_generating' });
+    const trialResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/user-books/${USER_BOOK_ID}/trial/revisions/${TRIAL_REVISION_ID}`,
+    });
+    expect(strategyResponse.statusCode).toBe(200);
+    expect(trialResponse.statusCode).toBe(200);
+    expect(strategyResponse.headers['cache-control']).toBe('private, no-store');
+    expect(trialResponse.headers['cache-control']).toBe('private, no-store');
+    expect(calls).toEqual([`strategy:${STRATEGY_DRAFT_ID}`, `trial:${TRIAL_REVISION_ID}`]);
+  });
+
+  it('exposes current, detail and resume operation routes', async () => {
+    const calls: string[] = [];
+    const operation = {
+      operationId: OPERATION_ID,
+      operationAttempt: 1,
+      kind: 'strategy_revision' as const,
+      source: 'strategy_feedback' as const,
+      status: 'pending' as const,
+      baseDraftId: STRATEGY_DRAFT_ID,
+      baseTrialRevisionId: null,
+      resultDraftId: null,
+      resultTrialRevisionId: null,
+      canResume: true,
+      errorSummary: null,
+      recoverableInput: { feedback: 'make it clearer' },
+    };
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async currentReadingSetupOperation() {
+          calls.push('current');
+          return operation;
+        },
+        async readingSetupOperation(_userBookId, operationId) {
+          calls.push(`detail:${operationId}`);
+          return operation;
+        },
+        async resumeReadingSetupOperation(_userBookId, operationId) {
+          calls.push(`resume:${operationId}`);
+          return { ...operation, status: 'running' as const, canResume: false };
+        },
+      }),
+    });
+    const current = await app.inject({
+      method: 'GET',
+      url: `/v1/user-books/${USER_BOOK_ID}/reading-setup-operation/current`,
+    });
+    const detailResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/user-books/${USER_BOOK_ID}/reading-setup-operation/${OPERATION_ID}`,
+    });
+    const resumed = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/reading-setup-operation/${OPERATION_ID}/resume`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: {},
+    });
+    expect(current.statusCode).toBe(200);
+    expect(detailResponse.statusCode).toBe(200);
+    expect(resumed.statusCode).toBe(200);
+    expect(current.headers['cache-control']).toBe('private, no-store');
+    expect(detailResponse.headers['cache-control']).toBe('private, no-store');
+    expect(calls).toEqual(['current', `detail:${OPERATION_ID}`, `resume:${OPERATION_ID}`]);
   });
 
   it('adopts a trial without an idempotency key', async () => {
@@ -423,17 +611,187 @@ describe('user book workflow routes', () => {
     expect(response.json()).toMatchObject({ workflowStatus: 'active_reading' });
   });
 
+  it('streams strategy and trial feedback through the shared revision contract', async () => {
+    const streamId = OPERATION_ID;
+    const createEvents = async function* (
+      source: 'strategy_feedback' | 'trial_feedback',
+    ): AsyncGenerator<StrategyRevisionStreamEvent> {
+      yield {
+        userBookId: USER_BOOK_ID,
+        operationId: streamId,
+        operationAttempt: 1,
+        sequence: 1,
+        speculativeEpoch: 1,
+        type: 'revision_started' as const,
+        source,
+        baseDraftId: STRATEGY_DRAFT_ID,
+        baseTrialRevisionId: source === 'trial_feedback' ? TRIAL_REVISION_ID : null,
+      } as StrategyRevisionStreamEvent;
+      yield {
+        userBookId: USER_BOOK_ID,
+        operationId: streamId,
+        operationAttempt: 1,
+        sequence: 2,
+        speculativeEpoch: 1,
+        type: 'strategy_delta' as const,
+        chars: 'New strategy',
+      };
+      yield {
+        userBookId: USER_BOOK_ID,
+        operationId: streamId,
+        operationAttempt: 1,
+        sequence: 3,
+        type: 'revision_final' as const,
+        strategy: strategyReview(),
+      };
+    };
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        streamStrategyFeedback() {
+          return createEvents('strategy_feedback');
+        },
+        streamTrialFeedback() {
+          return createEvents('trial_feedback');
+        },
+      }),
+    });
+
+    const [strategy, trial] = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `/v1/user-books/${USER_BOOK_ID}/strategy/feedback/stream`,
+        headers: { origin: 'http://localhost:5173' },
+        payload: { strategyDraftVersionId: STRATEGY_DRAFT_ID, feedback: 'shorter', idempotencyKey: 'command-1' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/v1/user-books/${USER_BOOK_ID}/trial/feedback/stream`,
+        headers: { origin: 'http://localhost:5173' },
+        payload: { trialRevisionId: TRIAL_REVISION_ID, feedback: 'fewer notes', idempotencyKey: 'command-2' },
+      }),
+    ]);
+
+    for (const response of [strategy, trial]) {
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['cache-control']).toBe('private, no-store');
+      expect(response.headers['x-accel-buffering']).toBe('no');
+      expect(response.body.indexOf('revision_started')).toBeLessThan(response.body.indexOf('revision_final'));
+    }
+    expect(strategy.body).toContain('"source":"strategy_feedback"');
+    expect(trial.body).toContain('"source":"trial_feedback"');
+  });
+
+  it('streams strategy approval into fixed trial slots and a final revision', async () => {
+    const trial = {
+      userBookId: USER_BOOK_ID,
+      workflowStatus: 'trial_generating' as const,
+      trialRevisionId: TRIAL_REVISION_ID,
+      revision: 1,
+      status: 'generating' as const,
+      strategyDraftVersionId: STRATEGY_DRAFT_ID,
+      segments: [1, 2, 3].map((ordinal) => ({
+        id: `${ordinal}1111111-2222-4333-8444-555555555555`,
+        ordinal,
+        sectionId: 'chapter-1',
+        segment: ordinal,
+        range: { start: { blockIndex: 1, offset: 0 }, end: { blockIndex: 1, offset: 5 } },
+        chapterPath: ['Chapter 1'],
+        originalHtml: '<p>text</p>',
+        selectionReason: `reason-${ordinal}`,
+        status: 'pending' as const,
+        result: null,
+        viewedAt: null,
+      })),
+      adjustmentCount: 0,
+      adjustmentLimit: 5,
+      canAdjust: false,
+      canAdopt: false,
+    };
+    const events = async function* (): AsyncGenerator<TrialSelectionStreamEvent> {
+      yield {
+        userBookId: USER_BOOK_ID,
+        operationId: OPERATION_ID,
+        operationAttempt: 1,
+        sequence: 1,
+        type: 'selection_started',
+        speculativeEpoch: 1,
+        draftId: STRATEGY_DRAFT_ID,
+        slots: [
+          { ordinal: 1, tag: 'threshold' },
+          { ordinal: 2, tag: 'typical' },
+          { ordinal: 3, tag: 'hardest' },
+        ],
+      };
+      yield {
+        userBookId: USER_BOOK_ID,
+        operationId: OPERATION_ID,
+        operationAttempt: 1,
+        sequence: 2,
+        type: 'trial_created',
+        draftId: STRATEGY_DRAFT_ID,
+        trial,
+      } as TrialSelectionStreamEvent;
+    };
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        streamApproveStrategy() {
+          return events();
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve/stream`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { strategyDraftVersionId: STRATEGY_DRAFT_ID, idempotencyKey: 'approve-stream-1' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    expect(response.headers['x-accel-buffering']).toBe('no');
+    expect(response.body.indexOf('selection_started')).toBeLessThan(response.body.indexOf('trial_created'));
+    expect(response.body).toContain('"ordinal":1,"tag":"threshold"');
+    expect(response.body).toContain(`"trialRevisionId":"${TRIAL_REVISION_ID}"`);
+  });
+
+  it('keeps approval stream validation errors as pre-stream HTTP responses', async () => {
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async *streamApproveStrategy() {
+          throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
+        },
+      }),
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve/stream`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { strategyDraftVersionId: STRATEGY_DRAFT_ID, idempotencyKey: 'approve-stream-2' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: '处理方式已经更新，请刷新后继续' });
+  });
+
   it('streams interview deltas as SSE and closes with question_final', async () => {
+    const streamId = '77777777-8888-4999-8aaa-bbbbbbbbbbbb';
     const app = await buildApiApp(config, {
       auth: fakeAuth,
       userBooks: fakeService({
         async *streamInterviewAnswer() {
-          yield { type: 'ack_delta', chars: '好，' };
-          yield { type: 'ack_delta', chars: '我记下了。' };
-          yield { type: 'prompt_delta', chars: '下一个问题？' };
-          yield { type: 'option_added', id: 'a', label: '甲' };
-          yield { type: 'sufficiency', value: 60 };
+          yield { userBookId: USER_BOOK_ID, streamId, sequence: 1, speculativeEpoch: 1, type: 'ack_delta', chars: '好，' };
+          yield { userBookId: USER_BOOK_ID, streamId, sequence: 2, speculativeEpoch: 1, type: 'ack_delta', chars: '我记下了。' };
+          yield { userBookId: USER_BOOK_ID, streamId, sequence: 3, speculativeEpoch: 1, type: 'prompt_delta', chars: '下一个问题？' };
+          yield { userBookId: USER_BOOK_ID, streamId, sequence: 4, speculativeEpoch: 1, type: 'option_added', id: 'a', label: '甲' };
+          yield { userBookId: USER_BOOK_ID, streamId, sequence: 5, speculativeEpoch: 1, type: 'sufficiency', value: 60 };
           yield {
+            userBookId: USER_BOOK_ID,
+            streamId,
+            sequence: 6,
             type: 'question_final',
             question: {
               id: 'q2',
@@ -461,9 +819,10 @@ describe('user book workflow routes', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toContain('text/event-stream');
     const body = response.body;
-    expect(body).toContain('data: {"type":"ack_delta","chars":"好，"}');
-    expect(body).toContain('data: {"type":"prompt_delta","chars":"下一个问题？"}');
-    expect(body).toContain('data: {"type":"option_added","id":"a","label":"甲"}');
+    expect(body).toContain('"type":"ack_delta"');
+    expect(body).toContain('"chars":"好，"');
+    expect(body).toContain('"type":"prompt_delta"');
+    expect(body).toContain('"type":"option_added"');
     expect(body).toContain('"type":"question_final"');
     expect(body).toContain('"id":"q2"');
     // The authoritative question is the last frame, after the deltas.
@@ -490,6 +849,45 @@ describe('user book workflow routes', () => {
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ error: '问题已经更新，请刷新后继续' });
+  });
+
+  it('streams an expired interview turn through the additive resume endpoint', async () => {
+    const streamId = '77777777-8888-4999-8aaa-bbbbbbbbbbbb';
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async *streamResumeInterview() {
+          yield {
+            userBookId: USER_BOOK_ID,
+            streamId,
+            sequence: 1,
+            speculativeEpoch: 1,
+            type: 'draft_started',
+            conversationVersion: 6,
+          };
+          yield {
+            userBookId: USER_BOOK_ID,
+            streamId,
+            sequence: 2,
+            type: 'done',
+            workflowStatus: 'strategy_review',
+          };
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/interview/resume/stream`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('text/event-stream');
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    expect(response.body).toContain('"type":"draft_started"');
+    expect(response.body).toContain('"workflowStatus":"strategy_review"');
   });
 
   it('serves the reader bootstrap with a highlights array', async () => {

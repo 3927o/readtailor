@@ -1,10 +1,10 @@
 import {
   runReadingSetupAgent,
   type InterviewQuestion,
-  type InterviewStreamDelta,
   type ReadingSetupOutcome,
   type ReadingSetupCallMetrics,
   type ReadingSetupPhase,
+  type ReadingSetupStreamDelta,
   type ReadingStrategy,
   type TrialFragmentSelection,
 } from '@readtailor/agent-kit';
@@ -19,7 +19,7 @@ export interface ReadingSetupEngine {
   // One continuous logical session per user_book. `phase` selects the exposed tools:
   // interviewing → present_interview_question / finish_interview; strategy_review →
   // save_strategy_draft. The outcome is a discriminated union (question | completed | revised).
-  // `onStream` (interviewing only) receives token-level deltas for the SSE endpoint (§4).
+  // `onStream` receives epoch-aware provisional deltas for the public setup streams.
   runTurn(input: {
     sessionId: string;
     phase: ReadingSetupPhase;
@@ -28,7 +28,7 @@ export interface ReadingSetupEngine {
     feedback?: string;
     requestId?: string;
     conversationVersion?: number;
-    onStream?: (delta: InterviewStreamDelta) => void;
+    onStream?: (delta: ReadingSetupStreamDelta) => void;
   }): Promise<ReadingSetupOutcome>;
 }
 
@@ -40,6 +40,7 @@ export function createAgentReadingSetupEngine(options: {
 }): ReadingSetupEngine {
   return {
     runTurn(input) {
+      const { onStream, ...agentInput } = input;
       const trace: Array<Record<string, unknown>> = [];
       let metrics: ReadingSetupCallMetrics | undefined;
       const summarize = () => ({
@@ -59,7 +60,8 @@ export function createAgentReadingSetupEngine(options: {
         },
         () => runReadingSetupAgent({
           ...options,
-          ...input,
+          ...agentInput,
+          ...(onStream ? { onReadingSetupStream: onStream } : {}),
           onTrace: (event) => appendAgentTraceEvent(trace, event),
           onMetrics: (value) => {
             metrics = value;
@@ -229,18 +231,45 @@ function fakeCompleted(context: Record<string, unknown>): ReadingSetupOutcome {
   };
 }
 
-// Replays a resolved interviewing outcome as synthetic stream deltas so the SSE endpoint
-// (and its tests / local dev) exercise the real event path without a live model.
-function emitFakeStream(onStream: (delta: InterviewStreamDelta) => void, outcome: ReadingSetupOutcome): void {
+// Replays a resolved outcome as epoch-aware deltas so local development exercises the same
+// public stream path as the real agent.
+function emitFakeStream(onStream: (delta: ReadingSetupStreamDelta) => void, outcome: ReadingSetupOutcome): void {
+  const speculativeEpoch = 1;
+  const toolName = outcome.type === 'question'
+    ? 'present_interview_question'
+    : outcome.type === 'fragments'
+      ? 'select_trial_fragments'
+      : 'finish_interview';
+  onStream({ type: 'speculative_reset', speculativeEpoch, toolName });
   if (outcome.type === 'question') {
     const question = outcome.question;
-    if (question.acknowledgment) onStream({ type: 'ack_delta', chars: question.acknowledgment });
-    onStream({ type: 'prompt_delta', chars: question.prompt });
-    if (question.hint) onStream({ type: 'hint_delta', chars: question.hint });
-    for (const option of question.options) onStream({ type: 'option_added', id: option.id, label: option.label });
-    onStream({ type: 'sufficiency', value: question.sufficiency });
+    if (question.acknowledgment) onStream({ type: 'ack_delta', chars: question.acknowledgment, speculativeEpoch });
+    onStream({ type: 'prompt_delta', chars: question.prompt, speculativeEpoch });
+    if (question.hint) onStream({ type: 'hint_delta', chars: question.hint, speculativeEpoch });
+    for (const option of question.options) onStream({ type: 'option_added', id: option.id, label: option.label, speculativeEpoch });
+    onStream({ type: 'sufficiency', value: question.sufficiency, speculativeEpoch });
   } else if (outcome.type === 'completed') {
-    onStream({ type: 'concluding' });
+    onStream({ type: 'draft_started', source: 'interview', speculativeEpoch });
+    for (const field of ['book_identity', 'arc', 'assumed_knowledge', 'reading_advice'] as const) {
+      onStream({ type: 'briefing_delta', field, chars: outcome.briefing[field], speculativeEpoch });
+    }
+    onStream({ type: 'strategy_delta', chars: outcome.publicStrategy, speculativeEpoch });
+    outcome.strategy.trial_candidates.forEach((candidate, ordinal) => onStream({
+      type: 'reading_node_added',
+      ordinal: ordinal + 1,
+      sectionId: candidate.section_id,
+      segment: candidate.segment,
+      reason: candidate.reason,
+      speculativeEpoch,
+    }));
+  } else if (outcome.type === 'fragments') {
+    onStream({ type: 'selection_started', total: 3, speculativeEpoch });
+    outcome.fragments.forEach((fragment, ordinal) => onStream({
+      type: 'fragment_added',
+      ordinal: ordinal + 1,
+      fragment,
+      speculativeEpoch,
+    }));
   }
 }
 
@@ -248,16 +277,36 @@ export function createFakeReadingSetupEngine(): ReadingSetupEngine {
   return {
     async runTurn(input) {
       if (input.phase === 'select_trial') {
-        return { type: 'fragments', fragments: fakeSelectFragments(input.context) };
+        const outcome: ReadingSetupOutcome = {
+          type: 'fragments',
+          fragments: fakeSelectFragments(input.context),
+        };
+        if (input.onStream) emitFakeStream(input.onStream, outcome);
+        return outcome;
       }
       if (input.phase === 'strategy_review') {
         const completed = fakeCompleted(input.context);
         if (completed.type !== 'completed') throw new Error('fake setup did not complete');
-        return {
+        const outcome: ReadingSetupOutcome = {
           type: 'revised',
           publicStrategy: `${completed.publicStrategy}\n\n已吸收你的反馈：${(input.feedback ?? '').trim()}`,
           strategy: completed.strategy,
         };
+        if (input.onStream) {
+          const speculativeEpoch = 1;
+          input.onStream({ type: 'speculative_reset', speculativeEpoch, toolName: 'save_strategy_draft' });
+          input.onStream({ type: 'draft_started', source: 'revision', speculativeEpoch });
+          input.onStream({ type: 'strategy_delta', chars: outcome.publicStrategy, speculativeEpoch });
+          outcome.strategy.trial_candidates.forEach((candidate, ordinal) => input.onStream?.({
+            type: 'reading_node_added',
+            ordinal: ordinal + 1,
+            sectionId: candidate.section_id,
+            segment: candidate.segment,
+            reason: candidate.reason,
+            speculativeEpoch,
+          }));
+        }
+        return outcome;
       }
       const question = fakeQuestions[input.askedCount];
       const outcome: ReadingSetupOutcome = question

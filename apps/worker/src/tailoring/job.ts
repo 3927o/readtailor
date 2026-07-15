@@ -122,6 +122,209 @@ type FormalGeneration = {
   segment: number;
 };
 
+type TrialGenerationIdentity = {
+  id: string;
+  userBookId: string;
+  generationScope: string;
+  trialSegmentId: string | null;
+  strategyDraftVersionId: string | null;
+  sectionId: string;
+  segment: number;
+};
+
+type TrialSegmentHint = {
+  id: string;
+  trialRevisionId: string;
+};
+
+export type TrialGenerationGraphCheck = {
+  generation: {
+    userBookId: string;
+    generationScope: string;
+    trialSegmentId: string | null;
+    strategyDraftVersionId: string | null;
+    sectionId: string;
+    segment: number;
+  };
+  segment: {
+    id: string;
+    trialRevisionId: string;
+    sectionId: string;
+    segment: number;
+  };
+  revision: {
+    id: string;
+    userBookId: string;
+    strategyDraftVersionId: string;
+    status: string;
+  };
+  draft: {
+    id: string;
+    status: string;
+  };
+  userBook: {
+    id: string;
+    workflowStatus: string;
+    currentStrategyDraftVersionId: string | null;
+    currentTrialRevisionId: string | null;
+  };
+};
+
+export function isCurrentTrialGenerationGraph(graph: TrialGenerationGraphCheck): boolean {
+  return graph.generation.generationScope === 'trial'
+    && graph.generation.userBookId === graph.userBook.id
+    && graph.generation.trialSegmentId === graph.segment.id
+    && graph.generation.strategyDraftVersionId === graph.draft.id
+    && graph.generation.strategyDraftVersionId === graph.revision.strategyDraftVersionId
+    && graph.generation.sectionId === graph.segment.sectionId
+    && graph.generation.segment === graph.segment.segment
+    && graph.segment.trialRevisionId === graph.revision.id
+    && graph.revision.userBookId === graph.userBook.id
+    && graph.revision.status === 'generating'
+    && graph.draft.status === 'approved_for_trial'
+    && graph.userBook.workflowStatus === 'trial_generating'
+    && graph.userBook.currentStrategyDraftVersionId === graph.draft.id
+    && graph.userBook.currentTrialRevisionId === graph.revision.id;
+}
+
+export function nextGenerationAttempt(attemptCount: number, maxAttempts: number): number | null {
+  return attemptCount >= maxAttempts ? null : attemptCount + 1;
+}
+
+export function shouldPublishTrialRevision(
+  segments: Array<{ ordinal: number; status: string }>,
+): boolean {
+  return segments.length === 3
+    && new Set(segments.map((segment) => segment.ordinal)).size === 3
+    && segments.every((segment) => segment.status === 'ready');
+}
+
+export function trialSegmentIdsToFail(
+  segments: Array<{ id: string; status: string }>,
+): string[] {
+  return segments
+    .filter((segment) => segment.status === 'pending' || segment.status === 'generating')
+    .map((segment) => segment.id);
+}
+
+type LockedTrialGenerationGraph = {
+  generation: typeof nodeGenerations.$inferSelect | undefined;
+  segment: typeof trialSegments.$inferSelect | undefined;
+  revision: typeof trialRevisions.$inferSelect | undefined;
+  draft: typeof strategyDraftVersions.$inferSelect | undefined;
+  userBook: typeof userBooks.$inferSelect | undefined;
+};
+
+async function lockTrialGenerationGraph(
+  db: Pick<Database, 'select'>,
+  identity: TrialGenerationIdentity,
+  segmentHint: TrialSegmentHint,
+): Promise<LockedTrialGenerationGraph> {
+  // Every trial writer uses this lock order so completion, terminal failure and retry can fence
+  // each other without publishing or mutating an obsolete revision.
+  const userBook = await db
+    .select()
+    .from(userBooks)
+    .where(eq(userBooks.id, identity.userBookId))
+    .limit(1)
+    .for('update')
+    .then((rows) => rows[0]);
+  const revision = await db
+    .select()
+    .from(trialRevisions)
+    .where(eq(trialRevisions.id, segmentHint.trialRevisionId))
+    .limit(1)
+    .for('update')
+    .then((rows) => rows[0]);
+  const draft = identity.strategyDraftVersionId
+    ? await db
+        .select()
+        .from(strategyDraftVersions)
+        .where(eq(strategyDraftVersions.id, identity.strategyDraftVersionId))
+        .limit(1)
+        .for('update')
+        .then((rows) => rows[0])
+    : undefined;
+  const segment = await db
+    .select()
+    .from(trialSegments)
+    .where(eq(trialSegments.id, segmentHint.id))
+    .limit(1)
+    .for('update')
+    .then((rows) => rows[0]);
+  const generation = await db
+    .select()
+    .from(nodeGenerations)
+    .where(eq(nodeGenerations.id, identity.id))
+    .limit(1)
+    .for('update')
+    .then((rows) => rows[0]);
+  return { generation, segment, revision, draft, userBook };
+}
+
+function graphIsCurrent(graph: LockedTrialGenerationGraph): graph is {
+  generation: typeof nodeGenerations.$inferSelect;
+  segment: typeof trialSegments.$inferSelect;
+  revision: typeof trialRevisions.$inferSelect;
+  draft: typeof strategyDraftVersions.$inferSelect;
+  userBook: typeof userBooks.$inferSelect;
+} {
+  return Boolean(
+    graph.generation
+    && graph.segment
+    && graph.revision
+    && graph.draft
+    && graph.userBook
+    && isCurrentTrialGenerationGraph({
+      generation: graph.generation,
+      segment: graph.segment,
+      revision: graph.revision,
+      draft: graph.draft,
+      userBook: graph.userBook,
+    }),
+  );
+}
+
+async function supersedeStaleTrialGeneration(
+  db: Pick<Database, 'update'>,
+  generationId: string,
+  expectedAttemptCount?: number,
+): Promise<void> {
+  const now = new Date();
+  await db
+    .update(nodeGenerations)
+    .set({
+      status: 'superseded',
+      result: null,
+      completedAt: now,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(nodeGenerations.id, generationId),
+      inArray(nodeGenerations.status, ['queued', 'retrying', 'generating']),
+      expectedAttemptCount === undefined
+        ? undefined
+        : eq(nodeGenerations.attemptCount, expectedAttemptCount),
+    ));
+}
+
+const GENERATION_ATTEMPT_FIELD = 'readtailorGenerationAttempt';
+
+function errorForGenerationAttempt(error: unknown, attemptCount: number): Error {
+  const value = error instanceof Error ? error : new Error(String(error));
+  Object.defineProperty(value, GENERATION_ATTEMPT_FIELD, {
+    configurable: true,
+    enumerable: true,
+    value: attemptCount,
+  });
+  return value;
+}
+
+function generationAttemptFromError(error: Error): number | undefined {
+  const value = (error as unknown as Record<string, unknown>)[GENERATION_ATTEMPT_FIELD];
+  return Number.isInteger(value) && (value as number) > 0 ? value as number : undefined;
+}
+
 export async function discardUnexpectedFormalGeneration(
   db: Pick<Database, 'select' | 'update'>,
   generation: FormalGeneration,
@@ -196,7 +399,11 @@ export async function executeContentGeneration(options: {
     .where(eq(nodeGenerations.id, options.generationId))
     .limit(1);
   if (!row) throw new Error('content generation does not exist');
-  if (row.generation.status === 'ready' || row.generation.status === 'superseded') return;
+  if (
+    row.generation.status === 'ready'
+    || row.generation.status === 'failed'
+    || row.generation.status === 'superseded'
+  ) return;
   if (
     row.generation.generationScope === 'formal'
     && await options.db.transaction((tx) => discardUnexpectedFormalGeneration(tx, row.generation))
@@ -324,106 +531,199 @@ export async function executeContentGeneration(options: {
     .from(nodeGenerations)
     .where(and(eq(nodeGenerations.cacheKey, cacheKey), eq(nodeGenerations.status, 'ready')))
     .limit(1);
-  const started = await options.db
-    .update(nodeGenerations)
-    .set({
-      status: 'generating',
-      attemptCount: Math.min(row.generation.attemptCount + 1, row.generation.maxAttempts),
-      cacheKey,
-      startedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(and(
-      eq(nodeGenerations.id, row.generation.id),
-      inArray(nodeGenerations.status, ['queued', 'retrying', 'generating']),
-    ))
-    .returning({ id: nodeGenerations.id });
-  if (started.length === 0) return;
-  const generated = cached?.result
-    ? {
-        guide: cached.result.guide,
-        annotations: cached.result.annotations.map((annotation) => ({
-          range: {
-            start: { block_index: annotation.range.start.blockIndex, offset: annotation.range.start.offset },
-            end: { block_index: annotation.range.end.blockIndex, offset: annotation.range.end.offset },
-          },
-          content: annotation.content,
-        })),
-        after_reading: cached.result.afterReading,
+  const claimedAttempt = await options.db.transaction(async (tx) => {
+    if (row.generation.generationScope === 'trial') {
+      if (!segment || !row.generation.trialSegmentId || !row.generation.strategyDraftVersionId) {
+        throw new Error('trial generation references are incomplete');
       }
-    : await generateTailoredContent(
-        input,
-        createModelClient(options.model, {
-          ...(options.perfSink ? { perfSink: options.perfSink } : {}),
-          requestId: options.generationId,
-        }),
+      const graph = await lockTrialGenerationGraph(tx, row.generation, {
+        id: segment.id,
+        trialRevisionId: segment.trialRevisionId,
+      });
+      if (!graphIsCurrent(graph)) {
+        await supersedeStaleTrialGeneration(tx, row.generation.id);
+        return null;
+      }
+      if (!['queued', 'retrying', 'generating'].includes(graph.generation.status)) return null;
+      if (!['pending', 'generating'].includes(graph.segment.status)) return null;
+      const attemptCount = nextGenerationAttempt(
+        graph.generation.attemptCount,
+        graph.generation.maxAttempts,
       );
-  const result = {
-    guide: generated.guide,
-    annotations: generated.annotations.map((annotation, index) => ({
-      id: `${row.generation.id}:${index + 1}`,
-      range: {
-        start: { blockIndex: annotation.range.start.block_index, offset: annotation.range.start.offset },
-        end: { blockIndex: annotation.range.end.block_index, offset: annotation.range.end.offset },
-      },
-      content: annotation.content,
-    })),
-    afterReading: generated.after_reading,
-  };
-  await options.db.transaction(async (tx) => {
-    if (
-      row.generation.generationScope === 'formal'
-      && await discardUnexpectedFormalGeneration(tx, row.generation)
-    ) return;
-    const [current] = await tx
+      if (!attemptCount) {
+        throw errorForGenerationAttempt(
+          new Error('content generation attempts are exhausted'),
+          graph.generation.attemptCount,
+        );
+      }
+      const [started] = await tx
+        .update(nodeGenerations)
+        .set({
+          status: 'generating',
+          attemptCount,
+          cacheKey,
+          startedAt: new Date(),
+          completedAt: null,
+          errorSummary: null,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(nodeGenerations.id, graph.generation.id),
+          eq(nodeGenerations.attemptCount, graph.generation.attemptCount),
+          inArray(nodeGenerations.status, ['queued', 'retrying', 'generating']),
+        ))
+        .returning({ id: nodeGenerations.id });
+      if (!started) return null;
+      const [startedSegment] = await tx
+        .update(trialSegments)
+        .set({ status: 'generating', updatedAt: new Date() })
+        .where(and(
+          eq(trialSegments.id, graph.segment.id),
+          inArray(trialSegments.status, ['pending', 'generating']),
+        ))
+        .returning({ id: trialSegments.id });
+      if (!startedSegment) throw new Error('trial segment could not enter generating');
+      return attemptCount;
+    }
+
+    const attemptCount = nextGenerationAttempt(
+      row.generation.attemptCount,
+      row.generation.maxAttempts,
+    );
+    if (!attemptCount) {
+      throw errorForGenerationAttempt(
+        new Error('content generation attempts are exhausted'),
+        row.generation.attemptCount,
+      );
+    }
+    const [started] = await tx
       .update(nodeGenerations)
-      .set({ status: 'ready', result, completedAt: new Date(), errorSummary: null, updatedAt: new Date() })
-      .where(and(eq(nodeGenerations.id, row.generation.id), eq(nodeGenerations.status, 'generating')))
-      .returning();
-    if (!current) return;
-    if (!current.trialSegmentId) return;
-    const changedSegment = await tx
-      .update(trialSegments)
-      .set({ status: 'ready', updatedAt: new Date() })
+      .set({
+        status: 'generating',
+        attemptCount,
+        cacheKey,
+        startedAt: new Date(),
+        completedAt: null,
+        errorSummary: null,
+        updatedAt: new Date(),
+      })
       .where(and(
-        eq(trialSegments.id, current.trialSegmentId),
-        inArray(trialSegments.status, ['pending', 'generating']),
+        eq(nodeGenerations.id, row.generation.id),
+        eq(nodeGenerations.attemptCount, row.generation.attemptCount),
+        inArray(nodeGenerations.status, ['queued', 'retrying', 'generating']),
       ))
-      .returning({ id: trialSegments.id, trialRevisionId: trialSegments.trialRevisionId });
-    const trialSegment = changedSegment[0];
-    if (!trialSegment) return;
-    // Serialize the all-ready check + publish across the three concurrent segment jobs. Without
-    // this row lock, under READ COMMITTED two siblings finishing at once each miss the other's
-    // uncommitted `ready`, so neither publishes and the revision is stranded in `generating`
-    // (§6.3). Locking the revision row first forces the last job through here to observe every
-    // committed sibling and publish. Also serializes against the failure path's revision UPDATE.
-    await tx
-      .select({ id: trialRevisions.id })
-      .from(trialRevisions)
-      .where(eq(trialRevisions.id, trialSegment.trialRevisionId))
-      .limit(1)
-      .for('update');
-    const siblings = await tx.select().from(trialSegments).where(eq(trialSegments.trialRevisionId, trialSegment.trialRevisionId));
-    const allReady = siblings.length === 3 && siblings.every((item) => item.id === trialSegment.id ? true : item.status === 'ready');
-    if (!allReady) return;
-    const [revision] = await tx
-      .update(trialRevisions)
-      .set({ status: 'published', publishedAt: new Date(), updatedAt: new Date() })
-      .where(and(
-        eq(trialRevisions.id, trialSegment.trialRevisionId),
-        eq(trialRevisions.status, 'generating'),
-      ))
-      .returning();
-    if (!revision) return;
-    await tx
-      .update(userBooks)
-      .set({ workflowStatus: 'trial_review', updatedAt: new Date() })
-      .where(and(
-        eq(userBooks.id, revision.userBookId),
-        eq(userBooks.currentTrialRevisionId, revision.id),
-        eq(userBooks.workflowStatus, 'trial_generating'),
-      ));
+      .returning({ id: nodeGenerations.id });
+    return started ? attemptCount : null;
   });
+  if (!claimedAttempt) return;
+
+  try {
+    const generated = cached?.result
+      ? {
+          guide: cached.result.guide,
+          annotations: cached.result.annotations.map((annotation) => ({
+            range: {
+              start: { block_index: annotation.range.start.blockIndex, offset: annotation.range.start.offset },
+              end: { block_index: annotation.range.end.blockIndex, offset: annotation.range.end.offset },
+            },
+            content: annotation.content,
+          })),
+          after_reading: cached.result.afterReading,
+        }
+      : await generateTailoredContent(
+          input,
+          createModelClient(options.model, {
+            ...(options.perfSink ? { perfSink: options.perfSink } : {}),
+            requestId: options.generationId,
+          }),
+        );
+    const result = {
+      guide: generated.guide,
+      annotations: generated.annotations.map((annotation, index) => ({
+        id: `${row.generation.id}:${index + 1}`,
+        range: {
+          start: { blockIndex: annotation.range.start.block_index, offset: annotation.range.start.offset },
+          end: { blockIndex: annotation.range.end.block_index, offset: annotation.range.end.offset },
+        },
+        content: annotation.content,
+      })),
+      afterReading: generated.after_reading,
+    };
+    await options.db.transaction(async (tx) => {
+      if (row.generation.generationScope === 'formal') {
+        if (await discardUnexpectedFormalGeneration(tx, row.generation)) return;
+        await tx
+          .update(nodeGenerations)
+          .set({ status: 'ready', result, completedAt: new Date(), errorSummary: null, updatedAt: new Date() })
+          .where(and(
+            eq(nodeGenerations.id, row.generation.id),
+            eq(nodeGenerations.status, 'generating'),
+            eq(nodeGenerations.attemptCount, claimedAttempt),
+          ));
+        return;
+      }
+      if (!segment) return;
+      const graph = await lockTrialGenerationGraph(tx, row.generation, {
+        id: segment.id,
+        trialRevisionId: segment.trialRevisionId,
+      });
+      if (!graphIsCurrent(graph)) {
+        await supersedeStaleTrialGeneration(tx, row.generation.id, claimedAttempt);
+        return;
+      }
+      if (
+        graph.generation.status !== 'generating'
+        || graph.generation.attemptCount !== claimedAttempt
+        || graph.segment.status !== 'generating'
+      ) return;
+      const [current] = await tx
+        .update(nodeGenerations)
+        .set({ status: 'ready', result, completedAt: new Date(), errorSummary: null, updatedAt: new Date() })
+        .where(and(
+          eq(nodeGenerations.id, graph.generation.id),
+          eq(nodeGenerations.status, 'generating'),
+          eq(nodeGenerations.attemptCount, claimedAttempt),
+        ))
+        .returning({ id: nodeGenerations.id });
+      if (!current) return;
+      const [changedSegment] = await tx
+        .update(trialSegments)
+        .set({ status: 'ready', updatedAt: new Date() })
+        .where(and(
+          eq(trialSegments.id, graph.segment.id),
+          eq(trialSegments.status, 'generating'),
+        ))
+        .returning({ id: trialSegments.id });
+      if (!changedSegment) throw new Error('trial segment completion lost its generation claim');
+      const siblings = await tx
+        .select({ ordinal: trialSegments.ordinal, status: trialSegments.status })
+        .from(trialSegments)
+        .where(eq(trialSegments.trialRevisionId, graph.revision.id));
+      if (!shouldPublishTrialRevision(siblings)) return;
+      const [revision] = await tx
+        .update(trialRevisions)
+        .set({ status: 'published', publishedAt: new Date(), updatedAt: new Date() })
+        .where(and(
+          eq(trialRevisions.id, graph.revision.id),
+          eq(trialRevisions.status, 'generating'),
+        ))
+        .returning({ id: trialRevisions.id });
+      if (!revision) return;
+      const [advanced] = await tx
+        .update(userBooks)
+        .set({ workflowStatus: 'trial_review', updatedAt: new Date() })
+        .where(and(
+          eq(userBooks.id, graph.userBook.id),
+          eq(userBooks.currentStrategyDraftVersionId, graph.draft.id),
+          eq(userBooks.currentTrialRevisionId, graph.revision.id),
+          eq(userBooks.workflowStatus, 'trial_generating'),
+        ))
+        .returning({ id: userBooks.id });
+      if (!advanced) throw new Error('trial revision published after its current pointer changed');
+    });
+  } catch (error) {
+    throw errorForGenerationAttempt(error, claimedAttempt);
+  }
 }
 
 export async function failContentGeneration(options: {
@@ -431,43 +731,105 @@ export async function failContentGeneration(options: {
   generationId: string;
   error: Error;
 }) {
+  const expectedAttemptCount = generationAttemptFromError(options.error);
+  const [initialGeneration] = await options.db
+    .select()
+    .from(nodeGenerations)
+    .where(eq(nodeGenerations.id, options.generationId))
+    .limit(1);
+  if (!initialGeneration) return;
+  const initialSegment = initialGeneration.trialSegmentId
+    ? await options.db
+        .select()
+        .from(trialSegments)
+        .where(eq(trialSegments.id, initialGeneration.trialSegmentId))
+        .limit(1)
+        .then((rows) => rows[0])
+    : undefined;
   await options.db.transaction(async (tx) => {
-    const [generation] = await tx
-      .update(nodeGenerations)
+    if (initialGeneration.generationScope !== 'trial' || !initialSegment) {
+      await tx
+        .update(nodeGenerations)
+        .set({
+          status: 'failed',
+          result: null,
+          errorSummary: options.error.message.slice(0, 1000),
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(nodeGenerations.id, options.generationId),
+          inArray(nodeGenerations.status, ['queued', 'generating', 'retrying']),
+          expectedAttemptCount === undefined
+            ? undefined
+            : eq(nodeGenerations.attemptCount, expectedAttemptCount),
+        ));
+      return;
+    }
+
+    const graph = await lockTrialGenerationGraph(tx, initialGeneration, {
+      id: initialSegment.id,
+      trialRevisionId: initialSegment.trialRevisionId,
+    });
+    if (!graphIsCurrent(graph)) {
+      await supersedeStaleTrialGeneration(tx, options.generationId, expectedAttemptCount);
+      return;
+    }
+    if (
+      expectedAttemptCount !== undefined
+      && graph.generation.attemptCount !== expectedAttemptCount
+    ) return;
+    if (!['queued', 'generating', 'retrying'].includes(graph.generation.status)) return;
+
+    const siblingSegments = await tx
+      .select({ id: trialSegments.id, status: trialSegments.status })
+      .from(trialSegments)
+      .where(eq(trialSegments.trialRevisionId, graph.revision.id));
+    const siblingIds = trialSegmentIdsToFail(siblingSegments);
+    const now = new Date();
+    if (siblingIds.length > 0) {
+      await tx
+        .update(nodeGenerations)
+        .set({
+          status: 'failed',
+          result: null,
+          errorSummary: options.error.message.slice(0, 1000),
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          inArray(nodeGenerations.trialSegmentId, siblingIds),
+          inArray(nodeGenerations.status, ['queued', 'generating', 'retrying']),
+        ));
+      await tx
+        .update(trialSegments)
+        .set({ status: 'failed', updatedAt: now })
+        .where(inArray(trialSegments.id, siblingIds));
+    }
+    const [failed] = await tx
+      .update(trialRevisions)
       .set({
         status: 'failed',
-        errorSummary: options.error.message.slice(0, 1000),
-        completedAt: new Date(),
-        updatedAt: new Date(),
+        failureSummary: '试读内容生成失败，请重试当前版本。',
+        failedAt: now,
+        updatedAt: now,
       })
       .where(and(
-        eq(nodeGenerations.id, options.generationId),
-        inArray(nodeGenerations.status, ['queued', 'generating', 'retrying']),
-      ))
-      .returning();
-    if (!generation) return;
-    if (!generation.trialSegmentId) return;
-    await tx.update(trialSegments).set({ status: 'failed', updatedAt: new Date() }).where(eq(trialSegments.id, generation.trialSegmentId));
-    const [segment] = await tx.select().from(trialSegments).where(eq(trialSegments.id, generation.trialSegmentId)).limit(1);
-    if (!segment) return;
-    const [revision] = await tx.select().from(trialRevisions).where(eq(trialRevisions.id, segment.trialRevisionId)).limit(1);
-    if (!revision || revision.status !== 'generating') return;
-    const [owner] = await tx.select().from(userBooks).where(eq(userBooks.id, revision.userBookId)).limit(1);
-    if (!owner || owner.currentTrialRevisionId !== revision.id) return;
-    const failed = await tx.update(trialRevisions).set({
-        status: 'failed',
-        failureSummary: '试读内容生成失败，请重试当前版本。',
-        failedAt: new Date(),
-        updatedAt: new Date(),
-      }).where(and(
-        eq(trialRevisions.id, segment.trialRevisionId),
+        eq(trialRevisions.id, graph.revision.id),
         eq(trialRevisions.status, 'generating'),
-      )).returning({ id: trialRevisions.id });
-    if (failed.length === 0) return;
-    await tx.update(userBooks).set({ workflowStatus: 'trial_generation_failed', updatedAt: new Date() }).where(and(
-      eq(userBooks.id, revision.userBookId),
-      eq(userBooks.currentTrialRevisionId, revision.id),
-      eq(userBooks.workflowStatus, 'trial_generating'),
-    ));
+      ))
+      .returning({ id: trialRevisions.id });
+    if (!failed) return;
+    const [advanced] = await tx
+      .update(userBooks)
+      .set({ workflowStatus: 'trial_generation_failed', updatedAt: now })
+      .where(and(
+        eq(userBooks.id, graph.userBook.id),
+        eq(userBooks.currentStrategyDraftVersionId, graph.draft.id),
+        eq(userBooks.currentTrialRevisionId, graph.revision.id),
+        eq(userBooks.workflowStatus, 'trial_generating'),
+      ))
+      .returning({ id: userBooks.id });
+    if (!advanced) throw new Error('trial generation failed after its current pointer changed');
   });
 }

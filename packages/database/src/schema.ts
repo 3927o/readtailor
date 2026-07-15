@@ -29,6 +29,10 @@ import type {
   ProposedStrategy,
   QaSessionStatus,
   ReaderProfile,
+  ReadingSetupOperationKind,
+  ReadingSetupOperationPayload,
+  ReadingSetupOperationSource,
+  ReadingSetupOperationStatus,
   ReadingSettings,
   ReadingActivityArea,
   ReadingActivityClassification,
@@ -914,6 +918,118 @@ export const trialRevisions = pgTable(
     check(
       'trial_revisions_superseded_valid',
       sql`${table.status} <> 'superseded' or ${table.supersededAt} is not null`,
+    ),
+  ],
+);
+
+export const readingSetupOperations = pgTable(
+  'reading_setup_operations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userBookId: uuid('user_book_id')
+      .notNull()
+      .references(() => userBooks.id),
+    kind: text('kind').$type<ReadingSetupOperationKind>().notNull(),
+    source: text('source').$type<ReadingSetupOperationSource>().notNull(),
+    baseStrategyDraftVersionId: uuid('base_strategy_draft_version_id')
+      .notNull()
+      .references(() => strategyDraftVersions.id),
+    baseTrialRevisionId: uuid('base_trial_revision_id').references(
+      () => trialRevisions.id,
+    ),
+    idempotencyKey: text('idempotency_key').notNull(),
+    requestHash: text('request_hash').notNull(),
+    payload: jsonb('payload').$type<ReadingSetupOperationPayload>().notNull(),
+    status: text('status')
+      .$type<ReadingSetupOperationStatus>()
+      .notNull()
+      .default('pending'),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    leaseId: uuid('lease_id'),
+    leaseClaimedAt: timestamp('lease_claimed_at', { withTimezone: true }),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    resultStrategyDraftVersionId: uuid('result_strategy_draft_version_id').references(
+      () => strategyDraftVersions.id,
+    ),
+    resultTrialRevisionId: uuid('result_trial_revision_id').references(
+      () => trialRevisions.id,
+    ),
+    errorSummary: text('error_summary'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex('reading_setup_operations_book_idempotency_unique').on(
+      table.userBookId,
+      table.idempotencyKey,
+    ),
+    uniqueIndex('reading_setup_operations_one_active_per_book')
+      .on(table.userBookId)
+      .where(sql`${table.status} in ('pending', 'running')`),
+    index('reading_setup_operations_book_updated_idx').on(
+      table.userBookId,
+      table.updatedAt,
+    ),
+    check(
+      'reading_setup_operations_kind_valid',
+      sql`${table.kind} in ('strategy_revision', 'trial_selection')`,
+    ),
+    check(
+      'reading_setup_operations_source_valid',
+      sql`${table.source} in ('strategy_feedback', 'trial_feedback', 'strategy_approve')`,
+    ),
+    check(
+      'reading_setup_operations_kind_source_valid',
+      sql`(${table.kind} = 'strategy_revision' and ${table.source} in ('strategy_feedback', 'trial_feedback')) or (${table.kind} = 'trial_selection' and ${table.source} = 'strategy_approve')`,
+    ),
+    check(
+      'reading_setup_operations_base_trial_valid',
+      sql`(${table.source} = 'trial_feedback') = (${table.baseTrialRevisionId} is not null)`,
+    ),
+    check(
+      'reading_setup_operations_idempotency_nonempty',
+      sql`length(btrim(${table.idempotencyKey})) > 0`,
+    ),
+    check(
+      'reading_setup_operations_request_hash_valid',
+      sql`${table.requestHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      'reading_setup_operations_payload_object',
+      sql`jsonb_typeof(${table.payload}) = 'object'`,
+    ),
+    check(
+      'reading_setup_operations_status_valid',
+      sql`${table.status} in ('pending', 'running', 'completed', 'failed')`,
+    ),
+    check(
+      'reading_setup_operations_attempt_count_nonnegative',
+      sql`${table.attemptCount} >= 0`,
+    ),
+    check(
+      'reading_setup_operations_lease_complete',
+      sql`(${table.leaseId} is null and ${table.leaseClaimedAt} is null and ${table.leaseExpiresAt} is null) or (${table.leaseId} is not null and ${table.leaseClaimedAt} is not null and ${table.leaseExpiresAt} is not null)`,
+    ),
+    check(
+      'reading_setup_operations_lease_status_valid',
+      sql`(${table.status} = 'running') = (${table.leaseId} is not null)`,
+    ),
+    check(
+      'reading_setup_operations_lease_window_valid',
+      sql`${table.leaseExpiresAt} is null or ${table.leaseExpiresAt} > ${table.leaseClaimedAt}`,
+    ),
+    check(
+      'reading_setup_operations_result_valid',
+      sql`(${table.status} = 'completed' and ((${table.kind} = 'strategy_revision' and ${table.resultStrategyDraftVersionId} is not null and ${table.resultTrialRevisionId} is null) or (${table.kind} = 'trial_selection' and ${table.resultStrategyDraftVersionId} is null and ${table.resultTrialRevisionId} is not null))) or (${table.status} <> 'completed' and ${table.resultStrategyDraftVersionId} is null and ${table.resultTrialRevisionId} is null)`,
+    ),
+    check(
+      'reading_setup_operations_error_valid',
+      sql`(${table.status} = 'failed' and length(btrim(coalesce(${table.errorSummary}, ''))) > 0) or (${table.status} <> 'failed' and ${table.errorSummary} is null)`,
+    ),
+    check(
+      'reading_setup_operations_completion_valid',
+      sql`(${table.status} in ('completed', 'failed')) = (${table.completedAt} is not null)`,
     ),
   ],
 );
