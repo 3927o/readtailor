@@ -52,7 +52,17 @@ import {
 } from './content';
 import type { AnchorProbe } from './content';
 import type { RenderedHeading, RenderedNode } from './content';
-import { createRestoreCoordinator } from './restoreCoordinator';
+import {
+  measureReaderAnchorViewportTop,
+  resolveReaderAnchorTarget,
+  useReaderLayoutAnchor,
+} from './readerLayoutAnchor';
+import type { ReaderAnchorTarget, ReaderScrollPhase } from './readerLayoutAnchor';
+import {
+  isRestoreScrollEvent,
+  startReaderRestoreSession,
+  useReaderRestoreLifecycle,
+} from './readerRestoreSession';
 import { NotePopover, popoverPlacement } from './NotePopover';
 import type { ActivePopover } from './NotePopover';
 import { AskAiPanel } from './AskAiPanel';
@@ -304,11 +314,6 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const [highlightEditor, setHighlightEditor] = useState<HighlightEditorState | null>(null);
   const scrollRoot = useRef<HTMLDivElement>(null);
   const lastScrollTop = useRef(0);
-  // Layout-anchor state (§6.2): `committedEnhancementVersion` tracks which enhancement content is
-  // currently in the DOM, and `pendingAnchor` carries the pre-commit position snapshot into the
-  // post-commit layout effect. See the render-phase snapshot below.
-  const committedEnhancementVersion = useRef<string | null>(null);
-  const pendingAnchor = useRef<{ order: number; top: number } | null>(null);
   const prefersDark = usePrefersDark();
   const theme = resolvedTheme(settings.theme, prefersDark);
   const queryClient = useQueryClient();
@@ -346,7 +351,8 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   // Scroll-ownership phase (§2.4). While `restoring`, the restore coordinator is the ONLY writer of
   // scrollTop and warm/scroll position saves are suppressed; on `settled`/`cancelled`/`normal` the
   // layout-anchor and the save链路 resume. Fresh opens (no resume anchor) stay `normal` throughout.
-  const restorePhaseRef = useRef<'restoring' | 'settled' | 'cancelled' | 'normal'>('normal');
+  const restorePhaseRef = useRef<ReaderScrollPhase>('normal');
+  const restoreScrollTopRef = useRef<number | null>(null);
   const reportFocus = useRef<(order: number, position?: ReaderPosition) => void>(() => {});
   reportFocus.current = (order, position) => {
     if (!Number.isFinite(order)) return;
@@ -566,48 +572,24 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     highlights.map((item) => `${item.id}:${item.note ? 'n' : '_'}`).join(','),
   ].join('§');
 
-  // getSnapshotBeforeUpdate-equivalent: when the enhancement content is about to change the DOM,
-  // snapshot the current node's viewport top from the *old* DOM during render — before React commits
-  // the newly inserted annotation blocks. Reading here (pre-commit) is what keeps the anchor from
-  // going stale as the reader scrolls freely within a node between 3s bootstrap polls; the previous
-  // implementation reused a top recorded at the last effect run and undid the reader's own scrolling.
-  if (enhancementVersion !== committedEnhancementVersion.current && pendingAnchor.current === null) {
-    const root = scrollRoot.current;
-    const node = root?.querySelector<HTMLElement>(`[data-node-order="${currentOrder}"]`);
-    if (root && node) {
-      pendingAnchor.current = { order: currentOrder, top: node.getBoundingClientRect().top };
-    }
-  }
-
-  useLayoutEffect(() => {
-    committedEnhancementVersion.current = enhancementVersion;
-    const snapshot = pendingAnchor.current;
-    pendingAnchor.current = null;
-    // §2.4 single scroll ownership: while the restore coordinator is pinning the boundary it is the
-    // only scroll writer. The layout-anchor must not also compensate this same reflow, or the shift
-    // is counted twice; the coordinator re-measures the boundary each frame and handles it instead.
-    if (restorePhaseRef.current === 'restoring') return;
-    if (!snapshot) return;
-    const root = scrollRoot.current;
-    const node = root?.querySelector<HTMLElement>(`[data-node-order="${snapshot.order}"]`);
-    if (!root || !node) return;
-    // Content inserted above the anchor shifted it by (top - snapshot.top); undo that shift so the
-    // paragraph the reader is on stays visually put across the re-render.
-    root.scrollTop += node.getBoundingClientRect().top - snapshot.top;
-  }, [enhancementVersion]);
+  // getSnapshotBeforeUpdate-equivalent: capture the logical character from the old DOM, then resolve
+  // it again after React commits guide/annotation/highlight changes. While restoring, the coordinator
+  // remains the sole scroll writer and this hook only discards its snapshot.
+  useReaderLayoutAnchor({
+    root: scrollRoot,
+    version: enhancementVersion,
+    getPosition: () => computeAnchorRef.current()?.position ?? null,
+    getPhase: () => restorePhaseRef.current,
+  });
 
   // §11.5 / §2.4 position restore: on first mount, resolve the saved anchor and hand it to the
   // restore coordinator, which pins that character boundary to the reading line through first-paint
   // layout drift (fonts, late images, streamed enhancements) until it stabilizes or the user takes
-  // over. Runs ONCE (restoredRef) with a `[]` dep so a streamed-in enhancement changing `prepared`
-  // mid-restore can't tear the coordinator down. The coordinator is the sole scroll writer while
-  // active; the layout-anchor above yields to it (restorePhaseRef).
-  const restoredRef = useRef(false);
-  useLayoutEffect(() => {
-    if (restoredRef.current) return;
+  // over. The effect has a stable dependency list so streamed enhancements cannot tear it down.
+  // React StrictMode may run setup → cleanup → setup; each setup must start a fresh coordinator.
+  useReaderRestoreLifecycle(() => {
     const root = scrollRoot.current;
     if (!root) return;
-    restoredRef.current = true;
     const resume = document.bootstrap.resumePosition;
     if (!resume) return; // fresh open: nothing to restore, phase stays 'normal'
 
@@ -616,141 +598,70 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     const exactNode = nodes.find((item) => item.section_id === resume.sectionId && item.segment === resume.segment);
     const targetNode = exactNode ?? nearestNodeByOrder(nodes, resume.nodeOrder) ?? nodes[0];
     if (!targetNode) return;
-    const nodeEl = root.querySelector<HTMLElement>(`[data-node-order="${targetNode.order}"]`);
-    if (!nodeEl) return;
-    const contentRoot = nodeEl.querySelector<HTMLElement>('.reader-original');
 
     // Only trust the stored block/offset when we landed on the EXACT node AND the anchor was computed
     // against the current block algorithm. A manifestVersion mismatch, or any fall back to a
     // different node, drops us to node/block granularity rather than reinterpreting a stale offset.
     const versionMatches = resume.manifestVersion == null || resume.manifestVersion === document.manifest.version;
-    let boundary: { container: Node; offset: number } | null = null;
-    let geometryEl: HTMLElement = nodeEl;
-    if (exactNode && versionMatches && contentRoot) {
-      const blocks = readingBlocks(contentRoot);
-      const exactBlock = blocks[resume.blockIndex - 1];
-      const block = exactBlock ?? blocks[0];
-      if (block) {
-        geometryEl = block;
-        if (exactBlock) {
-          const resolved = domBoundaryForOffset(exactBlock, resume.offset);
-          if (resolved) boundary = resolved;
-        }
-      }
+    const nodeTarget: ReaderAnchorTarget = {
+      kind: 'node',
+      sectionId: targetNode.section_id,
+      segment: targetNode.segment,
+    };
+    let restoreTarget: ReaderAnchorTarget = nodeTarget;
+    const firstBlockTarget: ReaderAnchorTarget = {
+      kind: 'block',
+      sectionId: targetNode.section_id,
+      segment: targetNode.segment,
+      blockIndex: 1,
+    };
+    if (exactNode && versionMatches) {
+      const positionTarget: ReaderAnchorTarget = {
+        kind: 'position',
+        position: {
+          sectionId: resume.sectionId,
+          segment: resume.segment,
+          blockIndex: resume.blockIndex,
+          offset: resume.offset,
+        },
+      };
+      if (resolveReaderAnchorTarget(root, positionTarget)) {
+        restoreTarget = positionTarget;
+      } else if (resolveReaderAnchorTarget(root, firstBlockTarget)) restoreTarget = firstBlockTarget;
     } else if (!exactNode || !versionMatches) {
+      if (exactNode && resolveReaderAnchorTarget(root, firstBlockTarget)) restoreTarget = firstBlockTarget;
       // Observable: we deliberately declined to reinterpret a stale/relocated anchor (§3.3).
       // eslint-disable-next-line no-console
-      console.info('[reader] resume fell back to node granularity', {
+      console.info('[reader] resume declined precise position', {
         reason: !exactNode ? 'node-missing' : 'manifest-version-changed',
+        fallback: restoreTarget.kind,
         savedManifestVersion: resume.manifestVersion,
         currentManifestVersion: document.manifest.version,
       });
     }
 
-    // The saved boundary's current top, relative to the scroll container top edge — the same frame
-    // READING_ANCHOR_TOP is measured in. Falls back to the block/node top when no precise boundary.
+    // Resolve from the current DOM on every measurement. Enhancement/highlight commits can replace
+    // the original text nodes, so retaining a boundary or element across frames is unsafe.
     const measureTop = (): number | null => {
-      const rootTop = root.getBoundingClientRect().top;
-      if (boundary) {
-        try {
-          const range = window.document.createRange();
-          range.setStart(boundary.container, boundary.offset);
-          range.collapse(true);
-          const rect = range.getBoundingClientRect();
-          const top = rect.top || rect.bottom;
-          if (top) return top - rootTop;
-        } catch {
-          // fall through to element geometry
-        }
-      }
-      return geometryEl.getBoundingClientRect().top - rootTop;
+      const viewportTop = measureReaderAnchorViewportTop(root, restoreTarget);
+      return viewportTop === null ? null : viewportTop - root.getBoundingClientRect().top;
     };
 
     setCurrentOrder(targetNode.order);
     currentOrderRef.current = targetNode.order;
-    restorePhaseRef.current = 'restoring';
-
-    // Instant restore: suppress `.reader-scroll`'s smooth behavior so corrections don't animate — a
-    // mid-animation sample would land off the anchor line (§1.4).
-    const previousScrollBehavior = root.style.scrollBehavior;
-    root.style.scrollBehavior = 'auto';
-
-    let torndown = false;
-    const cleanups: Array<() => void> = [];
-    const teardown = () => {
-      if (torndown) return;
-      torndown = true;
-      root.style.scrollBehavior = previousScrollBehavior;
-      for (const cleanup of cleanups) cleanup();
-    };
-
-    const coordinator = createRestoreCoordinator({
-      now: () => performance.now(),
-      requestFrame: (callback) => window.requestAnimationFrame(callback),
-      cancelFrame: (handle) => window.cancelAnimationFrame(handle),
-      getScrollTop: () => root.scrollTop,
-      setScrollTop: (value) => { root.scrollTop = value; },
+    return startReaderRestoreSession({
+      root,
       measureTop,
       anchorTop: READING_ANCHOR_TOP,
+      targetElement: () => resolveReaderAnchorTarget(root, restoreTarget)?.element ?? null,
+      onPhaseChange: (phase) => { restorePhaseRef.current = phase; },
+      onScrollWrite: (scrollTop) => { restoreScrollTopRef.current = scrollTop; },
       onSettle: () => {
-        // Phase flips before the report so reportObservation is no longer suppressed; one final
-        // stable-anchor save (§2.4), then release control.
-        restorePhaseRef.current = 'settled';
+        // The session flips phase before this callback, so the final stable-anchor save is allowed.
         reportObservation.current();
-        teardown();
       },
     });
-    // Stop the rAF loop on teardown (including an unmount mid-restore) so it never ticks on a
-    // detached root. A no-op once the coordinator has already settled/cancelled.
-    cleanups.push(() => coordinator.cancel());
-
-    // Any deliberate user input hands control back immediately (§2.4); the user's own scroll then
-    // flows through the normal save chain. Programmatic scrollTop writes don't emit these events.
-    const cancelToUser = () => {
-      if (coordinator.phase() !== 'restoring') return;
-      coordinator.cancel();
-      restorePhaseRef.current = 'cancelled';
-      teardown();
-    };
-    const navKeys = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Spacebar']);
-    const onKey = (event: KeyboardEvent) => { if (navKeys.has(event.key)) cancelToUser(); };
-    for (const type of ['wheel', 'touchstart', 'pointerdown'] as const) {
-      root.addEventListener(type, cancelToUser, { passive: true });
-      cleanups.push(() => root.removeEventListener(type, cancelToUser));
-    }
-    window.addEventListener('keydown', onKey);
-    cleanups.push(() => window.removeEventListener('keydown', onKey));
-
-    // Early completion is gated on assets that move the boundary: fonts and images that sit BEFORE
-    // the target. Below/at-target images don't shift it, so they don't hold up the handoff (§2.4).
-    let fontsReady = false;
-    let pendingImages = 0;
-    const maybeReady = () => { if (fontsReady && pendingImages === 0) coordinator.markAssetsReady(); };
-    const precedingImages = [...root.querySelectorAll<HTMLImageElement>('img')].filter((image) => (
-      !image.complete
-      && (geometryEl.compareDocumentPosition(image) & Node.DOCUMENT_POSITION_PRECEDING) !== 0
-    ));
-    pendingImages = precedingImages.length;
-    for (const image of precedingImages) {
-      const done = () => { pendingImages = Math.max(0, pendingImages - 1); maybeReady(); };
-      image.addEventListener('load', done, { once: true });
-      image.addEventListener('error', done, { once: true });
-      cleanups.push(() => {
-        image.removeEventListener('load', done);
-        image.removeEventListener('error', done);
-      });
-    }
-    const fonts = window.document.fonts;
-    if (fonts?.ready) {
-      fonts.ready.then(() => { fontsReady = true; maybeReady(); }).catch(() => {});
-    } else {
-      fontsReady = true;
-    }
-    maybeReady();
-
-    coordinator.start();
-    return teardown;
-  }, []);
+  });
 
   useEffect(() => {
     const root = scrollRoot.current;
@@ -808,11 +719,11 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   }, [highlightEditor, prepared, selectionDraft]);
 
   // Warm the window for the opening/resumed node even if the reader never scrolls; scroll-driven
-  // reports (schedulePositionReport) and jumps take over from here. Suppressed while the restore
-  // coordinator still owns the scroll — reportObservation checks the phase (§2.4).
+  // reports (schedulePositionReport) and jumps take over from here. A settled restore already sends
+  // its final observation; an active restore is suppressed by reportObservation (§2.4).
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      reportObservation.current();
+      if (restorePhaseRef.current !== 'settled') reportObservation.current();
     }, 300);
     return () => window.clearTimeout(handle);
   }, []);
@@ -821,6 +732,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   // debounced scroll report may not have fired yet. keepalive lets the request outlive unload.
   useEffect(() => {
     const flush = () => {
+      if (restorePhaseRef.current === 'restoring') return;
       // §3.2: on unload, only persist a precise anchor. If the probe can't sample one, send nothing —
       // never a destructive fallback that would replace a good saved position with a chapter start.
       const observed = computeAnchorRef.current();
@@ -1017,6 +929,9 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const handleScroll = () => {
     const root = scrollRoot.current;
     if (!root) return;
+    const expectedRestoreScrollTop = restoreScrollTopRef.current;
+    const isRestoreScroll = isRestoreScrollEvent(expectedRestoreScrollTop, root.scrollTop);
+    if (expectedRestoreScrollTop !== null) restoreScrollTopRef.current = null;
     setChapterProgress(computeChapterProgress());
     const delta = root.scrollTop - lastScrollTop.current;
     if (delta > 4 && root.scrollTop > 180
@@ -1028,7 +943,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     // §11.8/§11.10 activity: a downward scroll is forward reading (keeps forward-time eligible); an
     // upward scroll is still activity but not forward. The programmatic restore scroll (§2.4) is not
     // user activity, so it must not open an interval or accrue time.
-    if (delta !== 0 && restorePhaseRef.current !== 'restoring') {
+    if (delta !== 0 && restorePhaseRef.current !== 'restoring' && !isRestoreScroll) {
       sessionRef.current?.recordActivity(Date.now(), delta > 0);
     }
     lastScrollTop.current = root.scrollTop;
@@ -1038,7 +953,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     setHighlightEditor(null);
     // Debounced position report (§11.5): saves intra-node scroll position and grows the window
     // when the settled node changes.
-    schedulePositionReport();
+    if (restorePhaseRef.current !== 'restoring' && !isRestoreScroll) schedulePositionReport();
   };
 
   const jumpToOrder = (order: number) => {

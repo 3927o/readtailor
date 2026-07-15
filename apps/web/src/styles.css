@@ -1484,6 +1484,7 @@ h1 {
   height: 100vh;
   overflow-x: hidden;
   overflow-y: auto;
+  overflow-anchor: none;
   background: var(--rt-bg);
   scroll-behavior: smooth;
 }
