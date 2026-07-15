@@ -11,6 +11,8 @@ import {
   runReadingSetupAgent,
   type AgentTraceEvent,
   type AskAiToolbox,
+  type CompletionSnapshot,
+  type InterviewCompletionStore,
   type NormalizationAgentToolbox,
   type NormalizationFinishBinding,
   type ReadingSetupStreamDelta,
@@ -159,6 +161,59 @@ describe('normalization Pi Agent', () => {
   });
 });
 
+function createMemoryCompletionStore(
+  initial: CompletionSnapshot = { completionId: null, baseConversationVersion: null },
+) {
+  let snapshot = structuredClone(initial);
+  const calls: string[] = [];
+  const store: InterviewCompletionStore = {
+    async load() {
+      calls.push('load');
+      return structuredClone(snapshot);
+    },
+    async start() {
+      calls.push('start');
+      if (!snapshot.completionId) {
+        snapshot = { ...snapshot, completionId: 'completion-1', baseConversationVersion: 2 };
+      }
+      return structuredClone(snapshot);
+    },
+    async submitBriefing(value) {
+      calls.push('briefing');
+      snapshot = { ...snapshot, briefing: value };
+      return structuredClone(snapshot);
+    },
+    async submitStrategy(value) {
+      calls.push('strategy');
+      snapshot = { ...snapshot, strategy: value };
+      return structuredClone(snapshot);
+    },
+    async submitCandidates(value) {
+      calls.push('candidates');
+      snapshot = { ...snapshot, candidates: value };
+      return structuredClone(snapshot);
+    },
+    async submitProfile(value) {
+      calls.push('profile');
+      snapshot = { ...snapshot, profile: value };
+      return structuredClone(snapshot);
+    },
+    async complete() {
+      calls.push('complete');
+      if (!snapshot.briefing || !snapshot.strategy || !snapshot.candidates || !snapshot.profile) {
+        throw new Error('incomplete fixture');
+      }
+      return {
+        briefing: snapshot.briefing,
+        strategy: snapshot.strategy,
+        candidates: snapshot.candidates,
+        profile: snapshot.profile,
+      };
+    },
+  };
+  return { store, calls, snapshot: () => structuredClone(snapshot) };
+}
+
 describe('reading setup Pi Agent', () => {
   it('can only advance the interview by submitting a host-validated tool result', async () => {
     const question = {
@@ -293,6 +348,150 @@ describe('reading setup Pi Agent', () => {
       toolName: 'present_interview_question',
     });
     expect(setupDeltas.filter((delta) => delta.type === 'prompt_delta').every((delta) => delta.speculativeEpoch === 1)).toBe(true);
+  });
+
+  it('persists completion artifacts through ordered tools and returns the legacy completed outcome', async () => {
+    const briefing = {
+      book_identity: '这是一本帮助读者建立复杂系统整体认识的书。',
+      arc: '全书从局部现象出发，逐步建立系统结构与动态关系。',
+      assumed_knowledge: '默认读者了解基础概念，但不要求具备专业建模经验。',
+      reading_advice: '先抓住各章之间的因果主线，再回头处理公式和细节。',
+    };
+    const publicStrategy = '先帮助读者建立全书结构，再解释真正阻碍理解的关键概念；保留原文推进节奏，只在必要位置增加定位、背景和回顾。';
+    const strategy = {
+      goals: ['建立整体理解'],
+      expression_principles: ['保持克制，只补充影响理解的信息'],
+      guide: { enabled: true, objectives: ['说明章节位置与阅读重点'] },
+      annotations: { enabled: true, focuses: ['关键概念'], exclusions: ['不复述清晰原文'] },
+      after_reading: { enabled: true, objectives: ['回顾核心关系'] },
+    };
+    const candidates = [
+      { section_id: 'chapter-1', segment: 1, reason: '覆盖进入本书时的理解门槛。' },
+      { section_id: 'chapter-2', segment: 1, reason: '覆盖全书最典型的论证内容。' },
+      { section_id: 'chapter-3', segment: 1, reason: '覆盖关系复杂且难度较高的内容。' },
+    ];
+    const profile = {
+      book_reader_profile: {
+        summary: '读者希望建立整体框架，并在关键概念处获得克制而准确的帮助。',
+        motivations: ['理解复杂系统'],
+        prior_knowledge: ['了解基础概念'],
+        reading_goals: ['建立整体框架'],
+        likely_barriers: ['容易迷失在局部细节中'],
+      },
+      reader_profile_patch: { knowledge: ['复杂系统基础概念'] },
+    };
+    const apiBaseUrl = await startAskAiServer([
+      { kind: 'tool', name: 'finish_interview', arguments: '{}' },
+      { kind: 'tool', name: 'submit_reading_briefing', arguments: JSON.stringify(briefing) },
+      {
+        kind: 'tool',
+        name: 'submit_reading_strategy',
+        arguments: JSON.stringify({ public_strategy: publicStrategy, strategy }),
+      },
+      { kind: 'tool', name: 'submit_trial_candidates', arguments: JSON.stringify({ candidates }) },
+      { kind: 'tool', name: 'submit_interview_profile', arguments: JSON.stringify(profile) },
+      { kind: 'tool', name: 'complete_interview_result', arguments: '{}' },
+    ]);
+    const completion = createMemoryCompletionStore();
+    const deltas: ReadingSetupStreamDelta[] = [];
+
+    const result = await runReadingSetupAgent({
+      apiBaseUrl,
+      apiKey: 'test-key',
+      modelName: 'fake-tool-model',
+      sessionId: 'completion-session',
+      phase: 'interviewing',
+      askedCount: 1,
+      context: { book: { title: 'Book' } },
+      completionStore: completion.store,
+      timeoutMs: 5000,
+      onReadingSetupStream: (delta) => deltas.push(delta),
+    });
+
+    expect(completion.calls).toEqual([
+      'load',
+      'start',
+      'briefing',
+      'strategy',
+      'candidates',
+      'profile',
+      'complete',
+    ]);
+    expect(result).toEqual({
+      type: 'completed',
+      bookReaderProfile: profile.book_reader_profile,
+      readerProfilePatch: profile.reader_profile_patch,
+      briefing,
+      publicStrategy,
+      strategy: { ...strategy, trial_candidates: candidates },
+    });
+    expect(deltas.filter((delta) => delta.type === 'speculative_reset')).toHaveLength(1);
+    expect(deltas.filter((delta) => delta.type === 'draft_started')).toEqual([
+      { type: 'draft_started', source: 'interview', speculativeEpoch: 1 },
+    ]);
+  });
+
+  it('resumes at the first missing completion artifact without exposing another question', async () => {
+    const briefing = {
+      book_identity: '这是一本帮助读者建立复杂系统整体认识的书。',
+      arc: '全书从局部现象出发，逐步建立系统结构与动态关系。',
+      assumed_knowledge: '默认读者了解基础概念，但不要求具备专业建模经验。',
+      reading_advice: '先抓住各章之间的因果主线，再回头处理公式和细节。',
+    };
+    const strategy = {
+      publicStrategy: '先建立结构，再解释真正阻碍理解的关键概念；尽量保持原文节奏，并在必要位置加入简短定位和回顾。',
+      strategy: {
+        goals: ['建立整体理解'],
+        expression_principles: ['保持克制'],
+        guide: { enabled: true, objectives: ['定位'] },
+        annotations: { enabled: true, focuses: ['概念'], exclusions: [] },
+        after_reading: { enabled: true, objectives: ['回顾'] },
+      },
+    };
+    const candidates = [
+      { section_id: 'chapter-1', segment: 1, reason: '覆盖进入本书时的理解门槛。' },
+      { section_id: 'chapter-2', segment: 1, reason: '覆盖全书最典型的论证内容。' },
+      { section_id: 'chapter-3', segment: 1, reason: '覆盖关系复杂且难度较高的内容。' },
+    ];
+    const profile = {
+      book_reader_profile: {
+        summary: '读者希望建立整体框架，并在关键概念处获得克制而准确的帮助。',
+        motivations: ['理解复杂系统'],
+        prior_knowledge: [],
+        reading_goals: ['建立整体框架'],
+        likely_barriers: ['局部细节过多'],
+      },
+    };
+    let offeredTools: string[] = [];
+    const apiBaseUrl = await startAskAiServer([
+      { kind: 'tool', name: 'submit_interview_profile', arguments: JSON.stringify(profile) },
+      { kind: 'tool', name: 'complete_interview_result', arguments: '{}' },
+    ], (tools) => {
+      offeredTools = tools;
+    });
+    const completion = createMemoryCompletionStore({
+      completionId: 'completion-1',
+      baseConversationVersion: 2,
+      briefing,
+      strategy,
+      candidates,
+    });
+
+    const result = await runReadingSetupAgent({
+      apiBaseUrl,
+      apiKey: 'test-key',
+      modelName: 'fake-tool-model',
+      sessionId: 'completion-resume-session',
+      phase: 'interviewing',
+      askedCount: 3,
+      context: { book: { title: 'Book' } },
+      completionStore: completion.store,
+      timeoutMs: 5000,
+    });
+
+    expect(completion.calls).toEqual(['load', 'profile', 'complete']);
+    expect(offeredTools).not.toContain('present_interview_question');
+    expect(result.type).toBe('completed');
   });
 
   it('lets select_trial choose block boundaries without model-calculated offsets', async () => {
@@ -489,13 +688,13 @@ describe('createReadingSetupStreamParser', () => {
     { section_id: 'chapter-2', segment: 2, reason: '典型内容含有括号（以及“引号”）。' },
     { section_id: 'chapter-3', segment: 3, reason: '较难内容包含反斜杠 \\ 和右花括号 }。' },
   ];
-  const finish = JSON.stringify({
-    briefing: {
-      book_identity: '这是一本讨论复杂系统的书。',
-      arc: '全书从局部问题逐步走向整体结构。',
-      assumed_knowledge: '默认读者知道基础概念。',
-      reading_advice: '先抓住论证主线，再处理细节。',
-    },
+  const briefing = {
+    book_identity: '这是一本讨论复杂系统的书。',
+    arc: '全书从局部问题逐步走向整体结构。',
+    assumed_knowledge: '默认读者知道基础概念。',
+    reading_advice: '先抓住论证主线，再处理细节。',
+  };
+  const strategy = {
     public_strategy: '先建立结构，再只解释真正阻碍理解的概念。',
     strategy: {
       goals: ['理解主线'],
@@ -503,10 +702,8 @@ describe('createReadingSetupStreamParser', () => {
       guide: { enabled: true, objectives: ['定位'] },
       annotations: { enabled: true, focuses: ['概念'], exclusions: [] },
       after_reading: { enabled: true, objectives: ['回顾'] },
-      trial_candidates: candidates,
     },
-    book_reader_profile: {},
-  });
+  };
 
   const fragments = [
     {
@@ -533,19 +730,37 @@ describe('createReadingSetupStreamParser', () => {
   ] as const;
 
   for (const size of [1, 2, 7, 10_000]) {
-    it(`streams visible strategy fields and complete candidates at chunk size ${size}`, () => {
+    it(`streams completion tools in one epoch at chunk size ${size}`, () => {
       const events: ReadingSetupStreamDelta[] = [];
       const parser = createReadingSetupStreamParser((delta) => events.push(delta));
       parser.onToolStart('finish_interview');
-      for (const part of chunk(finish, size)) parser.onDelta(part);
+      parser.onDelta('{}');
+      parser.onToolSucceeded('finish_interview');
+      parser.onToolStart('submit_reading_briefing');
+      for (const part of chunk(JSON.stringify(briefing), size)) parser.onDelta(part);
+      parser.acceptCompletion({
+        completionId: 'completion-1',
+        baseConversationVersion: 2,
+        briefing,
+      });
+      parser.onToolStart('submit_reading_strategy');
+      for (const part of chunk(JSON.stringify(strategy), size)) parser.onDelta(part);
+      parser.acceptCompletion({
+        completionId: 'completion-1',
+        baseConversationVersion: 2,
+        briefing,
+        strategy: { publicStrategy: strategy.public_strategy, strategy: strategy.strategy },
+      });
+      parser.onToolStart('submit_trial_candidates');
+      for (const part of chunk(JSON.stringify({ candidates }), size)) parser.onDelta(part);
 
-      expect(events[0]).toEqual({
+      expect(events.filter((event) => event.type === 'speculative_reset')).toEqual([{
         type: 'speculative_reset',
         speculativeEpoch: 1,
         toolName: 'finish_interview',
-      });
+      }]);
       expect(events[1]).toEqual({ type: 'draft_started', source: 'interview', speculativeEpoch: 1 });
-      const briefing = Object.fromEntries(
+      const streamedBriefing = Object.fromEntries(
         ['book_identity', 'arc', 'assumed_knowledge', 'reading_advice'].map((field) => [
           field,
           events
@@ -554,12 +769,7 @@ describe('createReadingSetupStreamParser', () => {
             .join(''),
         ]),
       );
-      expect(briefing).toEqual({
-        book_identity: '这是一本讨论复杂系统的书。',
-        arc: '全书从局部问题逐步走向整体结构。',
-        assumed_knowledge: '默认读者知道基础概念。',
-        reading_advice: '先抓住论证主线，再处理细节。',
-      });
+      expect(streamedBriefing).toEqual(briefing);
       expect(events.filter((event) => event.type === 'strategy_delta').map((event) => event.type === 'strategy_delta' ? event.chars : '').join(''))
         .toBe('先建立结构，再只解释真正阻碍理解的概念。');
       expect(events.filter((event) => event.type === 'reading_node_added')).toEqual(
@@ -575,42 +785,133 @@ describe('createReadingSetupStreamParser', () => {
     });
   }
 
-  it('buffers out-of-order tool fields into briefing, strategy, then candidate events', () => {
-    const value = JSON.parse(finish) as Record<string, unknown>;
-    const outOfOrder = JSON.stringify({
-      public_strategy: value.public_strategy,
-      strategy: value.strategy,
-      briefing: value.briefing,
-      book_reader_profile: value.book_reader_profile,
-    });
+  it('does not reset streamed state during normal completion stage transitions', () => {
     const events: ReadingSetupStreamDelta[] = [];
     const parser = createReadingSetupStreamParser((delta) => events.push(delta));
     parser.onToolStart('finish_interview');
-    for (const part of chunk(outOfOrder, 3)) parser.onDelta(part);
+    parser.onToolSucceeded('finish_interview');
+    parser.onToolStart('submit_reading_briefing');
+    parser.onDelta(JSON.stringify(briefing));
+    parser.acceptCompletion({
+      completionId: 'completion-1',
+      baseConversationVersion: 2,
+      briefing,
+    });
+    parser.onToolStart('submit_reading_strategy');
+    parser.onDelta(JSON.stringify(strategy));
+    parser.acceptCompletion({
+      completionId: 'completion-1',
+      baseConversationVersion: 2,
+      briefing,
+      strategy: { publicStrategy: strategy.public_strategy, strategy: strategy.strategy },
+    });
+    parser.onToolStart('submit_trial_candidates');
+    parser.onDelta(JSON.stringify({ candidates }));
 
-    const visible = events.filter((event) => (
-      event.type === 'briefing_delta'
-      || event.type === 'strategy_delta'
-      || event.type === 'reading_node_added'
-    ));
-    const firstStrategy = visible.findIndex((event) => event.type === 'strategy_delta');
-    const firstCandidate = visible.findIndex((event) => event.type === 'reading_node_added');
-    const lastBriefing = visible.findLastIndex((event) => event.type === 'briefing_delta');
-    const lastStrategy = visible.findLastIndex((event) => event.type === 'strategy_delta');
+    expect(events.filter((event) => event.type === 'speculative_reset')).toHaveLength(1);
+    const visibleTypes = events
+      .filter((event) => event.type === 'briefing_delta' || event.type === 'strategy_delta' || event.type === 'reading_node_added')
+      .map((event) => event.type);
+    expect(visibleTypes.findIndex((type) => type === 'strategy_delta'))
+      .toBeGreaterThan(visibleTypes.findLastIndex((type) => type === 'briefing_delta'));
+    expect(visibleTypes.findIndex((type) => type === 'reading_node_added'))
+      .toBeGreaterThan(visibleTypes.findLastIndex((type) => type === 'strategy_delta'));
+  });
 
-    expect(firstStrategy).toBeGreaterThan(lastBriefing);
-    expect(firstCandidate).toBeGreaterThan(lastStrategy);
-    expect(visible.filter((event) => event.type === 'reading_node_added')).toHaveLength(3);
+  it('starts a new epoch when the current completion stage is retried', () => {
+    const events: ReadingSetupStreamDelta[] = [];
+    const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+    parser.replayCompletion({
+      completionId: 'completion-1',
+      baseConversationVersion: 2,
+      briefing,
+    });
+    parser.onToolStart('submit_reading_strategy');
+    parser.onDelta('{"public_strategy":"第一版尚未完成');
+    parser.onToolStart('submit_reading_strategy');
+    parser.onDelta(JSON.stringify(strategy));
+
+    expect(events.filter((event) => event.type === 'speculative_reset')).toEqual([
+      { type: 'speculative_reset', speculativeEpoch: 1, toolName: null },
+      { type: 'speculative_reset', speculativeEpoch: 2, toolName: 'submit_reading_strategy' },
+    ]);
+    expect(events.filter((event) => event.type === 'strategy_delta' && event.speculativeEpoch === 2)
+      .map((event) => event.type === 'strategy_delta' ? event.chars : '').join(''))
+      .toBe(strategy.public_strategy);
+  });
+
+  it('replays only accepted completion checkpoints on resume and retry', () => {
+    const events: ReadingSetupStreamDelta[] = [];
+    const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+    const snapshot: CompletionSnapshot = {
+      completionId: 'completion-1',
+      baseConversationVersion: 4,
+      briefing,
+      strategy: { publicStrategy: strategy.public_strategy, strategy: strategy.strategy },
+      candidates,
+    };
+
+    parser.replayCompletion(snapshot);
+    parser.onToolStart('submit_interview_profile');
+    parser.onDelta('{"book_reader_profile":{"summary":"尚未持久化的画像');
+    parser.onToolStart('submit_interview_profile');
+
+    expect(events.filter((event) => event.type === 'speculative_reset')).toEqual([
+      { type: 'speculative_reset', speculativeEpoch: 1, toolName: null },
+      { type: 'speculative_reset', speculativeEpoch: 2, toolName: 'submit_interview_profile' },
+    ]);
+    for (const epoch of [1, 2]) {
+      expect(events.filter((event) => event.type === 'briefing_delta' && event.speculativeEpoch === epoch)
+        .map((event) => event.type === 'briefing_delta' ? event.chars : '').join(''))
+        .toBe(Object.values(briefing).join(''));
+      expect(events.filter((event) => event.type === 'strategy_delta' && event.speculativeEpoch === epoch)
+        .map((event) => event.type === 'strategy_delta' ? event.chars : '').join(''))
+        .toBe(strategy.public_strategy);
+      expect(events.filter((event) => event.type === 'reading_node_added' && event.speculativeEpoch === epoch))
+        .toHaveLength(3);
+    }
+  });
+
+  it('resets and suppresses a different stage after the current stage was not accepted', () => {
+    const events: ReadingSetupStreamDelta[] = [];
+    const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+    parser.replayCompletion({
+      completionId: 'completion-1',
+      baseConversationVersion: 2,
+      briefing,
+    });
+    parser.onToolStart('submit_reading_strategy');
+    parser.onDelta('{"public_strategy":"尚未持久化的策略');
+    parser.onToolStart('submit_trial_candidates');
+    parser.onDelta(JSON.stringify({ candidates }));
+
+    expect(events.filter((event) => event.type === 'speculative_reset')).toEqual([
+      { type: 'speculative_reset', speculativeEpoch: 1, toolName: null },
+      { type: 'speculative_reset', speculativeEpoch: 2, toolName: 'submit_trial_candidates' },
+    ]);
+    expect(events.some((event) => (
+      event.type === 'reading_node_added' && event.speculativeEpoch === 2
+    ))).toBe(false);
+    expect(events.filter((event) => (
+      event.type === 'briefing_delta' && event.speculativeEpoch === 2
+    ))).toHaveLength(4);
   });
 
   it('never emits a candidate before its real closing brace arrives', () => {
+    const source = JSON.stringify({ candidates });
     const events: ReadingSetupStreamDelta[] = [];
     const parser = createReadingSetupStreamParser((delta) => events.push(delta));
-    parser.onToolStart('finish_interview');
-    const marker = finish.indexOf('用于观察进入门槛。') + '用于观察进入门槛。'.length;
-    parser.onDelta(finish.slice(0, marker));
+    parser.replayCompletion({
+      completionId: 'completion-1',
+      baseConversationVersion: 2,
+      briefing,
+      strategy: { publicStrategy: strategy.public_strategy, strategy: strategy.strategy },
+    });
+    parser.onToolStart('submit_trial_candidates');
+    const marker = source.indexOf('用于观察进入门槛。') + '用于观察进入门槛。'.length;
+    parser.onDelta(source.slice(0, marker));
     expect(events.some((event) => event.type === 'reading_node_added')).toBe(false);
-    parser.onDelta(finish.slice(marker));
+    parser.onDelta(source.slice(marker));
     expect(events.filter((event) => event.type === 'reading_node_added')).toHaveLength(3);
   });
 
@@ -667,13 +968,85 @@ describe('createReadingSetupStreamParser', () => {
       .map((event) => event.type === 'strategy_delta' ? event.chars : '').join('')).toBe('第二版完整内容');
   });
 
-  it('infers finish_interview and emits its start event when the provider withholds the name', () => {
+  it('infers the briefing tool when the provider initially withholds its name', () => {
     const events: ReadingSetupStreamDelta[] = [];
     const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+    parser.replayCompletion({ completionId: 'completion-1', baseConversationVersion: 2 });
     parser.onToolStart('');
-    for (const part of chunk(finish, 5)) parser.onDelta(part);
+    for (const part of chunk(JSON.stringify(briefing), 5)) parser.onDelta(part);
     expect(events[0]).toEqual({ type: 'speculative_reset', speculativeEpoch: 1, toolName: null });
     expect(events.some((event) => event.type === 'draft_started' && event.source === 'interview')).toBe(true);
+    expect(events.some((event) => event.type === 'briefing_delta')).toBe(true);
+  });
+
+  it('does not expose completion UI for a submit tool called before finish_interview succeeds', () => {
+    const events: ReadingSetupStreamDelta[] = [];
+    const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+    parser.onToolStart('submit_reading_briefing');
+    parser.onDelta(JSON.stringify(briefing));
+
+    expect(events.some((event) => event.type === 'draft_started')).toBe(false);
+    expect(events.some((event) => event.type === 'briefing_delta')).toBe(false);
+  });
+
+  it('emits persisted artifacts after sequential execution of batched tool calls', () => {
+    const events: ReadingSetupStreamDelta[] = [];
+    const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+    parser.onToolStart('finish_interview');
+    parser.onDelta('{}');
+    parser.onToolStart('submit_reading_briefing');
+    parser.onDelta(JSON.stringify(briefing));
+    parser.onToolStart('submit_reading_strategy');
+    parser.onDelta(JSON.stringify(strategy));
+    parser.onToolStart('submit_trial_candidates');
+    parser.onDelta(JSON.stringify({ candidates }));
+
+    expect(events.some((event) => event.type === 'draft_started')).toBe(false);
+    expect(events.some((event) => event.type === 'briefing_delta')).toBe(false);
+    parser.acceptCompletion({ completionId: 'completion-1', baseConversationVersion: 2 });
+    parser.acceptCompletion({
+      completionId: 'completion-1',
+      baseConversationVersion: 2,
+      briefing,
+    });
+    parser.acceptCompletion({
+      completionId: 'completion-1',
+      baseConversationVersion: 2,
+      briefing,
+      strategy: { publicStrategy: strategy.public_strategy, strategy: strategy.strategy },
+    });
+    parser.acceptCompletion({
+      completionId: 'completion-1',
+      baseConversationVersion: 2,
+      briefing,
+      strategy: { publicStrategy: strategy.public_strategy, strategy: strategy.strategy },
+      candidates,
+    });
+
+    expect(events.filter((event) => event.type === 'draft_started')).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'briefing_delta')).toHaveLength(4);
+    expect(events.filter((event) => event.type === 'strategy_delta')
+      .map((event) => event.type === 'strategy_delta' ? event.chars : '').join(''))
+      .toBe(strategy.public_strategy);
+    expect(events.filter((event) => event.type === 'reading_node_added')).toHaveLength(3);
+  });
+
+  it('uses the current phase when an unnamed strategy tool is ambiguous', () => {
+    const events: ReadingSetupStreamDelta[] = [];
+    const parser = createReadingSetupStreamParser(
+      (delta) => events.push(delta),
+      'strategy_review',
+    );
+    parser.onToolStart('');
+    parser.onDelta(JSON.stringify(strategy));
+
+    expect(events[0]).toEqual({ type: 'speculative_reset', speculativeEpoch: 1, toolName: null });
+    expect(events).toContainEqual({
+      type: 'draft_started',
+      source: 'revision',
+      speculativeEpoch: 1,
+    });
+    expect(events.some((event) => event.type === 'strategy_delta')).toBe(true);
   });
 });
 
@@ -685,10 +1058,22 @@ type TurnScript =
   | { kind: 'text'; chunks: string[]; finishReason?: string }
   | { kind: 'hang'; chunks: string[] };
 
-async function startAskAiServer(scripts: TurnScript[]): Promise<string> {
+async function startAskAiServer(
+  scripts: TurnScript[],
+  onTools?: (toolNames: string[]) => void,
+): Promise<string> {
   const queue = [...scripts];
   const base = { id: 'chatcmpl-askai', object: 'chat.completion.chunk', created: 0, model: 'fake-tool-model' };
-  const server = createServer((_request, response) => {
+  const server = createServer(async (request, response) => {
+    if (onTools) {
+      let body = '';
+      for await (const part of request) body += String(part);
+      const payload = JSON.parse(body) as { tools?: Array<{ name?: string; function?: { name?: string } }> };
+      onTools((payload.tools ?? []).flatMap((tool) => {
+        const name = tool.name ?? tool.function?.name;
+        return name ? [name] : [];
+      }));
+    }
     response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     const script = queue.shift();
     if (!script) {
