@@ -67,6 +67,22 @@ describe('interview progressive stream reducer', () => {
     expect(state.strategySummary).toBe('');
   });
 
+  it('rebuilds persisted completion checkpoints after a recovery reset', () => {
+    let state = interviewStreamReducer(IDLE_INTERVIEW_STREAM, { type: 'recover' });
+    state = interviewStreamReducer(state, { type: 'event', event: event(1, { type: 'speculative_reset', phase: 'interviewing', speculativeEpoch: 2 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(2, { type: 'draft_started', conversationVersion: 6, speculativeEpoch: 2 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(3, { type: 'briefing_delta', field: 'book_identity', chars: '已保存定位', speculativeEpoch: 2 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(4, { type: 'briefing_delta', field: 'arc', chars: '已保存脉络', speculativeEpoch: 2 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(5, { type: 'strategy_delta', chars: '已保存策略', speculativeEpoch: 2 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(6, { type: 'reading_node_added', node: nodes[0]!, speculativeEpoch: 2 }) });
+    state = interviewStreamReducer(state, { type: 'event', event: event(7, { type: 'strategy_delta', chars: '迟到内容', speculativeEpoch: 1 }) });
+
+    expect(state.mode).toBe('draft_streaming');
+    expect(state.briefing).toEqual({ bookIdentity: '已保存定位', arc: '已保存脉络' });
+    expect(state.strategySummary).toBe('已保存策略');
+    expect(state.nodes).toEqual([nodes[0]]);
+  });
+
   it('leaves recovering when an authoritative snapshot contains the current question', () => {
     let state = interviewStreamReducer(IDLE_INTERVIEW_STREAM, { type: 'recover' });
     state = interviewStreamReducer(state, {
