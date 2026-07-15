@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { StrategyRevisionStreamEvent } from '@readtailor/contracts';
+import type { StrategyRevisionStreamEvent, TrialSelectionStreamEvent } from '@readtailor/contracts';
 import { buildApp as buildApiApp } from './app';
 import type { AuthService } from './auth';
 import { loadApiConfig } from './config';
@@ -720,6 +720,101 @@ describe('user book workflow routes', () => {
     }
     expect(strategy.body).toContain('"source":"strategy_feedback"');
     expect(trial.body).toContain('"source":"trial_feedback"');
+  });
+
+  it('streams strategy approval into fixed trial slots and a final revision', async () => {
+    const trial = {
+      userBookId: USER_BOOK_ID,
+      workflowStatus: 'trial_generating' as const,
+      trialRevisionId: TRIAL_REVISION_ID,
+      revision: 1,
+      status: 'generating' as const,
+      strategyDraftVersionId: STRATEGY_DRAFT_ID,
+      segments: [1, 2, 3].map((ordinal) => ({
+        id: `${ordinal}1111111-2222-4333-8444-555555555555`,
+        ordinal,
+        sectionId: 'chapter-1',
+        segment: ordinal,
+        range: { start: { blockIndex: 1, offset: 0 }, end: { blockIndex: 1, offset: 5 } },
+        chapterPath: ['Chapter 1'],
+        originalHtml: '<p>text</p>',
+        selectionReason: `reason-${ordinal}`,
+        status: 'pending' as const,
+        result: null,
+        viewedAt: null,
+      })),
+      adjustmentCount: 0,
+      adjustmentLimit: 5,
+      canAdjust: false,
+      canAdopt: false,
+    };
+    const events = async function* (): AsyncGenerator<TrialSelectionStreamEvent> {
+      yield {
+        userBookId: USER_BOOK_ID,
+        operationId: OPERATION_ID,
+        operationAttempt: 1,
+        sequence: 1,
+        type: 'selection_started',
+        speculativeEpoch: 1,
+        draftId: STRATEGY_DRAFT_ID,
+        slots: [
+          { ordinal: 1, tag: 'threshold' },
+          { ordinal: 2, tag: 'typical' },
+          { ordinal: 3, tag: 'hardest' },
+        ],
+      };
+      yield {
+        userBookId: USER_BOOK_ID,
+        operationId: OPERATION_ID,
+        operationAttempt: 1,
+        sequence: 2,
+        type: 'trial_created',
+        draftId: STRATEGY_DRAFT_ID,
+        trial,
+      } as TrialSelectionStreamEvent;
+    };
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        streamApproveStrategy() {
+          return events();
+        },
+      }),
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve/stream`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { strategyDraftVersionId: STRATEGY_DRAFT_ID, idempotencyKey: 'approve-stream-1' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    expect(response.headers['x-accel-buffering']).toBe('no');
+    expect(response.body.indexOf('selection_started')).toBeLessThan(response.body.indexOf('trial_created'));
+    expect(response.body).toContain('"ordinal":1,"tag":"threshold"');
+    expect(response.body).toContain(`"trialRevisionId":"${TRIAL_REVISION_ID}"`);
+  });
+
+  it('keeps approval stream validation errors as pre-stream HTTP responses', async () => {
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async *streamApproveStrategy() {
+          throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
+        },
+      }),
+    });
+    const response = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve/stream`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { strategyDraftVersionId: STRATEGY_DRAFT_ID, idempotencyKey: 'approve-stream-2' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: '处理方式已经更新，请刷新后继续' });
   });
 
   it('streams interview deltas as SSE and closes with question_final', async () => {

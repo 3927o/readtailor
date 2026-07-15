@@ -63,6 +63,7 @@ import {
   SystemChatRequestSchema,
   SystemJobSchema,
   TrialReviewResponseSchema,
+  type TrialSelectionStreamEvent,
   UserBookDetailResponseSchema,
   UserBookShelfResponseSchema,
 } from '@readtailor/contracts';
@@ -565,6 +566,48 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
             type: 'error',
             code: 'internal_error',
             message: '处理方式修订失败',
+          });
+        }
+      }
+    };
+    return reply
+      .type('text/event-stream')
+      .header('cache-control', 'private, no-store')
+      .header('x-accel-buffering', 'no')
+      .send(Readable.from(withHeartbeat(toSse(), 15_000)));
+  };
+
+  const sendTrialSelectionStream = async (
+    events: AsyncGenerator<TrialSelectionStreamEvent>,
+    reply: FastifyReply,
+    onError: (error: unknown) => void,
+  ) => {
+    let first: IteratorResult<TrialSelectionStreamEvent>;
+    try {
+      first = await events.next();
+    } catch (error) {
+      return userBookFailure(error, reply);
+    }
+    const encode = (event: TrialSelectionStreamEvent) => `data: ${JSON.stringify(event)}\n\n`;
+    const toSse = async function* (): AsyncGenerator<string> {
+      let last = first.done ? undefined : first.value;
+      try {
+        if (last) yield encode(last);
+        for await (const event of events) {
+          last = event;
+          yield encode(event);
+        }
+      } catch (error) {
+        onError(error);
+        if (last) {
+          yield encode({
+            userBookId: last.userBookId,
+            operationId: last.operationId,
+            operationAttempt: last.operationAttempt,
+            sequence: last.sequence + 1,
+            type: 'error',
+            code: 'internal_error',
+            message: '试读片段选择失败',
           });
         }
       }
@@ -1199,6 +1242,27 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       } catch (error) {
         return userBookFailure(error, reply);
       }
+    },
+  );
+
+  app.post(
+    '/v1/user-books/:id/strategy/approve/stream',
+    {
+      schema: {
+        params: userBookIdParams,
+        body: ApproveStrategyRequestSchema,
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      const events = deps.userBooks
+        .forUser(request.authUser!.id, { requestId: request.id })
+        .streamApproveStrategy(request.params.id, request.body);
+      return sendTrialSelectionStream(
+        events,
+        reply,
+        (error) => request.log.error({ err: error }, 'trial selection stream failed'),
+      );
     },
   );
 

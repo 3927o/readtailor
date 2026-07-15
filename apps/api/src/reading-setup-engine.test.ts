@@ -80,6 +80,34 @@ describe('createAgentReadingSetupEngine', () => {
     ]);
   });
 
+  it('streams all three trial fragments in fake mode', async () => {
+    const engine = createFakeReadingSetupEngine();
+    const events: Array<{ type: string; speculativeEpoch: number }> = [];
+    const outcome = await engine.runTurn({
+      sessionId: 'session-fake',
+      phase: 'select_trial',
+      askedCount: 0,
+      context: {
+        trialNodeContents: [1, 2, 3].map((segment) => ({
+          section_id: 'chapter-1',
+          segment,
+          blocks: [{ block_index: 1, text: `candidate-${segment}` }],
+        })),
+      },
+      onStream: (event) => events.push(event),
+    });
+
+    expect(outcome.type).toBe('fragments');
+    expect(events.map((event) => event.type)).toEqual([
+      'speculative_reset',
+      'selection_started',
+      'fragment_added',
+      'fragment_added',
+      'fragment_added',
+    ]);
+    expect(new Set(events.map((event) => event.speculativeEpoch))).toEqual(new Set([1]));
+  });
+
   it('persists ordered, queryable tool traces without prompt or raw argument content', async () => {
     const question = {
       id: 'goal',

@@ -9,10 +9,12 @@ import {
   resumeInterview,
   resumeReadingSetupOperation,
   startInterview,
+  streamApproveStrategyForTrial,
   streamStrategyFeedback,
   streamTrialFeedback,
   streamResumeInterview,
   type StrategyRevisionClientEvent,
+  type TrialSelectionClientEvent,
   submitStrategyFeedback,
   submitTrialFeedback,
 } from './api';
@@ -305,6 +307,91 @@ describe('strategy revision streams', () => {
       idempotencyKey: args[3],
     });
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/feedback/stream');
+  });
+});
+
+describe('trial selection streams', () => {
+  it('maps provisional fragments and the authoritative final trial while preserving the caller key', async () => {
+    const envelope = {
+      userBookId: '10000000-0000-0000-0000-000000000001',
+      operationId: '10000000-0000-0000-0000-000000000002',
+      operationAttempt: 1,
+    };
+    const frames = [
+      {
+        ...envelope,
+        sequence: 1,
+        speculativeEpoch: 1,
+        type: 'fragment_selected',
+        draftId: 'draft-1',
+        sample: {
+          ordinal: 1,
+          tag: 'threshold',
+          sectionId: 'section-1',
+          segment: 1,
+          range: { start: { blockIndex: 1, offset: 0 }, end: { blockIndex: 1, offset: 10 } },
+          chapterPath: ['第一章'],
+          originalHtml: '<p>原文</p>',
+          selectionReason: '进入门槛',
+        },
+      },
+      {
+        ...envelope,
+        sequence: 2,
+        type: 'trial_created',
+        draftId: 'draft-1',
+        trial: trialResponse('trial-2'),
+      },
+    ].map((item) => `data: ${JSON.stringify(item)}\n\n`).join('');
+    const encoder = new TextEncoder();
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        const split = Math.floor(frames.length / 2);
+        controller.enqueue(encoder.encode(frames.slice(0, split)));
+        controller.enqueue(encoder.encode(frames.slice(split)));
+        controller.close();
+      },
+    }), { headers: { 'content-type': 'text/event-stream' } });
+    const fetchMock = vi.fn().mockResolvedValue(response);
+    vi.stubGlobal('fetch', fetchMock);
+    const events: TrialSelectionClientEvent[] = [];
+
+    await streamApproveStrategyForTrial('book-1', 'draft-1', 'approve-command-1', {
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(events.map((event) => event.type)).toEqual(['fragment_selected', 'trial_created']);
+    expect(events[0]).toMatchObject({ type: 'fragment_selected', sample: { ordinal: 1 } });
+    expect(events[1]).toMatchObject({ type: 'trial_created', trial: { revisionId: 'trial-2' } });
+    expect(fetchMock.mock.calls[0]?.[0]).toMatch(/\/strategy\/approve\/stream$/);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      strategyDraftVersionId: 'draft-1',
+      idempotencyKey: 'approve-command-1',
+    });
+  });
+
+  it('treats a stream without a terminal event as recoverable transport failure', async () => {
+    const frame = `data: ${JSON.stringify({
+      userBookId: '10000000-0000-0000-0000-000000000001',
+      operationId: '10000000-0000-0000-0000-000000000002',
+      operationAttempt: 1,
+      sequence: 1,
+      speculativeEpoch: 1,
+      type: 'selection_started',
+      draftId: 'draft-1',
+      slots: [
+        { ordinal: 1, tag: 'threshold' },
+        { ordinal: 2, tag: 'typical' },
+        { ordinal: 3, tag: 'hardest' },
+      ],
+    })}\n\n`;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(frame, {
+      headers: { 'content-type': 'text/event-stream' },
+    })));
+
+    await expect(streamApproveStrategyForTrial('book-1', 'draft-1', 'command-1', {
+      onEvent: () => {},
+    })).rejects.toMatchObject({ status: 0 });
   });
 });
 

@@ -7,6 +7,7 @@ import type {
   SharedBookStatus,
   StrategyReviewResponse,
   StrategyRevisionStreamEvent,
+  TrialSelectionStreamEvent,
   TrialReviewResponse,
   TrialSegment,
 } from '@readtailor/contracts';
@@ -631,6 +632,88 @@ export function streamStrategyFeedback(
     handlers,
     signal,
   );
+}
+
+type TrialSelectionFinalEvent = Extract<TrialSelectionStreamEvent, { type: 'trial_created' }>;
+export type TrialSelectionClientEvent =
+  | Exclude<TrialSelectionStreamEvent, TrialSelectionFinalEvent>
+  | (Omit<TrialSelectionFinalEvent, 'trial'> & { trial: TrialSnapshot });
+
+export interface TrialSelectionStreamHandlers {
+  onEvent(event: TrialSelectionClientEvent): void;
+}
+
+function dispatchTrialSelectionFrame(
+  frame: string,
+  handlers: TrialSelectionStreamHandlers,
+): TrialSelectionClientEvent['type'] | null {
+  const dataLine = frame.split('\n').find((line) => line.startsWith('data:'));
+  if (!dataLine) return null;
+  const payload = dataLine.slice(5).trim();
+  if (!payload) return null;
+  let event: TrialSelectionStreamEvent;
+  try {
+    event = JSON.parse(payload) as TrialSelectionStreamEvent;
+  } catch {
+    return null;
+  }
+  const clientEvent: TrialSelectionClientEvent = event.type === 'trial_created'
+    ? { ...event, trial: mapTrial(event.trial) }
+    : event;
+  handlers.onEvent(clientEvent);
+  return clientEvent.type;
+}
+
+async function consumeTrialSelectionStream(
+  response: Response,
+  handlers: TrialSelectionStreamHandlers,
+): Promise<void> {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!response.ok || !contentType.includes('text/event-stream') || !response.body) {
+    const body = await response.json().catch(() => null) as { error?: unknown } | null;
+    throw new ApiError(
+      typeof body?.error === 'string' ? body.error : `请求失败（${response.status}）`,
+      response.status,
+    );
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let terminal = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary = buffer.indexOf('\n\n');
+      while (boundary >= 0) {
+        const type = dispatchTrialSelectionFrame(buffer.slice(0, boundary), handlers);
+        if (type === 'trial_created' || type === 'error') terminal = true;
+        buffer = buffer.slice(boundary + 2);
+        boundary = buffer.indexOf('\n\n');
+      }
+    }
+    if (!terminal) throw new ApiError('连接中断，正在恢复试读片段选择。', 0);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+export async function streamApproveStrategyForTrial(
+  userBookId: string,
+  draftId: string,
+  idempotencyKey: string,
+  handlers: TrialSelectionStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${userBookRoot(userBookId)}/strategy/approve/stream`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ strategyDraftVersionId: draftId, idempotencyKey }),
+    ...(signal ? { signal } : {}),
+  });
+  await consumeTrialSelectionStream(response, handlers);
 }
 
 export async function approveStrategyForTrial(

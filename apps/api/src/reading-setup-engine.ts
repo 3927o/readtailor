@@ -235,7 +235,12 @@ function fakeCompleted(context: Record<string, unknown>): ReadingSetupOutcome {
 // public stream path as the real agent.
 function emitFakeStream(onStream: (delta: ReadingSetupStreamDelta) => void, outcome: ReadingSetupOutcome): void {
   const speculativeEpoch = 1;
-  onStream({ type: 'speculative_reset', speculativeEpoch, toolName: outcome.type === 'question' ? 'present_interview_question' : 'finish_interview' });
+  const toolName = outcome.type === 'question'
+    ? 'present_interview_question'
+    : outcome.type === 'fragments'
+      ? 'select_trial_fragments'
+      : 'finish_interview';
+  onStream({ type: 'speculative_reset', speculativeEpoch, toolName });
   if (outcome.type === 'question') {
     const question = outcome.question;
     if (question.acknowledgment) onStream({ type: 'ack_delta', chars: question.acknowledgment, speculativeEpoch });
@@ -258,6 +263,14 @@ function emitFakeStream(onStream: (delta: ReadingSetupStreamDelta) => void, outc
       speculativeEpoch,
     }));
     onStream({ type: 'concluding', speculativeEpoch });
+  } else if (outcome.type === 'fragments') {
+    onStream({ type: 'selection_started', total: 3, speculativeEpoch });
+    outcome.fragments.forEach((fragment, ordinal) => onStream({
+      type: 'fragment_added',
+      ordinal: ordinal + 1,
+      fragment,
+      speculativeEpoch,
+    }));
   }
 }
 
@@ -265,7 +278,12 @@ export function createFakeReadingSetupEngine(): ReadingSetupEngine {
   return {
     async runTurn(input) {
       if (input.phase === 'select_trial') {
-        return { type: 'fragments', fragments: fakeSelectFragments(input.context) };
+        const outcome: ReadingSetupOutcome = {
+          type: 'fragments',
+          fragments: fakeSelectFragments(input.context),
+        };
+        if (input.onStream) emitFakeStream(input.onStream, outcome);
+        return outcome;
       }
       if (input.phase === 'strategy_review') {
         const completed = fakeCompleted(input.context);

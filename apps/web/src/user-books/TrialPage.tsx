@@ -24,6 +24,7 @@ import {
 } from './components';
 import { userBookQueryKeys } from './queryKeys';
 import { ProgressiveStrategyView } from './ProgressiveStrategyView';
+import { ProgressiveTrialView } from './ProgressiveTrialView';
 import { useStrategyRevisionFlow } from './useStrategyRevisionFlow';
 import { useWorkflowGate } from './useWorkflowGate';
 
@@ -181,9 +182,15 @@ export function TrialPage() {
         }} />
       ) : snapshot.status === 'generating' ? (
         <section className="trial-generating">
-          <WorkflowMessage title="正在生成三个试读片段">
-            三个片段会全部成功后一起出现。现在不会展示部分结果，也不会让旧版本混进来。
-          </WorkflowMessage>
+          <ProgressiveTrialView
+            model={{
+              mode: 'generating',
+              samples,
+              activeOrdinal: Math.max(1, Math.min(3, sampleIndex + 1)) as 1 | 2 | 3,
+              assetBaseUrl: bookAssetBaseUrl(book.id),
+            }}
+            onSelectOrdinal={(ordinal) => setSampleIndex(ordinal - 1)}
+          />
           <div className="trial-generation-progress">
             <span>已完成 {snapshot.progress.completed} / {snapshot.progress.total}</span>
             <i><span style={{ width: `${(snapshot.progress.completed / snapshot.progress.total) * 100}%` }} /></i>
