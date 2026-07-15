@@ -6,6 +6,8 @@ import {
   BookNormalizationStatusSchema,
   ContentGenerationJobPayloadSchema,
   CurrentReadingSetupOperationResponseSchema,
+  CurrentStrategyReviewResponseSchema,
+  CurrentTrialReviewResponseSchema,
   GenerationResultSchema,
   HealthResponseSchema,
   ImportBookResponseSchema,
@@ -22,6 +24,7 @@ import {
   ReadingSetupOperationPayloadSchema,
   ReadingSetupOperationResponseSchema,
   SharedBookSchema,
+  StrategyReviewSnapshotSchema,
   StrategyDraftSnapshotParamsSchema,
   StrategyRevisionStreamEventSchema,
   SubmitInterviewAnswerRequestSchema,
@@ -31,6 +34,7 @@ import {
   SystemJobSchema,
   TrialRevisionSnapshotParamsSchema,
   TrialReviewResponseSchema,
+  TrialReviewSnapshotSchema,
   TrialSelectionStreamEventSchema,
   UserBookDetailResponseSchema,
 } from './index';
@@ -584,7 +588,7 @@ describe('progressive reading setup contracts', () => {
     })),
     adjustmentCount: 1,
     adjustmentLimit: 5,
-    canAdjust: true,
+    canAdjust: false,
     canAdopt: false,
   };
 
@@ -604,6 +608,108 @@ describe('progressive reading setup contracts', () => {
         ordinal: 2,
       }),
     ).toBe(false);
+  });
+
+  it('separates current strategy state from broad historical snapshots', () => {
+    expect(Value.Check(CurrentStrategyReviewResponseSchema, strategy)).toBe(true);
+    expect(Value.Check(CurrentStrategyReviewResponseSchema, {
+      ...strategy,
+      workflowStatus: 'trial_review',
+    })).toBe(false);
+    expect(Value.Check(CurrentStrategyReviewResponseSchema, {
+      ...strategy,
+      trialCandidatePreviews: [
+        previews[0],
+        { ...previews[1], ordinal: 1 },
+        previews[2],
+      ],
+    })).toBe(false);
+    expect(Value.Check(CurrentStrategyReviewResponseSchema, {
+      ...strategy,
+      trialCandidatePreviews: [previews[0], previews[1]],
+    })).toBe(false);
+    expect(Value.Check(CurrentStrategyReviewResponseSchema, {
+      ...strategy,
+      adjustmentCount: 5,
+      canAdjust: true,
+    })).toBe(false);
+    expect(Value.Check(CurrentStrategyReviewResponseSchema, {
+      ...strategy,
+      adjustmentCount: 5,
+      canAdjust: false,
+    })).toBe(true);
+
+    const historical = {
+      ...strategy,
+      workflowStatus: 'active_reading',
+      draft: { ...strategy.draft, status: 'superseded' },
+      canAdjust: false,
+    };
+    expect(Value.Check(StrategyReviewSnapshotSchema, historical)).toBe(true);
+    expect(Value.Check(CurrentStrategyReviewResponseSchema, historical)).toBe(false);
+  });
+
+  it('binds current trial workflow, revision status, readiness and adoption', () => {
+    expect(Value.Check(CurrentTrialReviewResponseSchema, trial)).toBe(true);
+
+    const readySegments = trial.segments.map((segment) => ({
+      ...segment,
+      status: 'ready' as const,
+      result: { guide: null, annotations: [], afterReading: null },
+    }));
+    const published = {
+      ...trial,
+      workflowStatus: 'trial_review',
+      status: 'published',
+      segments: readySegments,
+      canAdjust: true,
+      canAdopt: true,
+    };
+    expect(Value.Check(CurrentTrialReviewResponseSchema, published)).toBe(true);
+    expect(Value.Check(CurrentTrialReviewResponseSchema, {
+      ...published,
+      status: 'generating',
+    })).toBe(false);
+    expect(Value.Check(CurrentTrialReviewResponseSchema, {
+      ...published,
+      canAdopt: false,
+    })).toBe(false);
+    expect(Value.Check(CurrentTrialReviewResponseSchema, {
+      ...trial,
+      canAdopt: true,
+    })).toBe(false);
+    expect(Value.Check(CurrentTrialReviewResponseSchema, {
+      ...published,
+      segments: [readySegments[0], { ...readySegments[1], ordinal: 1 }, readySegments[2]],
+    })).toBe(false);
+    expect(Value.Check(CurrentTrialReviewResponseSchema, {
+      ...published,
+      segments: readySegments.slice(0, 2),
+    })).toBe(false);
+    expect(Value.Check(CurrentTrialReviewResponseSchema, {
+      ...published,
+      adjustmentCount: 5,
+      canAdjust: true,
+    })).toBe(false);
+    expect(Value.Check(CurrentTrialReviewResponseSchema, {
+      ...published,
+      adjustmentCount: 5,
+      canAdjust: false,
+    })).toBe(true);
+
+    const adopted = {
+      ...published,
+      workflowStatus: 'active_reading',
+      status: 'adopted',
+      canAdjust: false,
+      canAdopt: false,
+    };
+    expect(Value.Check(CurrentTrialReviewResponseSchema, adopted)).toBe(true);
+    expect(Value.Check(TrialReviewSnapshotSchema, {
+      ...adopted,
+      workflowStatus: 'strategy_review',
+      status: 'superseded',
+    })).toBe(true);
   });
 
   it('validates operation payloads, recovery responses, and UUID params', () => {
@@ -744,6 +850,10 @@ describe('progressive reading setup contracts', () => {
       ...events[4],
       speculativeEpoch: 0,
     })).toBe(false);
+    expect(Value.Check(InterviewStreamEventSchema, {
+      ...events[5],
+      strategy: { ...strategy, workflowStatus: 'trial_review' },
+    })).toBe(false);
   });
 
   it('validates every strategy revision stream discriminator and envelope', () => {
@@ -799,6 +909,10 @@ describe('progressive reading setup contracts', () => {
       source: 'trial_feedback',
       baseTrialRevisionId: null,
     })).toBe(false);
+    expect(Value.Check(StrategyRevisionStreamEventSchema, {
+      ...events[4],
+      strategy: { ...strategy, draft: { ...strategy.draft, status: 'confirmed' } },
+    })).toBe(false);
   });
 
   it('validates every trial selection stream discriminator and fixed slots', () => {
@@ -853,8 +967,28 @@ describe('progressive reading setup contracts', () => {
       ],
     })).toBe(false);
     expect(Value.Check(TrialSelectionStreamEventSchema, {
+      ...events[1],
+      slots: [
+        { ordinal: 1, tag: 'threshold' },
+        { ordinal: 2, tag: 'threshold' },
+        { ordinal: 3, tag: 'hardest' },
+      ],
+    })).toBe(false);
+    expect(Value.Check(TrialSelectionStreamEventSchema, {
+      ...events[1],
+      slots: [
+        { ordinal: 1, tag: 'threshold' },
+        { ordinal: 2 },
+        { ordinal: 3, tag: 'hardest' },
+      ],
+    })).toBe(false);
+    expect(Value.Check(TrialSelectionStreamEventSchema, {
       ...events[2],
       speculativeEpoch: 0,
+    })).toBe(false);
+    expect(Value.Check(TrialSelectionStreamEventSchema, {
+      ...events[3],
+      trial: { ...trial, canAdjust: true },
     })).toBe(false);
   });
 });
