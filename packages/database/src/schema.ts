@@ -641,6 +641,10 @@ export const interviewSessions = pgTable(
     status: text('status').$type<InterviewSessionStatus>().notNull().default('active'),
     questionCount: integer('question_count').notNull().default(0),
     conversationVersion: integer('conversation_version').notNull().default(0),
+    turnLeaseId: uuid('turn_lease_id'),
+    turnLeaseVersion: integer('turn_lease_version'),
+    turnLeaseClaimedAt: timestamp('turn_lease_claimed_at', { withTimezone: true }),
+    turnLeaseExpiresAt: timestamp('turn_lease_expires_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -658,6 +662,26 @@ export const interviewSessions = pgTable(
     check(
       'interview_sessions_conversation_version_nonnegative',
       sql`${table.conversationVersion} >= 0`,
+    ),
+    check(
+      'interview_sessions_active_version_valid',
+      sql`${table.status} <> 'active' or ${table.conversationVersion} = ${table.questionCount} * 2 or ${table.conversationVersion} = ${table.questionCount} * 2 - 1`,
+    ),
+    check(
+      'interview_sessions_turn_lease_complete',
+      sql`(${table.turnLeaseId} is null and ${table.turnLeaseVersion} is null and ${table.turnLeaseClaimedAt} is null and ${table.turnLeaseExpiresAt} is null) or (${table.turnLeaseId} is not null and ${table.turnLeaseVersion} is not null and ${table.turnLeaseClaimedAt} is not null and ${table.turnLeaseExpiresAt} is not null)`,
+    ),
+    check(
+      'interview_sessions_turn_lease_version_nonnegative',
+      sql`${table.turnLeaseVersion} is null or ${table.turnLeaseVersion} >= 0`,
+    ),
+    check(
+      'interview_sessions_turn_lease_active_only',
+      sql`${table.status} = 'active' or ${table.turnLeaseId} is null`,
+    ),
+    check(
+      'interview_sessions_turn_lease_window_valid',
+      sql`${table.turnLeaseExpiresAt} is null or ${table.turnLeaseExpiresAt} > ${table.turnLeaseClaimedAt}`,
     ),
     check(
       'interview_sessions_completion_valid',

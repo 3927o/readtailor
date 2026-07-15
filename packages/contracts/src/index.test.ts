@@ -17,7 +17,7 @@ import {
   SystemJobPayloadSchema,
   SystemJobSchema,
   TrialReviewResponseSchema,
-  UserBookWorkflowResponseSchema,
+  UserBookDetailResponseSchema,
 } from './index';
 
 describe('ask AI contracts', () => {
@@ -373,14 +373,20 @@ describe('phase three workflow contracts', () => {
     );
   });
 
-  it('accepts the resumable aggregate workflow response', () => {
+  it('accepts the read-only user book detail response', () => {
     expect(
-      Value.Check(UserBookWorkflowResponseSchema, {
-        workflowStatus: 'trial_review',
+      Value.Check(UserBookDetailResponseSchema, {
         book: shelfBook,
-        interview: null,
-        strategy: null,
-        trial: null,
+        currentInterviewSessionId: 'interview-id',
+        currentBookReaderProfileVersionId: 'book-reader-profile-id',
+        currentStrategyDraftVersionId: 'strategy-draft-id',
+        currentStrategyVersionId: null,
+        currentTrialRevisionId: 'trial-id',
+        adjustmentCount: 2,
+        deletedAt: null,
+        purgeAfter: null,
+        createdAt: '2026-07-14T00:00:00.000Z',
+        updatedAt: '2026-07-15T00:00:00.000Z',
       }),
     ).toBe(true);
   });

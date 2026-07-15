@@ -46,6 +46,29 @@ const item = {
   progress: null,
   lastActivityAt: '2026-07-14T00:00:00.000Z',
 };
+const interviewState = {
+  sessionId: '33333333-4444-4555-8666-777777777777',
+  status: 'active' as const,
+  turnInProgress: false,
+  questionCount: 1,
+  maxQuestions: 7 as const,
+  currentQuestion: null,
+  sufficiency: null,
+  answers: [],
+};
+const detail = {
+  book: item,
+  currentInterviewSessionId: null,
+  currentBookReaderProfileVersionId: null,
+  currentStrategyDraftVersionId: null,
+  currentStrategyVersionId: '22222222-3333-4444-8555-666666666666',
+  currentTrialRevisionId: null,
+  adjustmentCount: 0,
+  deletedAt: null,
+  purgeAfter: null,
+  createdAt: '2026-07-13T00:00:00.000Z',
+  updatedAt: '2026-07-14T00:00:00.000Z',
+};
 
 const HIGHLIGHT_ID = '11111111-2222-3333-4444-555555555555';
 const STRATEGY_VERSION_ID = '22222222-3333-4444-8555-666666666666';
@@ -80,8 +103,17 @@ function fakeService(overrides: Partial<UserBookUserService> = {}): UserBookServ
     async deleteHighlight(_userBookId: string, highlightId: string) {
       return { id: highlightId };
     },
-    async workflow() {
-      return { workflowStatus: 'active_reading', book: item, interview: null, strategy: null, trial: null };
+    async detail() {
+      return detail;
+    },
+    async interviewState() {
+      return interviewState;
+    },
+    async startInterview() {
+      return interviewState;
+    },
+    async resumeInterview() {
+      return interviewState;
     },
     async reader() {
       return {
@@ -145,16 +177,19 @@ function buildApp() {
 }
 
 describe('user book workflow routes', () => {
-  it('serves the user shelf, workflow snapshot and reader bootstrap', async () => {
+  it('serves the user shelf, read-only detail and reader bootstrap', async () => {
     const app = await buildApp();
 
     const shelf = await app.inject({ method: 'GET', url: '/v1/user-books' });
     expect(shelf.statusCode).toBe(200);
     expect(shelf.json()).toEqual({ books: [item] });
 
-    const workflow = await app.inject({ method: 'GET', url: `/v1/user-books/${USER_BOOK_ID}/workflow` });
-    expect(workflow.statusCode).toBe(200);
-    expect(workflow.json().workflowStatus).toBe('active_reading');
+    const detailResponse = await app.inject({ method: 'GET', url: `/v1/user-books/${USER_BOOK_ID}` });
+    expect(detailResponse.statusCode).toBe(200);
+    expect(detailResponse.json().book.workflowStatus).toBe('active_reading');
+
+    const removedWorkflow = await app.inject({ method: 'GET', url: `/v1/user-books/${USER_BOOK_ID}/workflow` });
+    expect(removedWorkflow.statusCode).toBe(404);
 
     const reader = await app.inject({ method: 'GET', url: `/v1/user-books/${USER_BOOK_ID}/reader` });
     expect(reader.statusCode).toBe(200);
@@ -201,6 +236,49 @@ describe('user book workflow routes', () => {
       sharedBookId: SHARED_BOOK_ID,
       enhancements: [{ sectionId: 'chapter-3', status: 'queued' }],
     });
+  });
+
+  it('keeps interview reads separate from explicit start and resume commands', async () => {
+    const calls: string[] = [];
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async interviewState() {
+          calls.push('read');
+          return interviewState;
+        },
+        async startInterview() {
+          calls.push('start');
+          return { ...interviewState, turnInProgress: true };
+        },
+        async resumeInterview() {
+          calls.push('resume');
+          return { ...interviewState, turnInProgress: true };
+        },
+      }),
+    });
+
+    const read = await app.inject({ method: 'GET', url: `/v1/user-books/${USER_BOOK_ID}/interview` });
+    expect(read.statusCode).toBe(200);
+    expect(read.json().turnInProgress).toBe(false);
+    expect(calls).toEqual(['read']);
+
+    const start = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/interview/start`,
+      headers: { origin: 'http://localhost:5173' },
+    });
+    expect(start.statusCode).toBe(200);
+    expect(start.json().turnInProgress).toBe(true);
+
+    const resume = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/interview/resume`,
+      headers: { origin: 'http://localhost:5173' },
+    });
+    expect(resume.statusCode).toBe(200);
+    expect(resume.json().turnInProgress).toBe(true);
+    expect(calls).toEqual(['read', 'start', 'resume']);
   });
 
   it('rejects a reader focus report with a non-positive order', async () => {

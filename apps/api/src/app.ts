@@ -60,8 +60,8 @@ import {
   SystemChatRequestSchema,
   SystemJobSchema,
   TrialReviewResponseSchema,
+  UserBookDetailResponseSchema,
   UserBookShelfResponseSchema,
-  UserBookWorkflowResponseSchema,
 } from '@readtailor/contracts';
 import { createLogger, type PerfSink } from '@readtailor/observability';
 import {
@@ -613,12 +613,12 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
   );
 
   app.get(
-    '/v1/user-books/:id/workflow',
+    '/v1/user-books/:id',
     {
       schema: {
         params: userBookIdParams,
         response: {
-          200: UserBookWorkflowResponseSchema,
+          200: UserBookDetailResponseSchema,
           404: ErrorResponseSchema,
           409: ErrorResponseSchema,
           503: ErrorResponseSchema,
@@ -628,7 +628,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
-        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).workflow(request.params.id);
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).detail(request.params.id);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -647,6 +647,42 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
         return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).interviewState(request.params.id);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.post(
+    '/v1/user-books/:id/interview/start',
+    {
+      schema: {
+        params: userBookIdParams,
+        response: { 200: InterviewStateResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).startInterview(request.params.id);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.post(
+    '/v1/user-books/:id/interview/resume',
+    {
+      schema: {
+        params: userBookIdParams,
+        response: { 200: InterviewStateResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).resumeInterview(request.params.id);
       } catch (error) {
         return userBookFailure(error, reply);
       }

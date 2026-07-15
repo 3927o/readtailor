@@ -348,6 +348,7 @@ export type SubmitInterviewAnswerRequest = Static<
 export const InterviewStateResponseSchema = Type.Object({
   sessionId: Type.String(),
   status: InterviewSessionStatusSchema,
+  turnInProgress: Type.Boolean(),
   questionCount: Type.Integer({ minimum: 0, maximum: 7 }),
   maxQuestions: Type.Literal(7),
   currentQuestion: Type.Union([InterviewQuestionSchema, Type.Null()]),
@@ -1128,12 +1129,3 @@ export type UserBookDetail = Static<typeof UserBookDetailSchema>;
 
 export const UserBookDetailResponseSchema = UserBookDetailSchema;
 export type UserBookDetailResponse = UserBookDetail;
-
-export const UserBookWorkflowResponseSchema = Type.Object({
-  workflowStatus: UserBookWorkflowStatusSchema,
-  book: UserBookShelfItemSchema,
-  interview: Type.Union([InterviewStateResponseSchema, Type.Null()]),
-  strategy: Type.Union([StrategyReviewResponseSchema, Type.Null()]),
-  trial: Type.Union([TrialReviewResponseSchema, Type.Null()]),
-});
-export type UserBookWorkflowResponse = Static<typeof UserBookWorkflowResponseSchema>;
