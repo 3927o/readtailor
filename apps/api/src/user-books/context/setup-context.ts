@@ -9,6 +9,7 @@ import {
 } from '@readtailor/database';
 import type { BookService } from '../../books';
 import { UserBookError } from '../errors';
+import { isInterviewCompletionCheckpointPayload } from '../interview/completion-checkpoint-store';
 
 export type OwnedUserBook = {
   userBook: typeof userBooks.$inferSelect;
@@ -21,6 +22,10 @@ export type SetupContextStoreOptions = {
   userId: string;
   getOwnedBook(userBookId: string): Promise<OwnedUserBook>;
 };
+
+function isInterviewCompletionCheckpoint(message: typeof interviewMessages.$inferSelect): boolean {
+  return message.kind === 'summary' && isInterviewCompletionCheckpointPayload(message.payload);
+}
 
 export function createSetupContextStore(options: SetupContextStoreOptions) {
   const { db, books, userId, getOwnedBook } = options;
@@ -62,12 +67,14 @@ export function createSetupContextStore(options: SetupContextStoreOptions) {
         },
         bookProfile,
         readerProfile: readerProfile.profile,
-        messages: messages.map((message) => ({
-          role: message.role,
-          kind: message.kind,
-          content: message.content,
-          payload: message.payload,
-        })),
+        messages: messages
+          .filter((message) => !isInterviewCompletionCheckpoint(message))
+          .map((message) => ({
+            role: message.role,
+            kind: message.kind,
+            content: message.content,
+            payload: message.payload,
+          })),
       },
     };
   };
