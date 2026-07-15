@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import type {
@@ -104,11 +104,20 @@ import { extractNodeSourceFromHtml, extractNodeTexts, sliceNodeSource } from '@r
 import type { AskAiEngine } from './ask-ai-engine';
 import type { BookService } from './books';
 import type { ReadingSetupEngine } from './reading-setup-engine';
+import {
+  ADJUSTMENT_LIMIT,
+  isCurrentStrategyDraftReview,
+  isCurrentTrialReview,
+} from './user-books/domain/reading-setup-state';
+import { readingSetupOperationRequestHash } from './user-books/domain/reading-setup-operation';
+import { projectReadingSetupOperation as mapReadingSetupOperation } from './user-books/projections/reading-setup-operation';
+import { projectStrategyReview } from './user-books/projections/strategy-review';
+import {
+  projectTrialReview,
+  projectTrialSegment,
+} from './user-books/projections/trial-review';
 
-// The number of strategy/trial adjustments a user may make before the draft locks. The
-// SQL guards below still spell out `< 5` inline; this constant is the value surfaced to the
-// client so the frontend can show "还可以调整 N 次" without hardcoding it (§5).
-const ADJUSTMENT_LIMIT = 5;
+export { readingSetupOperationRequestHash } from './user-books/domain/reading-setup-operation';
 
 // §6.2 / PRD §11.3 reading window: the current tailoring-eligible node plus the next 3.
 const FORMAL_WINDOW_SIZE = 4;
@@ -1261,30 +1270,6 @@ type PreparedReadingSetupOperation = {
 const READING_SETUP_OPERATION_LEASE_SQL = sql`interval '6 minutes'`;
 const READING_SETUP_OPERATION_RENEW_INTERVAL_MS = 60_000;
 
-function canonicalJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalJsonValue);
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(([, item]) => item !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, item]) => [key, canonicalJsonValue(item)]),
-    );
-  }
-  return value;
-}
-
-export function readingSetupOperationRequestHash(
-  command: Pick<
-    ReadingSetupOperationCommand,
-    'source' | 'baseStrategyDraftVersionId' | 'baseTrialRevisionId' | 'payload'
-  >,
-): string {
-  return createHash('sha256')
-    .update(JSON.stringify(canonicalJsonValue(command)))
-    .digest('hex');
-}
-
 const INTERVIEW_TURN_LEASE_SQL = sql`interval '6 minutes'`;
 const INTERVIEW_TURN_RENEW_INTERVAL_MS = 60_000;
 
@@ -1383,7 +1368,7 @@ function createUserBookServiceForUser(
 
     if (operation.source === 'strategy_approve') {
       if (
-        book.workflowStatus !== 'strategy_review'
+        !isCurrentStrategyDraftReview(book, operation.baseStrategyDraftVersionId)
         || book.currentTrialRevisionId !== null
         || draft.status !== 'draft'
       ) {
@@ -1397,7 +1382,7 @@ function createUserBookServiceForUser(
     }
     if (operation.source === 'strategy_feedback') {
       if (
-        book.workflowStatus !== 'strategy_review'
+        !isCurrentStrategyDraftReview(book, operation.baseStrategyDraftVersionId)
         || book.currentTrialRevisionId !== null
         || !['draft', 'approved_for_trial'].includes(draft.status)
       ) {
@@ -1407,8 +1392,8 @@ function createUserBookServiceForUser(
     }
 
     if (
-      book.workflowStatus !== 'trial_review'
-      || book.currentTrialRevisionId !== operation.baseTrialRevisionId
+      !operation.baseTrialRevisionId
+      || !isCurrentTrialReview(book, operation.baseTrialRevisionId)
     ) {
       throw new UserBookError('试读版本已经更新', 409);
     }
@@ -1744,112 +1729,8 @@ function createUserBookServiceForUser(
     operation: ReadingSetupOperationRow,
     leaseExpired = false,
   ): ReadingSetupOperationResponse => {
-    const common = {
-      operationId: operation.id,
-      operationAttempt: operation.attemptCount,
-      baseDraftId: operation.baseStrategyDraftVersionId,
-      canResume: operation.status === 'pending' || (
-        operation.status === 'running' && leaseExpired
-      ),
-    };
-    if (
-      operation.kind === 'trial_selection'
-      && operation.source === 'strategy_approve'
-      && operation.payload.source === 'strategy_approve'
-      && operation.baseTrialRevisionId === null
-    ) {
-      const identity = {
-        ...common,
-        kind: 'trial_selection' as const,
-        source: 'strategy_approve' as const,
-        baseTrialRevisionId: null,
-      };
-      if (operation.status === 'completed' && operation.resultTrialRevisionId) {
-        return {
-          ...identity,
-          status: 'completed',
-          resultDraftId: null,
-          resultTrialRevisionId: operation.resultTrialRevisionId,
-          errorSummary: null,
-          recoverableInput: null,
-        };
-      }
-      if (operation.status === 'failed' && operation.errorSummary) {
-        return {
-          ...identity,
-          status: 'failed',
-          resultDraftId: null,
-          resultTrialRevisionId: null,
-          errorSummary: operation.errorSummary,
-          recoverableInput: null,
-        };
-      }
-      if (operation.status === 'pending' || operation.status === 'running') {
-        return {
-          ...identity,
-          status: operation.status,
-          resultDraftId: null,
-          resultTrialRevisionId: null,
-          errorSummary: null,
-          recoverableInput: null,
-        };
-      }
-      throw new UserBookError('阅读准备操作结果损坏', 409);
-    }
-
-    if (
-      operation.kind === 'strategy_revision'
-      && operation.source === operation.payload.source
-      && operation.payload.source !== 'strategy_approve'
-      && (
-        (operation.source === 'strategy_feedback' && operation.baseTrialRevisionId === null)
-        || (operation.source === 'trial_feedback' && operation.baseTrialRevisionId !== null)
-      )
-    ) {
-      const identity = operation.source === 'strategy_feedback'
-        ? {
-            ...common,
-            kind: 'strategy_revision' as const,
-            source: 'strategy_feedback' as const,
-            baseTrialRevisionId: null,
-          }
-        : {
-            ...common,
-            kind: 'strategy_revision' as const,
-            source: 'trial_feedback' as const,
-            baseTrialRevisionId: operation.baseTrialRevisionId!,
-          };
-      if (operation.status === 'completed' && operation.resultStrategyDraftVersionId) {
-        return {
-          ...identity,
-          status: 'completed',
-          resultDraftId: operation.resultStrategyDraftVersionId,
-          resultTrialRevisionId: null,
-          errorSummary: null,
-          recoverableInput: null,
-        };
-      }
-      if (operation.status === 'failed' && operation.errorSummary) {
-        return {
-          ...identity,
-          status: 'failed',
-          resultDraftId: null,
-          resultTrialRevisionId: null,
-          errorSummary: operation.errorSummary,
-          recoverableInput: { feedback: operation.payload.feedback },
-        };
-      }
-      if (operation.status === 'pending' || operation.status === 'running') {
-        return {
-          ...identity,
-          status: operation.status,
-          resultDraftId: null,
-          resultTrialRevisionId: null,
-          errorSummary: null,
-          recoverableInput: { feedback: operation.payload.feedback },
-        };
-      }
-    }
+    const projected = mapReadingSetupOperation(operation, leaseExpired);
+    if (projected) return projected;
     throw new UserBookError('阅读准备操作结果损坏', 409);
   };
 
@@ -2556,26 +2437,15 @@ function createUserBookServiceForUser(
         reason: candidate.reason,
       };
     });
-    const isCurrent = owned.userBook.workflowStatus === 'strategy_review'
-      && owned.userBook.currentStrategyDraftVersionId === draft.id;
-    return {
+    return projectStrategyReview({
       userBookId,
       workflowStatus: owned.userBook.workflowStatus,
-      draft: {
-        id: draft.id,
-        version: draft.version,
-        status: draft.status,
-        readingBriefing: draft.readingBriefing,
-        userFacingSummary: draft.userFacingSummary,
-        strategy: draft.strategy,
-        createdAt: draft.createdAt.toISOString(),
-        approvedForTrialAt: draft.approvedForTrialAt?.toISOString() ?? null,
-      },
+      currentStrategyDraftVersionId: owned.userBook.currentStrategyDraftVersionId,
+      draft,
       trialCandidatePreviews,
       adjustmentCount: owned.userBook.adjustmentCount,
       adjustmentLimit: ADJUSTMENT_LIMIT,
-      canAdjust: isCurrent && owned.userBook.adjustmentCount < ADJUSTMENT_LIMIT,
-    };
+    });
   };
 
   const strategyState = async (userBookId: string): Promise<StrategyReviewResponse> => {
@@ -3347,36 +3217,28 @@ function createUserBookServiceForUser(
       };
       const sliced = sliceNodeSource(extracted, range);
       const node = source.manifest.nodes.find((item) => item.section_id === segment.sectionId && item.segment === segment.segment)!;
-      const common = {
+      return projectTrialSegment({
         id: segment.id,
         ordinal: segment.ordinal,
         sectionId: segment.sectionId,
         segment: segment.segment,
-        range: {
-          start: { blockIndex: segment.startBlockIndex, offset: segment.startOffset },
-          end: { blockIndex: segment.endBlockIndex, offset: segment.endOffset },
-        },
+        startBlockIndex: segment.startBlockIndex,
+        startOffset: segment.startOffset,
+        endBlockIndex: segment.endBlockIndex,
+        endOffset: segment.endOffset,
         chapterPath: chapterPath(node, source.manifest.outline),
         originalHtml: sliced.structuredHtml,
         selectionReason: segment.selectionReason,
-        viewedAt: segment.viewedAt?.toISOString() ?? null,
-      };
-      if (segment.status === 'ready' && generation?.status === 'ready' && generation.result) {
-        return { ...common, status: 'ready' as const, result: generation.result };
-      }
-      if (segment.status === 'generating') {
-        return { ...common, status: 'generating' as const, result: null };
-      }
-      if (segment.status === 'failed' || segment.status === 'ready') {
-        return { ...common, status: 'failed' as const, result: null };
-      }
-      return { ...common, status: 'pending' as const, result: null };
+        viewedAt: segment.viewedAt,
+        segmentStatus: segment.status,
+        generationStatus: generation?.status ?? null,
+        generationResult: generation?.result ?? null,
+      });
     });
-    const isCurrent = owned.userBook.workflowStatus === 'trial_review'
-      && owned.userBook.currentTrialRevisionId === revision.id;
-    return {
+    return projectTrialReview({
       userBookId,
       workflowStatus: owned.userBook.workflowStatus,
+      currentTrialRevisionId: owned.userBook.currentTrialRevisionId,
       trialRevisionId: revision.id,
       revision: revision.revision,
       status: revision.status,
@@ -3384,14 +3246,7 @@ function createUserBookServiceForUser(
       segments,
       adjustmentCount: owned.userBook.adjustmentCount,
       adjustmentLimit: ADJUSTMENT_LIMIT,
-      canAdjust: isCurrent && owned.userBook.adjustmentCount < ADJUSTMENT_LIMIT,
-      // Adoption only requires the three fragments to be generated and published — the reader
-      // is not forced to open all three first (the prototype has no such gate).
-      canAdopt: isCurrent
-        && revision.status === 'published'
-        && segments.length === 3
-        && segments.every((segment) => segment.status === 'ready'),
-    };
+    });
   };
 
   const trialState = async (userBookId: string): Promise<TrialReviewResponse> => {
