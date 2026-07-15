@@ -9,11 +9,13 @@
 
 ## Sub-Agent Usage
 
-- Use sub-agents proactively when a task contains independent work that can be investigated or completed in parallel.
-- Good sub-agent tasks include repository research, reviewing a separate module, checking contracts or documentation, and running focused verification.
-- Give each sub-agent a concrete, bounded scope with a clear expected result.
-- Avoid assigning overlapping edits to multiple agents. The primary agent remains responsible for integrating changes, resolving conflicts, and verifying the final result.
-- Keep small or tightly coupled tasks with the primary agent when delegation would add more coordination than value.
+- Default to handling the task with the primary agent. Use sub-agents only when there are clearly independent workstreams and parallel execution provides a meaningful benefit.
+- Do not use sub-agents for small tasks, tightly coupled changes, routine repository exploration, or work the primary agent must understand before making a decision.
+- Use the smallest number of sub-agents needed. Do not create sub-agents merely to increase parallelism, and do not ask a sub-agent to create more sub-agents unless the task explicitly requires it.
+- Before delegating, inspect enough of the repository and current task to provide complete context. Each assignment must include the user's goal, relevant decisions and constraints, important file paths or code context, the exact scope, whether edits are allowed, and the expected result and verification.
+- Do not rely on automatically inherited conversation context. Restate all information the sub-agent needs to complete its assignment correctly, including relevant instructions from this file and any user clarifications.
+- Give each sub-agent a concrete, bounded, non-overlapping scope. Prefer read-only investigation or focused verification unless ownership of a specific edit is explicitly assigned.
+- The primary agent remains responsible for integrating results, resolving conflicts, checking that recommendations fit the broader codebase, and performing final verification.
 
 ## Commits
 
