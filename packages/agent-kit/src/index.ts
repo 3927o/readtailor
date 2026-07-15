@@ -1372,6 +1372,17 @@ export type AskAiOutcome = {
   toolCalls: number;
 };
 
+// Product-facing lifecycle only: callers may expose the tool name and status, but never
+// receive raw arguments/results or model reasoning through this callback.
+export type AskAiToolEvent =
+  | { type: 'tool_started'; toolCallId: string; toolName: string }
+  | {
+      type: 'tool_finished';
+      toolCallId: string;
+      toolName: string;
+      succeeded: boolean;
+    };
+
 const ASK_AI_SYSTEM_PROMPT = `你是 ReadTailor 的「问 AI」阅读助手。用户在阅读某本书时，针对划线内容或当前屏幕向你提问，你结合本书内容与用户画像给出贴合的解答，并在确有必要时更新长期画像或建议调整本书处理方式。
 
 工作方式：
@@ -1466,6 +1477,7 @@ export async function runAskAiAgent(options: {
   maxTurns?: number;
   timeoutMs?: number;
   onAnswerDelta?: (chars: string) => void;
+  onToolEvent?: (event: AskAiToolEvent) => void;
   onTrace?: AgentTraceHandler;
 }): Promise<AskAiOutcome> {
   let turns = 0;
@@ -1614,6 +1626,18 @@ export async function runAskAiAgent(options: {
       turns += 1;
     } else if (event.type === 'tool_execution_start') {
       toolCalls += 1;
+      void options.onToolEvent?.({
+        type: 'tool_started',
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+      });
+    } else if (event.type === 'tool_execution_end') {
+      void options.onToolEvent?.({
+        type: 'tool_finished',
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        succeeded: !event.isError,
+      });
     } else if (event.type === 'message_end' && event.message.role === 'assistant') {
       finalAssistantStopReason = event.message.stopReason;
       finalAssistantErrorMessage = event.message.errorMessage;

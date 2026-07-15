@@ -571,6 +571,7 @@ describe('runAskAiAgent', () => {
       { kind: 'text', chunks: ['这本书的', '核心主题是', '一致性。'] },
     ]);
     const deltas: string[] = [];
+    const toolEvents: unknown[] = [];
     let searched: unknown;
     const outcome = await runAskAiAgent({
       apiBaseUrl,
@@ -587,6 +588,7 @@ describe('runAskAiAgent', () => {
       }),
       timeoutMs: 5000,
       onAnswerDelta: (chars) => deltas.push(chars),
+      onToolEvent: (event) => toolEvents.push(event),
     });
 
     expect(outcome.answer).toBe('这本书的核心主题是一致性。');
@@ -594,6 +596,23 @@ describe('runAskAiAgent', () => {
     expect(searched).toEqual({ query: '主题' });
     expect(outcome.turns).toBe(2);
     expect(outcome.toolCalls).toBe(1);
+    expect(toolEvents).toEqual([
+      {
+        type: 'tool_started',
+        toolCallId: 'call-search_book',
+        toolName: 'search_book',
+      },
+      {
+        type: 'tool_finished',
+        toolCallId: 'call-search_book',
+        toolName: 'search_book',
+        succeeded: true,
+      },
+    ]);
+    expect(toolEvents.every((event) => (
+      !('args' in (event as Record<string, unknown>))
+      && !('result' in (event as Record<string, unknown>))
+    ))).toBe(true);
     expect(outcome.patchedProfile).toBe(false);
     expect(outcome.proposedStrategyChange).toBeUndefined();
   });

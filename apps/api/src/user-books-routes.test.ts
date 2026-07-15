@@ -668,6 +668,10 @@ describe('问 AI QA endpoints', () => {
       userBooks: fakeService({
         async *streamQaAnswer() {
           yield { type: 'session', sessionId: QA_SESSION_ID, conversationVersion: 1 };
+          yield { type: 'tool_started', toolCallId: 'call-1', toolName: 'search_book' };
+          yield {
+            type: 'tool_finished', toolCallId: 'call-1', toolName: 'search_book', succeeded: true,
+          };
           yield { type: 'answer_delta', chars: '这段话的意思是' };
           yield { type: 'answer_delta', chars: '……' };
           yield { type: 'done', sessionId: QA_SESSION_ID, messageId: 'msg-1' };
@@ -693,10 +697,15 @@ describe('问 AI QA endpoints', () => {
     expect(response.headers['content-type']).toContain('text/event-stream');
     const body = response.body;
     expect(body).toContain(`data: {"type":"session","sessionId":"${QA_SESSION_ID}","conversationVersion":1}`);
+    expect(body).toContain('data: {"type":"tool_started","toolCallId":"call-1","toolName":"search_book"}');
+    expect(body).toContain('data: {"type":"tool_finished","toolCallId":"call-1","toolName":"search_book","succeeded":true}');
     expect(body).toContain('data: {"type":"answer_delta","chars":"这段话的意思是"}');
     expect(body).toContain('"type":"done"');
     // session precedes the answer, and the answer precedes done.
     expect(body.indexOf('"session"')).toBeLessThan(body.indexOf('answer_delta'));
+    expect(body.indexOf('"session"')).toBeLessThan(body.indexOf('"tool_started"'));
+    expect(body.indexOf('"tool_started"')).toBeLessThan(body.indexOf('"tool_finished"'));
+    expect(body.indexOf('"tool_finished"')).toBeLessThan(body.indexOf('answer_delta'));
     expect(body.indexOf('answer_delta')).toBeLessThan(body.indexOf('"done"'));
   });
 

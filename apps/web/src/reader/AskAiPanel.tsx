@@ -14,6 +14,7 @@ import type {
   QaQuestionContext,
   QaSessionListItem,
   QaSessionResponse,
+  QaToolStreamEvent,
   StrategyChangeProposalStatus,
 } from './api';
 
@@ -30,11 +31,46 @@ interface QaTurn {
   key: string;
   question: string;
   answer: string;
+  toolCalls: QaToolCall[];
   streaming: boolean;
   idempotencyKey?: string | undefined;
   messageId?: string | undefined;
   proposalRevision?: ProposalCardData | undefined;
   error?: string | undefined;
+}
+
+export interface QaToolCall {
+  id: string;
+  name: string;
+  status: 'running' | 'succeeded' | 'failed';
+}
+
+const QA_TOOL_LABELS: Record<string, string> = {
+  get_question_context: '读取提问上下文',
+  get_book_outline: '查看全书目录',
+  read_book_node: '阅读相关原文',
+  search_book: '搜索全书',
+  get_original_notes: '查阅原书注释',
+  get_reader_context: '了解你的阅读偏好',
+  update_reader_profile: '更新阅读画像',
+  propose_strategy_change: '生成处理方式建议',
+};
+
+export function qaToolLabel(name: string): string {
+  return QA_TOOL_LABELS[name] ?? '使用阅读辅助工具';
+}
+
+export function mergeQaToolEvent(current: QaToolCall[], event: QaToolStreamEvent): QaToolCall[] {
+  const next: QaToolCall = {
+    id: event.toolCallId,
+    name: event.toolName,
+    status: event.type === 'tool_started'
+      ? 'running'
+      : event.succeeded ? 'succeeded' : 'failed',
+  };
+  const existingIndex = current.findIndex((tool) => tool.id === event.toolCallId);
+  if (existingIndex < 0) return [...current, next];
+  return current.map((tool, index) => index === existingIndex ? next : tool);
 }
 
 interface ActiveProposal {
@@ -97,6 +133,7 @@ export function turnsFromQaSession(session: QaSessionResponse): QaTurn[] {
         key: message.id,
         question: message.content,
         answer: '',
+        toolCalls: [],
         streaming: false,
       });
       continue;
@@ -106,6 +143,7 @@ export function turnsFromQaSession(session: QaSessionResponse): QaTurn[] {
       key: message.id,
       question: '',
       answer: '',
+      toolCalls: [],
       streaming: false,
     };
     answerTurn.answer = message.content;
@@ -218,6 +256,17 @@ export function AskAiPanel({
     )));
   }, []);
 
+  const failRunningTools = useCallback((index: number) => {
+    setTurns((current) => current.map((turn, turnIndex) => turnIndex === index
+      ? {
+          ...turn,
+          toolCalls: turn.toolCalls.map((tool) => tool.status === 'running'
+            ? { ...tool, status: 'failed' as const }
+            : tool),
+        }
+      : turn));
+  }, []);
+
   const updateProposalStatus = useCallback((proposalId: string, revisionId: string, status: StrategyChangeProposalStatus) => {
     setTurns((current) => current.map((turn) => (
       turn.proposalRevision?.proposalId === proposalId && turn.proposalRevision.id === revisionId
@@ -240,7 +289,13 @@ export function AskAiPanel({
       return;
     }
     setBusy(true);
-    patchTurn(index, { answer: '', streaming: true, error: undefined, proposalRevision: undefined });
+    patchTurn(index, {
+      answer: '',
+      toolCalls: [],
+      streaming: true,
+      error: undefined,
+      proposalRevision: undefined,
+    });
     let answer = '';
     const controller = new AbortController();
     abortRef.current = controller;
@@ -256,6 +311,16 @@ export function AskAiPanel({
           onSession: (id) => {
             sessionIdRef.current = id;
             setSessionId(id);
+          },
+          onToolStarted: (tool) => {
+            setTurns((current) => current.map((turn, turnIndex) => turnIndex === index
+              ? { ...turn, toolCalls: mergeQaToolEvent(turn.toolCalls, tool) }
+              : turn));
+          },
+          onToolFinished: (tool) => {
+            setTurns((current) => current.map((turn, turnIndex) => turnIndex === index
+              ? { ...turn, toolCalls: mergeQaToolEvent(turn.toolCalls, tool) }
+              : turn));
           },
           onAnswer: (chars) => {
             answer += chars;
@@ -280,6 +345,7 @@ export function AskAiPanel({
           onProfileUpdated: () => setProfileUpdated(true),
           onDone: (messageId) => patchTurn(index, { streaming: false, messageId, error: undefined }),
           onError: (message) => {
+            failRunningTools(index);
             patchTurn(index, { streaming: false, error: message });
           },
         },
@@ -288,6 +354,7 @@ export function AskAiPanel({
       void loadSessions();
     } catch (error) {
       if (controller.signal.aborted) return;
+      failRunningTools(index);
       patchTurn(index, {
         streaming: false,
         error: error instanceof Error ? error.message : '问 AI 请求失败',
@@ -296,7 +363,7 @@ export function AskAiPanel({
       setBusy(false);
       abortRef.current = null;
     }
-  }, [context, loadSessions, patchTurn, userBookId]);
+  }, [context, failRunningTools, loadSessions, patchTurn, userBookId]);
 
   const enqueueQuestion = useCallback((question: string) => {
     const index = turns.length;
@@ -305,6 +372,7 @@ export function AskAiPanel({
       key: idempotencyKey,
       question,
       answer: '',
+      toolCalls: [],
       streaming: true,
       idempotencyKey,
     }]);
@@ -459,9 +527,24 @@ export function AskAiPanel({
           return (
             <div className="reader-askai-turn" key={turn.key}>
               {turn.question ? <p className="reader-askai-question">{turn.question}</p> : null}
+              {turn.toolCalls.length > 0 ? (
+                <div className="reader-askai-tools" aria-label="AI 使用的工具" aria-live="polite">
+                  {turn.toolCalls.map((tool) => (
+                    <div className={`reader-askai-tool reader-askai-tool-${tool.status}`} key={tool.id}>
+                      <span className="reader-askai-tool-indicator" aria-hidden="true" />
+                      <span>{qaToolLabel(tool.name)}</span>
+                      <small>
+                        {tool.status === 'running' ? '进行中' : tool.status === 'succeeded' ? '已完成' : '未完成'}
+                      </small>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               {turn.answer ? <p className="reader-askai-answer">{turn.answer}</p> : null}
               {turn.streaming && !turn.answer ? (
-                <p className="reader-askai-answer reader-askai-typing">正在思考…</p>
+                <p className="reader-askai-answer reader-askai-typing">
+                  {turn.toolCalls.length ? '正在组织回答…' : '正在思考…'}
+                </p>
               ) : null}
               {turn.error ? (
                 <div className="reader-askai-turn-error">

@@ -1,6 +1,44 @@
 import { describe, expect, it } from 'vitest';
 import type { QaSessionResponse } from './api';
-import { proposalActionIdempotencyKey, turnsFromQaSession } from './AskAiPanel';
+import {
+  mergeQaToolEvent,
+  proposalActionIdempotencyKey,
+  qaToolLabel,
+  turnsFromQaSession,
+} from './AskAiPanel';
+
+describe('问 AI 工具展示', () => {
+  it('maps known tools to product copy and hides unknown internal names', () => {
+    expect(qaToolLabel('search_book')).toBe('搜索全书');
+    expect(qaToolLabel('internal_secret_tool')).toBe('使用阅读辅助工具');
+  });
+
+  it('merges started and finished events by tool call id', () => {
+    const started = mergeQaToolEvent([], {
+      type: 'tool_started', toolCallId: 'call-1', toolName: 'read_book_node',
+    });
+    expect(started).toEqual([{ id: 'call-1', name: 'read_book_node', status: 'running' }]);
+
+    const finished = mergeQaToolEvent(started, {
+      type: 'tool_finished',
+      toolCallId: 'call-1',
+      toolName: 'read_book_node',
+      succeeded: true,
+    });
+    expect(finished).toEqual([{ id: 'call-1', name: 'read_book_node', status: 'succeeded' }]);
+
+    const failedSecondTool = mergeQaToolEvent(finished, {
+      type: 'tool_finished',
+      toolCallId: 'call-2',
+      toolName: 'get_original_notes',
+      succeeded: false,
+    });
+    expect(failedSecondTool).toEqual([
+      { id: 'call-1', name: 'read_book_node', status: 'succeeded' },
+      { id: 'call-2', name: 'get_original_notes', status: 'failed' },
+    ]);
+  });
+});
 
 describe('proposalActionIdempotencyKey', () => {
   it('reuses a feedback key only for the same payload', () => {

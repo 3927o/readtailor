@@ -4435,6 +4435,65 @@ h1 {
   line-height: 1.55;
 }
 
+.reader-askai-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: min(100%, 320px);
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--rt-rule) 78%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--rt-bg) 68%, transparent);
+}
+
+.reader-askai-tool {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 22px;
+  color: var(--rt-ink-2);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.reader-askai-tool small {
+  color: var(--rt-ink-3);
+  font-family: var(--rt-mono);
+  font-size: 9px;
+}
+
+.reader-askai-tool-indicator {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--rt-ink-3);
+  border-radius: 50%;
+}
+
+.reader-askai-tool-running .reader-askai-tool-indicator {
+  border-color: var(--rt-green-deep);
+  border-top-color: transparent;
+  animation: reader-askai-tool-spin 0.8s linear infinite;
+}
+
+.reader-askai-tool-succeeded .reader-askai-tool-indicator {
+  border-color: var(--rt-green-deep);
+  background: var(--rt-green-deep);
+}
+
+.reader-askai-tool-failed .reader-askai-tool-indicator {
+  border-color: var(--rt-danger, #b42318);
+  background: var(--rt-danger, #b42318);
+}
+
+@keyframes reader-askai-tool-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reader-askai-tool-running .reader-askai-tool-indicator { animation: none; }
+}
+
 .reader-askai-answer {
   font-family: var(--rt-serif);
   font-size: 15px;

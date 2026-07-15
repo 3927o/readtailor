@@ -515,11 +515,19 @@ export type AskQuestionRequest = Static<typeof AskQuestionRequestSchema>;
 // SSE wire events for the streaming 问 AI endpoint (§8). Each frame is `data: <json>\n\n` with
 // the discriminator in `type`, mirroring InterviewStreamEvent (a hand-maintained union, since
 // the stream bypasses Fastify serialization). `session` is emitted first so the client learns
-// the thread id for follow-ups; `answer_delta` streams the answer text; `proposal` fires when
+// the thread id for follow-ups; tool lifecycle events expose names/status only (never arguments,
+// results or reasoning); `answer_delta` streams the answer text; `proposal` fires when
 // the agent submits a (pending, read-only) strategy-change proposal; `profile_updated` when it
 // patches the long-term profile; `done` ends the turn; `error` reports an in-band failure.
 export type QaStreamEvent =
   | { type: 'session'; sessionId: string; conversationVersion: number }
+  | { type: 'tool_started'; toolCallId: string; toolName: string }
+  | {
+      type: 'tool_finished';
+      toolCallId: string;
+      toolName: string;
+      succeeded: boolean;
+    }
   | { type: 'answer_delta'; chars: string }
   | {
       type: 'proposal';

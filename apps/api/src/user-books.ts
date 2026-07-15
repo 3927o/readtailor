@@ -4153,6 +4153,7 @@ function createUserBookServiceForUser(
           context,
           toolbox,
           onAnswerDelta: (chars) => bridge.push({ type: 'answer_delta', chars }),
+          onToolEvent: (event) => bridge.push(event),
         })
         .then((result) => {
           outcome = result;

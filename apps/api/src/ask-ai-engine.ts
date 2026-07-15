@@ -1,6 +1,7 @@
 import {
   runAskAiAgent,
   type AskAiOutcome,
+  type AskAiToolEvent,
   type AskAiToolbox,
 } from '@readtailor/agent-kit';
 
@@ -15,6 +16,7 @@ export interface AskAiEngine {
     context: Record<string, unknown>;
     toolbox: AskAiToolbox;
     onAnswerDelta?: (chars: string) => void;
+    onToolEvent?: (event: AskAiToolEvent) => void;
   }): Promise<AskAiOutcome>;
 }
 

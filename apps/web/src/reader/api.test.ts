@@ -49,6 +49,30 @@ describe('streamQaAnswer', () => {
     expect(onDone).toHaveBeenCalledWith('message-1', 'session-1');
   });
 
+  it('dispatches tool lifecycle events without treating them as terminal', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse(
+      'data: {"type":"tool_started","toolCallId":"call-1","toolName":"search_book"}\n\n',
+      'data: {"type":"tool_finished","toolCallId":"call-1","toolName":"search_book","succeeded":false}\n\n',
+      'data: {"type":"done","sessionId":"session-1","messageId":"message-1"}\n\n',
+    )));
+    const onToolStarted = vi.fn();
+    const onToolFinished = vi.fn();
+
+    await expect(streamQaAnswer('book-1', question, { onToolStarted, onToolFinished }))
+      .resolves.toBeUndefined();
+    expect(onToolStarted).toHaveBeenCalledWith({
+      type: 'tool_started',
+      toolCallId: 'call-1',
+      toolName: 'search_book',
+    });
+    expect(onToolFinished).toHaveBeenCalledWith({
+      type: 'tool_finished',
+      toolCallId: 'call-1',
+      toolName: 'search_book',
+      succeeded: false,
+    });
+  });
+
   it('treats an in-band error as a terminal event', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(sseResponse(
       'data: {"type":"error","message":"generation failed"}\n\n',

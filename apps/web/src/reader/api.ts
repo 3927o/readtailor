@@ -452,9 +452,14 @@ export function sendActivitySlice(userBookId: string, payload: ActivitySlicePayl
 }
 
 export type QaProposalStreamEvent = Extract<QaStreamEvent, { type: 'proposal' }>;
+export type QaToolStartedStreamEvent = Extract<QaStreamEvent, { type: 'tool_started' }>;
+export type QaToolFinishedStreamEvent = Extract<QaStreamEvent, { type: 'tool_finished' }>;
+export type QaToolStreamEvent = QaToolStartedStreamEvent | QaToolFinishedStreamEvent;
 
 export interface QaStreamHandlers {
   onSession?(sessionId: string, conversationVersion: number): void;
+  onToolStarted?(tool: QaToolStartedStreamEvent): void;
+  onToolFinished?(tool: QaToolFinishedStreamEvent): void;
   onAnswer?(chars: string): void;
   onProposal?(proposal: QaProposalStreamEvent): void;
   onProfileUpdated?(): void;
@@ -477,6 +482,8 @@ function dispatchQaFrame(frame: string, handlers: QaStreamHandlers): QaStreamTer
   }
   switch (event.type) {
     case 'session': handlers.onSession?.(event.sessionId, event.conversationVersion); break;
+    case 'tool_started': handlers.onToolStarted?.(event); break;
+    case 'tool_finished': handlers.onToolFinished?.(event); break;
     case 'answer_delta': handlers.onAnswer?.(event.chars); break;
     case 'proposal': handlers.onProposal?.(event); break;
     case 'profile_updated': handlers.onProfileUpdated?.(); break;
