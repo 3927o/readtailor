@@ -795,7 +795,8 @@ export type StrategyChangeProposal = Static<typeof StrategyChangeProposalSchema>
 // fragments — each a contiguous block range inside one tailoring-eligible node —
 // covering the entry threshold / typical content / hardest content. The range lets
 // the host build trial_segments on the agent's choice instead of the mechanical
-// first-six-blocks rangeForNode it replaces. `block_index` is 1-based within the node.
+// first-six-blocks rangeForNode it replaces. The agent selects only block boundaries;
+// the host derives exact UTF-16 offsets from the source text. `block_index` is 1-based.
 export const TrialFragmentSchema = Type.Object({
   section_id: Type.String({ minLength: 1, maxLength: 200 }),
   segment: Type.Integer({ minimum: 1 }),
@@ -803,11 +804,9 @@ export const TrialFragmentSchema = Type.Object({
   range: Type.Object({
     start: Type.Object({
       block_index: Type.Integer({ minimum: 1 }),
-      offset: Type.Integer({ minimum: 0 }),
     }),
     end: Type.Object({
       block_index: Type.Integer({ minimum: 1 }),
-      offset: Type.Integer({ minimum: 0 }),
     }),
   }),
   reason: Type.String({ minLength: 5, maxLength: 500 }),
@@ -1057,7 +1056,7 @@ export async function runReadingSetupAgent(options: {
       name: 'select_trial_fragments',
       label: 'Select trial fragments',
       description:
-        '读过候选节点正文后，选出恰好三个互不重叠、可独立阅读的试读片段，分别覆盖进入门槛(threshold)/典型内容(typical)/较高难度(hardest)；每个片段给出 section_id+segment 与节点内连续 block range，且 range 必须落在该节点已给出的 block 范围内。',
+        '读过候选节点正文后，选出恰好三个互不重叠、可独立阅读的试读片段，分别覆盖进入门槛(threshold)/典型内容(typical)/较高难度(hardest)；每个片段只需给出 section_id+segment 与节点内连续的起止 block_index，不要计算字符 offset，且 range 必须落在该节点已给出的 block 范围内。',
       parameters: Type.Object({
         fragments: Type.Array(TrialFragmentSchema, { minItems: 3, maxItems: 3 }),
       }),
@@ -1077,12 +1076,12 @@ export async function runReadingSetupAgent(options: {
   const systemPrompt = options.phase === 'strategy_review'
     ? `${READING_SETUP_SYSTEM_PROMPT}\n当前处于处理方式确认阶段：请结合访谈历史与上一版草稿，吸收用户最新反馈后调用 save_strategy_draft 产出新草稿，保持连续性，不要提出新问题或确认策略。`
     : options.phase === 'select_trial'
-      ? `${READING_SETUP_SYSTEM_PROMPT}\n当前处于试读片段选择阶段：处理方式已确认，请依据已给出的候选节点正文，调用 select_trial_fragments 选出恰好三个不重叠、可独立阅读的片段，分别标记 threshold/typical/hardest。只能引用候选节点，range 必须落在对应节点已列出的 block 范围内，优先命中最能体现处理价值的内容，不要提问或改动策略。`
+      ? `${READING_SETUP_SYSTEM_PROMPT}\n当前处于试读片段选择阶段：处理方式已确认，请依据已给出的候选节点正文，调用 select_trial_fragments 选出恰好三个不重叠、可独立阅读的片段，分别标记 threshold/typical/hardest。只能引用候选节点，range 只填写连续的起止 block_index，不要填写或计算字符 offset，并且必须落在对应节点已列出的 block 范围内。优先命中最能体现处理价值的内容，不要提问或改动策略。`
       : READING_SETUP_SYSTEM_PROMPT;
   const prompt = options.phase === 'strategy_review'
     ? `用户对当前处理方式草稿给出以下反馈，请吸收后调用 save_strategy_draft 产出新草稿：\n${options.feedback ?? ''}`
     : options.phase === 'select_trial'
-      ? '处理方式已确认。请阅读上面给出的候选试读节点正文，调用 select_trial_fragments 选出恰好三个互不重叠、能独立阅读的片段（threshold/典型/hardest 各一），每个给出 section_id+segment 与落在该节点 block 范围内的连续 range。'
+      ? '处理方式已确认。请阅读上面给出的候选试读节点正文，调用 select_trial_fragments 选出恰好三个互不重叠、能独立阅读的片段（threshold/典型/hardest 各一），每个给出 section_id+segment 与落在该节点内连续的起止 block_index；不要计算字符 offset。'
       : `请根据以上长期画像、书籍资料与访谈对话继续本书访谈。已提出 ${options.askedCount} 道问题，最多 7 道。信息不足就用 present_interview_question 提下一题，信息足够或已达上限就 finish_interview。`;
   const messages = reconstructReadingSetupHistory(options.context, options.modelName);
   const reportMetrics = () => {

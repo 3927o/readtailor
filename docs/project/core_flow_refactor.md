@@ -147,14 +147,17 @@ Type.Object({
     section_id: Type.String(),
     segment:    Type.Integer(),
     tag:        Type.Union([Type.Literal('threshold'), Type.Literal('typical'), Type.Literal('hardest')]),
-    range:      TextRangeSchema,          // { start:{block_index,offset}, end:{block_index,offset} }
+    range: Type.Object({
+      start: Type.Object({ block_index: Type.Integer() }),
+      end:   Type.Object({ block_index: Type.Integer() }),
+    }), // 精确 UTF-16 offset 由宿主根据真实 block 文本补齐
     reason:     Type.String(),
   }), { minItems: 3, maxItems: 3 }),
 })
 ```
 
 - 触发时机：**approve（首次确认）后**跑一轮 agent（带 `read_book_node` 等只读工具）来选片段。这也正好对上原型试读屏的"挑点动画"（门槛/典型/最难逐个揭示）。
-- 校验（保留现有宿主校验并扩展，`user-books.ts:591-603`）：3 个节点 `tailoring_eligible=true`、在 `book_profile` 候选池内、互不重叠、range 落在各自节点内、非 TOC/版权/纯图。
+- 校验（保留现有宿主校验并扩展，`user-books.ts:591-603`）：3 个节点 `tailoring_eligible=true`、在 `book_profile` 候选池内、互不重叠、range 落在各自节点内、非 TOC/版权/纯图。Agent 只选择起止 block，宿主使用真实标准文本生成 `start.offset=0` 和 `end.offset=endBlock.text.length`。
 - **删除 `rangeForNode`**（`user-books.ts:188-197`），`createTrialRevision` 改用 agent 给的 range 建 `trial_segments`。
 - `TrialCandidateSchema`（`contracts:292-296`）与相关类型随之扩展带 range/tag。
 

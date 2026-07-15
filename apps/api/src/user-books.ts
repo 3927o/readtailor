@@ -91,6 +91,7 @@ import {
 import type {
   AskAiOutcome,
   AskAiToolbox,
+  TrialFragmentSelection,
 } from '@readtailor/agent-kit';
 import { extractNodeSourceFromHtml, extractNodeTexts, sliceNodeSource } from '@readtailor/tailoring';
 import type { AskAiEngine } from './ask-ai-engine';
@@ -935,26 +936,49 @@ function chapterPath(node: ManifestNode, outline: ManifestOutline[]): string[] {
   return path.length > 0 ? path : [node.title?.trim() || '未命名章节'];
 }
 
-// select_trial_fragments (§3.5) supersedes the mechanical first-six-blocks rangeForNode:
-// the agent picks a real block range per node, so the host only maps snake_case → camelCase
-// and validates the range against the node's actual blocks.
-function mapFragments(fragments: Array<{
+type TrialNodeContent = {
   section_id: string;
   segment: number;
-  tag: 'threshold' | 'typical' | 'hardest';
-  range: { start: { block_index: number; offset: number }; end: { block_index: number; offset: number } };
-  reason: string;
-}>): TrialCandidate[] {
-  return fragments.map((fragment) => ({
-    sectionId: fragment.section_id,
-    segment: fragment.segment,
-    reason: fragment.reason,
-    tag: fragment.tag,
-    range: {
-      start: { blockIndex: fragment.range.start.block_index, offset: fragment.range.start.offset },
-      end: { blockIndex: fragment.range.end.block_index, offset: fragment.range.end.offset },
-    },
-  }));
+  blocks: Array<{ block_index: number; text: string }>;
+};
+
+// The agent chooses semantic block boundaries; the host owns exact UTF-16 offsets so model
+// character-counting errors cannot create invalid trial ranges.
+export function resolveTrialFragmentRanges(
+  fragments: TrialFragmentSelection[],
+  nodes: TrialNodeContent[],
+): TrialCandidate[] {
+  const nodesByKey = new Map(nodes.map((node) => [`${node.section_id}\0${node.segment}`, node]));
+  return fragments.map((fragment) => {
+    const node = nodesByKey.get(`${fragment.section_id}\0${fragment.segment}`);
+    const blocksByIndex = new Map(node?.blocks.map((block) => [block.block_index, block]) ?? []);
+    const startBlock = blocksByIndex.get(fragment.range.start.block_index);
+    const endBlock = blocksByIndex.get(fragment.range.end.block_index);
+    if (
+      !node
+      || !startBlock
+      || !endBlock
+      || fragment.range.start.block_index > fragment.range.end.block_index
+    ) {
+      throw new UserBookError('试读片段范围超出候选节点', 409);
+    }
+    if (
+      fragment.range.start.block_index === fragment.range.end.block_index
+      && endBlock.text.length === 0
+    ) {
+      throw new UserBookError('试读片段范围为空', 409);
+    }
+    return {
+      sectionId: fragment.section_id,
+      segment: fragment.segment,
+      reason: fragment.reason,
+      tag: fragment.tag,
+      range: {
+        start: { blockIndex: fragment.range.start.block_index, offset: 0 },
+        end: { blockIndex: fragment.range.end.block_index, offset: endBlock.text.length },
+      },
+    };
+  });
 }
 
 // Shared range-against-blocks bounds check for both trial fragments and highlights (§11.7): the range
@@ -1940,7 +1964,7 @@ function createUserBookServiceForUser(
       ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
     });
     if (outcome.type !== 'fragments') throw new UserBookError('试读片段选择失败', 503);
-    return mapFragments(outcome.fragments);
+    return resolveTrialFragmentRanges(outcome.fragments, trialNodeContents);
   };
 
   const trialState = async (userBookId: string): Promise<TrialReviewResponse> => {

@@ -177,8 +177,8 @@ function fakeSelectFragments(context: Record<string, unknown>): TrialFragmentSel
       segment: node.segment as number,
       tag: tags[ordinal]!,
       range: {
-        start: { block_index: first.block_index as number, offset: 0 },
-        end: { block_index: last.block_index as number, offset: String(last.text ?? '').length },
+        start: { block_index: first.block_index as number },
+        end: { block_index: last.block_index as number },
       },
       reason: reasons[ordinal]!,
     };

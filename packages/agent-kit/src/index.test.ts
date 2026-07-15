@@ -296,6 +296,97 @@ describe('reading setup Pi Agent', () => {
     expect(deltas.filter((d) => d.type === 'option_added').map((d) => (d as { id: string }).id)).toEqual(['understand', 'apply']);
     expect(deltas.filter((d) => d.type === 'sufficiency').map((d) => (d as { value: number }).value).at(-1)).toBe(40);
   });
+
+  it('lets select_trial choose block boundaries without model-calculated offsets', async () => {
+    const fragments = [
+      {
+        section_id: 'chapter-1',
+        segment: 1,
+        tag: 'threshold' as const,
+        range: { start: { block_index: 1 }, end: { block_index: 2 } },
+        reason: '覆盖进入本书时的理解门槛。',
+      },
+      {
+        section_id: 'chapter-2',
+        segment: 1,
+        tag: 'typical' as const,
+        range: { start: { block_index: 3 }, end: { block_index: 5 } },
+        reason: '覆盖全书典型内容的表达方式。',
+      },
+      {
+        section_id: 'chapter-3',
+        segment: 1,
+        tag: 'hardest' as const,
+        range: { start: { block_index: 2 }, end: { block_index: 4 } },
+        reason: '覆盖较高难度内容的处理效果。',
+      },
+    ];
+    let selectTool: unknown;
+    const server = createServer(async (request, response) => {
+      let body = '';
+      for await (const part of request) body += String(part);
+      const payload = JSON.parse(body) as { tools?: unknown[] };
+      selectTool = payload.tools?.find((tool) => {
+        const value = tool as { name?: unknown; function?: { name?: unknown } };
+        return value.name === 'select_trial_fragments'
+          || value.function?.name === 'select_trial_fragments';
+      });
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      const base = { id: 'chatcmpl-select-trial', object: 'chat.completion.chunk', created: 0, model: 'fake-tool-model' };
+      response.write(`data: ${JSON.stringify({
+        ...base,
+        choices: [{
+          index: 0,
+          delta: {
+            role: 'assistant',
+            tool_calls: [{
+              index: 0,
+              id: 'call-select-trial',
+              type: 'function',
+              function: { name: 'select_trial_fragments', arguments: JSON.stringify({ fragments }) },
+            }],
+          },
+          finish_reason: null,
+        }],
+      })}\n\n`);
+      response.write(`data: ${JSON.stringify({
+        ...base,
+        choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+      })}\n\n`);
+      response.end('data: [DONE]\n\n');
+    });
+    servers.push(server);
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server did not bind');
+
+    const result = await runReadingSetupAgent({
+      apiBaseUrl: `http://127.0.0.1:${address.port}/v1`,
+      apiKey: 'test-key',
+      modelName: 'fake-tool-model',
+      sessionId: 'select-trial-session',
+      phase: 'select_trial',
+      askedCount: 0,
+      context: {
+        book: { title: 'Book' },
+        trialNodeContents: fragments.map((fragment) => ({
+          section_id: fragment.section_id,
+          segment: fragment.segment,
+          blocks: Array.from(
+            { length: fragment.range.end.block_index },
+            (_value, index) => ({ block_index: index + 1, text: `正文 ${index + 1}` }),
+          ),
+        })),
+      },
+      timeoutMs: 5000,
+    });
+
+    expect(result).toEqual({ type: 'fragments', fragments });
+    expect(selectTool).toBeDefined();
+    expect(JSON.stringify(selectTool)).not.toMatch(/"offset"\s*:/);
+  });
 });
 
 describe('reconstructReadingSetupHistory', () => {
