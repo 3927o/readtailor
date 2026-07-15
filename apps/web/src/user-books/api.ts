@@ -64,7 +64,9 @@ export interface InterviewHistoryItem {
 }
 
 export interface InterviewSnapshot {
-  status: 'asking' | 'completing' | 'failed';
+  status: 'asking' | 'generating' | 'completing' | 'failed';
+  turnInProgress: boolean;
+  canResume: boolean;
   history: InterviewHistoryItem[];
   currentQuestion: InterviewQuestion | null;
   errorSummary: string | null;
@@ -181,6 +183,7 @@ interface RawShelfItem {
 
 interface RawInterviewSnapshot {
   status: 'active' | 'completed' | 'cancelled';
+  turnInProgress: boolean;
   questionCount: number;
   maxQuestions: 7;
   currentQuestion: {
@@ -259,7 +262,11 @@ function mapShelfItem(item: RawShelfItem): UserBookSummary {
 
 function mapInterview(raw: RawInterviewSnapshot): InterviewSnapshot {
   return {
-    status: raw.status === 'active' ? 'asking' : raw.status === 'completed' ? 'completing' : 'failed',
+    status: raw.status === 'active'
+      ? raw.currentQuestion ? 'asking' : 'generating'
+      : raw.status === 'completed' ? 'completing' : 'failed',
+    turnInProgress: raw.turnInProgress,
+    canResume: raw.status === 'active' && !raw.currentQuestion && !raw.turnInProgress,
     history: raw.answers.map((answer, index) => ({
       questionId: answer.questionId,
       question: answer.question || `第 ${index + 1} 问`,
@@ -334,6 +341,14 @@ export async function getUserBook(userBookId: string): Promise<UserBookSummary> 
 
 export async function getInterview(userBookId: string): Promise<InterviewSnapshot> {
   return mapInterview(await get<RawInterviewSnapshot>(`${userBookRoot(userBookId)}/interview`));
+}
+
+export async function startInterview(userBookId: string): Promise<InterviewSnapshot> {
+  return mapInterview(await post<RawInterviewSnapshot>(`${userBookRoot(userBookId)}/interview/start`, {}, false));
+}
+
+export async function resumeInterview(userBookId: string): Promise<InterviewSnapshot> {
+  return mapInterview(await post<RawInterviewSnapshot>(`${userBookRoot(userBookId)}/interview/resume`, {}, false));
 }
 
 // Handlers for the streaming answer endpoint (§4.2). Every callback is optional so a caller

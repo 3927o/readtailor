@@ -348,6 +348,7 @@ export type SubmitInterviewAnswerRequest = Static<
 export const InterviewStateResponseSchema = Type.Object({
   sessionId: Type.String(),
   status: InterviewSessionStatusSchema,
+  turnInProgress: Type.Boolean(),
   questionCount: Type.Integer({ minimum: 0, maximum: 7 }),
   maxQuestions: Type.Literal(7),
   currentQuestion: Type.Union([InterviewQuestionSchema, Type.Null()]),

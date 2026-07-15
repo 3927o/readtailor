@@ -1,7 +1,13 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router';
-import { ApiError, getInterview, streamInterviewAnswer } from './api';
+import {
+  ApiError,
+  getInterview,
+  resumeInterview,
+  startInterview,
+  streamInterviewAnswer,
+} from './api';
 import type { InterviewOption, InterviewQuestion } from './api';
 import { WorkflowFallback, WorkflowMessage, WorkflowPage } from './components';
 import { useWorkflowGate } from './useWorkflowGate';
@@ -56,11 +62,19 @@ export function InterviewPage() {
   const { id = '' } = useParams();
   const gate = useWorkflowGate(id, ['on_shelf', 'interviewing']);
   const queryClient = useQueryClient();
+  const shouldStart = gate.active && gate.query.data?.workflowStatus === 'on_shelf';
+  const start = useMutation({
+    mutationFn: () => startInterview(id),
+    onSuccess: (snapshot) => {
+      queryClient.setQueryData(['user-book', id, 'interview'], snapshot);
+      void queryClient.invalidateQueries({ queryKey: ['user-book', id] });
+    },
+  });
   const interview = useQuery({
     queryKey: ['user-book', id, 'interview'],
     queryFn: () => getInterview(id),
-    enabled: gate.active,
-    refetchInterval: (current) => current.state.data?.status === 'completing' ? 1800 : false,
+    enabled: gate.active && !shouldStart,
+    refetchInterval: (current) => ['generating', 'completing'].includes(current.state.data?.status ?? '') ? 1800 : false,
   });
   const [text, setText] = useState('');
   const [stream, setStream] = useState<StreamState>(IDLE_STREAM);
@@ -75,6 +89,27 @@ export function InterviewPage() {
   // Turns answered in this session, keyed by question id. Preferred over the server snapshot so
   // the history reflects the answer the instant it's sent.
   const [localHistory, setLocalHistory] = useState<LocalTurn[]>([]);
+
+  useEffect(() => {
+    if (shouldStart && start.isIdle) start.mutate();
+  }, [shouldStart, start]);
+
+  const resume = useMutation({
+    mutationFn: () => resumeInterview(id),
+    onSuccess: (snapshot) => {
+      queryClient.setQueryData(['user-book', id, 'interview'], snapshot);
+      if (snapshot.status === 'completing') {
+        void queryClient.invalidateQueries({ queryKey: ['user-book', id] });
+      }
+    },
+    onError: (error) => {
+      setStreamError(error instanceof ApiError ? error.message : '恢复访谈失败，请稍后重试。');
+    },
+  });
+
+  useEffect(() => {
+    if (interview.data?.canResume && resume.isIdle) resume.mutate();
+  }, [interview.data?.canResume, resume]);
 
   const question = activeQuestion ?? interview.data?.currentQuestion ?? null;
 
@@ -119,6 +154,7 @@ export function InterviewPage() {
 
   const submit = (choice: { optionId?: string; text?: string }) => {
     if (!question || answer.isPending) return;
+    resume.reset();
     const answerLabel = choice.optionId
       ? (question.options.find((option) => option.id === choice.optionId)?.label ?? choice.optionId)
       : (choice.text ?? '');
@@ -128,6 +164,7 @@ export function InterviewPage() {
     ]);
     setStreamError(null);
     setText('');
+    setActiveQuestion(null);
     setTurnSeq((n) => n + 1);
     setStream({ ...IDLE_STREAM, active: true, sufficiency: question.sufficiency });
     answer.mutate({ questionId: question.id, ...choice });
@@ -140,6 +177,11 @@ export function InterviewPage() {
     return <WorkflowFallback title="这本书暂时打不开" detail={gate.query.error.message} retry={() => void gate.query.refetch()} />;
   }
   const book = gate.query.data.sharedBook;
+  if (shouldStart) {
+    return start.isError
+      ? <WorkflowPage book={book} kicker="A CONVERSATION · 本书访谈" title="先聊几句" hideHeader><WorkflowMessage title="访谈暂时没有开始" action={<button className="button button-ghost" type="button" onClick={() => start.mutate()}>重新开始</button>}>{start.error.message}</WorkflowMessage></WorkflowPage>
+      : <WorkflowPage book={book} kicker="A CONVERSATION · 本书访谈" title="先聊几句" hideHeader><WorkflowMessage title="正在准备第一问">我正在结合这本书和你的长期画像整理开场问题。</WorkflowMessage></WorkflowPage>;
+  }
   if (interview.isPending) {
     return <WorkflowPage book={book} kicker="A CONVERSATION · 本书访谈" title="先聊几句" hideHeader><WorkflowMessage title="正在恢复访谈">答案和当前问题正在从服务端读取。</WorkflowMessage></WorkflowPage>;
   }
@@ -150,6 +192,7 @@ export function InterviewPage() {
 
   const streaming = stream.active;
   const concludingView = stream.concluding || snapshot.status === 'completing';
+  const generatingView = snapshot.status === 'generating' && !streaming;
   const failedView = snapshot.status === 'failed' && !streaming;
   const interactive = !streaming && snapshot.status === 'asking' && !!question;
 
@@ -201,6 +244,15 @@ export function InterviewPage() {
             title="整理暂时停住了"
             action={<button className="button button-primary" type="button" disabled={interview.isFetching} onClick={() => void interview.refetch()}>{interview.isFetching ? '正在重新读取…' : '重新读取'}</button>}
           >{snapshot.errorSummary || '已经提交的回答都还在，可以从这里继续。'}</WorkflowMessage>
+        ) : generatingView ? (
+          <div className="interview-turn" key="generating">
+            <div className="interview-generating">
+              <div className="workflow-typing" aria-hidden="true"><span /><span /><span /></div>
+              <span>{resume.isPending ? '正在恢复访谈' : '正在生成下一问'}</span>
+            </div>
+            {streamError ? <div className="form-error" role="alert">{streamError}</div> : null}
+            {resume.isError ? <button className="button button-ghost" type="button" onClick={() => resume.mutate()}>重新继续</button> : null}
+          </div>
         ) : concludingView ? (
           <div className="interview-turn" key="concluding">
             <h2 className="interview-prompt"><Typeset text="好，我心里有数了——就问到这里。" /></h2>
@@ -260,7 +312,7 @@ export function InterviewPage() {
           </div>
         )}
 
-        {!concludingView && !failedView ? (
+        {!concludingView && !generatingView && !failedView ? (
           <p className="interview-note">问几个由我判断——信息够了，我就不再多问。</p>
         ) : null}
       </section>

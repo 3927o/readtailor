@@ -654,6 +654,42 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
   );
 
   app.post(
+    '/v1/user-books/:id/interview/start',
+    {
+      schema: {
+        params: userBookIdParams,
+        response: { 200: InterviewStateResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).startInterview(request.params.id);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.post(
+    '/v1/user-books/:id/interview/resume',
+    {
+      schema: {
+        params: userBookIdParams,
+        response: { 200: InterviewStateResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).resumeInterview(request.params.id);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.post(
     '/v1/user-books/:id/interview/answers',
     {
       // 响应是 SSE 流（§4）：逐字致谢/问题、逐个选项、充足度，最后 question_final 或 done。
