@@ -887,7 +887,10 @@ function trialSegmentAtOrdinal<const Ordinal extends 1 | 2 | 3>(ordinal: Ordinal
     Type.Object({ ...fields, status: Type.Literal('generating'), result: Type.Null() }),
     Type.Object({ ...fields, status: Type.Literal('ready'), result: GenerationResultSchema }),
     Type.Object({ ...fields, status: Type.Literal('failed'), result: Type.Null() }),
-  ]);
+  ], {
+    // fast-json-stringify requires tuple items to expose their top-level JSON type.
+    type: 'object',
+  });
 }
 
 function readyTrialSegmentAtOrdinal<const Ordinal extends 1 | 2 | 3>(ordinal: Ordinal) {
