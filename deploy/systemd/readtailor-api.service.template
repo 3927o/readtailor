@@ -1,0 +1,28 @@
+[Unit]
+Description=ReadTailor API
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=__APP_ROOT__/current/apps/api/dist/server.js
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_USER__
+WorkingDirectory=__APP_ROOT__/current
+EnvironmentFile=/etc/readtailor/readtailor.env
+Environment="NODE_OPTIONS=--enable-source-maps --max-old-space-size=__API_HEAP_MB__"
+ExecStart=__NODE_BIN__ apps/api/dist/server.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=__APP_ROOT__/shared
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

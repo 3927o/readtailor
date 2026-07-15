@@ -7,6 +7,9 @@ export default defineConfig({
   target: 'node24',
   clean: true,
   sourcemap: true,
+  banner: {
+    js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);",
+  },
   noExternal: [/^@readtailor\//],
   external: ['bullmq', 'drizzle-orm', 'ioredis', 'pino', 'postgres'],
 });

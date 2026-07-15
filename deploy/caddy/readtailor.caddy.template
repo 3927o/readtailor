@@ -1,0 +1,20 @@
+https://__DOMAIN__ {
+	encode zstd gzip
+
+	request_body {
+		# The API accepts 100 MiB, but the 2 GiB host intentionally starts lower.
+		max_size 50MB
+	}
+
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:3001 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		root * __APP_ROOT__/current/apps/web/dist
+		try_files {path} /index.html
+		file_server
+	}
+}

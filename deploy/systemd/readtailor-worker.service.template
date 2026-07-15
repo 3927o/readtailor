@@ -1,0 +1,29 @@
+[Unit]
+Description=ReadTailor Worker
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=__APP_ROOT__/current/apps/worker/dist/server.js
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_USER__
+WorkingDirectory=__APP_ROOT__/current
+EnvironmentFile=/etc/readtailor/readtailor.env
+Environment=PATH=__APP_ROOT__/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment="NODE_OPTIONS=--enable-source-maps --max-old-space-size=__WORKER_HEAP_MB__"
+ExecStart=__NODE_BIN__ apps/worker/dist/server.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=__APP_ROOT__/shared
+TasksMax=192
+
+[Install]
+WantedBy=multi-user.target

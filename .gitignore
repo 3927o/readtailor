@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+deploy/deploy.env
+deploy/readtailor.env
 .pnpm-store/
 node_modules/
 dist/
