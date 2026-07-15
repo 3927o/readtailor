@@ -3,16 +3,34 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UserBookDetail } from './api';
 import { ReadingSetupRoute } from './ReadingSetupRoute';
 import { userBookQueryKeys } from './queryKeys';
 import { routeForWorkflow } from './routes';
+import { applyTransition } from './transitions';
 import { useReadingSetupWorkflow } from './useReadingSetupWorkflow';
+
+const apiMocks = vi.hoisted(() => ({ getUserBook: vi.fn() }));
+
+vi.mock('./api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./api')>();
+  return { ...actual, getUserBook: apiMocks.getUserBook };
+});
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const roots: Array<ReturnType<typeof createRoot>> = [];
+
+async function waitFor(assertion: () => void | Promise<void>) {
+  await act(async () => {
+    await vi.waitFor(assertion);
+  });
+}
+
+beforeEach(() => {
+  apiMocks.getUserBook.mockReset();
+});
 
 afterEach(() => {
   for (const root of roots.splice(0)) act(() => root.unmount());
@@ -71,9 +89,75 @@ describe('ReadingSetupRoute', () => {
       );
     });
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(host.textContent).toBe('/user-books/book-1/strategy|strategy_review');
     });
+  });
+
+  it('does not let an older deferred detail response overwrite a transition pointer', async () => {
+    let resolveDetail: ((value: UserBookDetail) => void) | null = null;
+    apiMocks.getUserBook.mockImplementation(() => new Promise<UserBookDetail>((resolve) => {
+      resolveDetail = resolve;
+    }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0 } },
+    });
+    const oldDetail = detail('interviewing');
+    queryClient.setQueryData(userBookQueryKeys.detail('book-1'), oldDetail);
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    roots.push(root);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/user-books/book-1/interview']}>
+            <Routes>
+              <Route path="/user-books/:id" element={<ReadingSetupRoute />}>
+                <Route path="interview" element={<Probe />} />
+                <Route path="strategy" element={<Probe />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await waitFor(() => expect(apiMocks.getUserBook).toHaveBeenCalled());
+
+    let transitionPromise: Promise<void> | null = null;
+    await act(async () => {
+      transitionPromise = applyTransition(queryClient, 'book-1', {
+        type: 'strategy_committed',
+        strategy: {
+          draftId: 'draft-new',
+          draftVersion: 2,
+          readingBriefing: {
+            bookIdentity: '定位',
+            arc: '脉络',
+            assumedKnowledge: '前提',
+            readingAdvice: '建议',
+          },
+          userFacingSummary: '策略',
+          trialCandidatePreviews: [],
+          adjustmentCount: 0,
+          adjustmentLimit: 5,
+          canAdjust: true,
+        },
+      });
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(queryClient.getQueryData<UserBookDetail>(userBookQueryKeys.detail('book-1')))
+        .toMatchObject({ workflowStatus: 'strategy_review', currentStrategyDraftVersionId: 'draft-new' });
+    });
+
+    await act(async () => {
+      resolveDetail!(oldDetail);
+      await transitionPromise;
+    });
+
+    expect(queryClient.getQueryData<UserBookDetail>(userBookQueryKeys.detail('book-1')))
+      .toMatchObject({ workflowStatus: 'strategy_review', currentStrategyDraftVersionId: 'draft-new' });
   });
 });
 

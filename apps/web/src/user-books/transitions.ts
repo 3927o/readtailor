@@ -18,6 +18,13 @@ export type ReadingSetupTransition =
   | { type: 'trial_committed'; trial: TrialSnapshot }
   | { type: 'reading_started'; userBook: UserBookDetail };
 
+function transitionUpdatedAt(current: string, candidate = current): string {
+  const currentTime = Date.parse(current);
+  const candidateTime = Date.parse(candidate);
+  if (!Number.isFinite(currentTime)) return candidate;
+  return new Date(Math.max(currentTime + 1, Number.isFinite(candidateTime) ? candidateTime : 0)).toISOString();
+}
+
 function workflowStatus(transition: ReadingSetupTransition): UserBookWorkflowStatus {
   switch (transition.type) {
     case 'interview_started': return 'interviewing';
@@ -36,15 +43,26 @@ function updateDetail(
   current: UserBookDetail | undefined,
   transition: ReadingSetupTransition,
 ): UserBookDetail | undefined {
-  if (transition.type === 'reading_started') return transition.userBook;
+  if (transition.type === 'reading_started') {
+    if (!current) return transition.userBook;
+    return {
+      ...transition.userBook,
+      updatedAt: transitionUpdatedAt(current.updatedAt, transition.userBook.updatedAt),
+    };
+  }
   if (!current) return current;
   if (transition.type === 'interview_started') {
-    return { ...current, workflowStatus: 'interviewing' };
+    return {
+      ...current,
+      workflowStatus: 'interviewing',
+      updatedAt: transitionUpdatedAt(current.updatedAt),
+    };
   }
   if (transition.type === 'strategy_committed') {
     return {
       ...current,
       workflowStatus: 'strategy_review',
+      updatedAt: transitionUpdatedAt(current.updatedAt),
       currentStrategyDraftVersionId: transition.strategy.draftId,
       currentTrialRevisionId: null,
     };
@@ -52,6 +70,7 @@ function updateDetail(
   return {
     ...current,
     workflowStatus: workflowStatus(transition),
+    updatedAt: transitionUpdatedAt(current.updatedAt),
     currentStrategyDraftVersionId: transition.trial.draftId,
     currentTrialRevisionId: transition.trial.revisionId,
   };
@@ -63,8 +82,17 @@ function updateListItem(
   transition: ReadingSetupTransition,
 ): UserBookSummary {
   if (current.id !== userBookId) return current;
-  if (transition.type === 'reading_started') return transition.userBook;
-  return { ...current, workflowStatus: workflowStatus(transition) };
+  if (transition.type === 'reading_started') {
+    return {
+      ...transition.userBook,
+      updatedAt: transitionUpdatedAt(current.updatedAt, transition.userBook.updatedAt),
+    };
+  }
+  return {
+    ...current,
+    workflowStatus: workflowStatus(transition),
+    updatedAt: transitionUpdatedAt(current.updatedAt),
+  };
 }
 
 export async function applyTransition(

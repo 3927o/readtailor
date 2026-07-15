@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { InterviewSnapshot, UserBookDetail } from './api';
+import { ApiError, type InterviewSnapshot, type UserBookDetail } from './api';
 import { InterviewPage } from './InterviewPage';
 import { userBookQueryKeys } from './queryKeys';
 import { useInterviewController } from './useInterviewController';
@@ -132,6 +132,101 @@ describe('useInterviewController', () => {
       question: '问题 1',
       answer: '选项 1',
     });
+  });
+
+  it('drops late events and errors from an older resume stream after a new answer starts', async () => {
+    apiMocks.getInterview
+      .mockResolvedValueOnce(pendingSnapshot())
+      .mockResolvedValue(snapshot(2));
+    let oldHandlers: { onEvent(event: unknown): void } | null = null;
+    let rejectOld: ((error: Error) => void) | null = null;
+    apiMocks.streamResume.mockImplementation((_id, handlers) => {
+      oldHandlers = handlers;
+      return new Promise<void>((_resolve, reject) => { rejectOld = reject; });
+    });
+    apiMocks.streamAnswer.mockImplementation(async (_id, _input, handlers) => {
+      handlers.onEvent({
+        userBookId: 'book-1',
+        streamId: 'new-stream',
+        sequence: 1,
+        type: 'question_final',
+        ordinal: 2,
+        maxQuestions: 7,
+        question: snapshot(2).currentQuestion!,
+      });
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(userBookQueryKeys.detail('book-1'), {
+      id: 'book-1',
+      workflowStatus: 'interviewing',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+      sharedBook: {
+        id: 'shared-1',
+        status: 'ready',
+        title: 'Book',
+        authors: [],
+        coverPath: null,
+        errorSummary: null,
+      },
+      readingProgress: null,
+      currentStrategyDraftVersionId: null,
+      currentStrategyVersionId: null,
+      currentTrialRevisionId: null,
+    } satisfies UserBookDetail);
+    let controller: ReturnType<typeof useInterviewController> | null = null;
+    const value = () => controller!;
+
+    function Harness() {
+      controller = useInterviewController({ userBookId: 'book-1', shouldStart: false });
+      return null;
+    }
+
+    const root = createRoot(document.createElement('div'));
+    roots.push(root);
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><Harness /></QueryClientProvider>);
+    });
+    await waitFor(() => expect(apiMocks.streamResume).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      queryClient.setQueryData(userBookQueryKeys.interview('book-1'), snapshot(1));
+    });
+    await waitFor(() => expect(value().snapshot?.currentQuestion?.id).toBe('question-1'));
+    await waitFor(() => expect(value().interactive).toBe(true));
+
+    act(() => {
+      expect(value().submit({ optionId: 'option-1' })).toBe(true);
+    });
+    await waitFor(() => expect(value().question?.id).toBe('question-2'));
+
+    act(() => {
+      oldHandlers!.onEvent({
+        userBookId: 'book-1',
+        streamId: 'old-stream',
+        sequence: 99,
+        type: 'draft_final',
+        strategy: {
+          draftId: 'late-draft',
+          draftVersion: 1,
+          readingBriefing: {
+            bookIdentity: 'late',
+            arc: 'late',
+            assumedKnowledge: 'late',
+            readingAdvice: 'late',
+          },
+          userFacingSummary: 'late',
+          trialCandidatePreviews: [],
+          adjustmentCount: 0,
+          adjustmentLimit: 5,
+          canAdjust: true,
+        },
+      });
+      rejectOld!(new ApiError('late error', 0));
+    });
+
+    await waitFor(() => expect(value().question?.id).toBe('question-2'));
+    expect(value().streamError).toBeNull();
+    expect(queryClient.getQueryData<UserBookDetail>(userBookQueryKeys.detail('book-1')))
+      .toMatchObject({ workflowStatus: 'interviewing', currentStrategyDraftVersionId: null });
   });
 });
 

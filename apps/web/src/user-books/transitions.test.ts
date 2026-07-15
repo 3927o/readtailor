@@ -103,8 +103,11 @@ describe('applyTransition', () => {
 
     await applyTransition(queryClient, userBook.id, { type: 'reading_started', userBook: adopted });
 
-    expect(queryClient.getQueryData(userBookQueryKeys.detail(userBook.id))).toEqual(adopted);
+    expect(queryClient.getQueryData<UserBookDetail>(userBookQueryKeys.detail(userBook.id)))
+      .toEqual({ ...adopted, updatedAt: expect.any(String) });
+    expect(Date.parse(queryClient.getQueryData<UserBookDetail>(userBookQueryKeys.detail(userBook.id))!.updatedAt))
+      .toBeGreaterThan(Date.parse(adopted.updatedAt));
     expect(queryClient.getQueryData<{ userBooks: UserBookDetail[] }>(userBookListQueryKey)?.userBooks[0])
-      .toEqual(adopted);
+      .toEqual({ ...adopted, updatedAt: expect.any(String) });
   });
 });

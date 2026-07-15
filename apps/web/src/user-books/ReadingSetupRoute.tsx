@@ -1,18 +1,30 @@
 import { useQuery } from '@tanstack/react-query';
 import { Navigate, Outlet, useLocation, useParams } from 'react-router';
-import { getUserBook } from './api';
+import { getUserBook, type UserBookDetail } from './api';
 import { WorkflowFallback } from './components';
 import { userBookQueryKeys } from './queryKeys';
 import { routeForUserBook } from './routes';
 import type { ReadingSetupWorkflowContext } from './useReadingSetupWorkflow';
 
+export function mergeUserBookDetail(
+  previous: UserBookDetail | undefined,
+  next: UserBookDetail,
+): UserBookDetail {
+  if (!previous) return next;
+  return next.updatedAt > previous.updatedAt ? next : previous;
+}
+
 export function ReadingSetupRoute() {
   const { id = '' } = useParams();
   const location = useLocation();
-  const query = useQuery({
+  const query = useQuery<UserBookDetail>({
     queryKey: userBookQueryKeys.detail(id),
     queryFn: () => getUserBook(id),
     enabled: Boolean(id),
+    structuralSharing: (previous, next) => mergeUserBookDetail(
+      previous as UserBookDetail | undefined,
+      next as UserBookDetail,
+    ),
     refetchInterval: (current) => {
       const status = current.state.data?.workflowStatus;
       return status && ['interviewing', 'trial_generating'].includes(status) ? 1800 : false;

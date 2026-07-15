@@ -24,6 +24,14 @@ interface LocalTurn {
   answer: string;
 }
 
+interface InterviewStreamGeneration {
+  generation: number;
+}
+
+interface InterviewAnswerRequest extends InterviewStreamGeneration {
+  input: { questionId: string; optionId?: string; text?: string };
+}
+
 function eventQuestion(event: Extract<InterviewClientStreamEvent, { type: 'question_final' }>): InterviewQuestion {
   return {
     id: event.question.id,
@@ -49,6 +57,7 @@ export function useInterviewController(options: {
   const [localHistory, setLocalHistory] = useState<LocalTurn[]>([]);
   const startRequested = useRef(false);
   const resumeRequested = useRef(false);
+  const streamGeneration = useRef(0);
 
   const start = useMutation({
     mutationFn: () => startInterview(options.userBookId),
@@ -76,7 +85,8 @@ export function useInterviewController(options: {
     start.mutate();
   }, [options.shouldStart, start]);
 
-  const handleStreamEvent = useCallback((event: InterviewClientStreamEvent) => {
+  const handleStreamEvent = useCallback((generation: number, event: InterviewClientStreamEvent) => {
+    if (generation !== streamGeneration.current) return;
     dispatchStream({ type: 'event', event });
     if (event.type === 'question_final') {
       setActiveQuestion(eventQuestion(event));
@@ -101,10 +111,15 @@ export function useInterviewController(options: {
     }
   }, [interview, options.userBookId, queryClient]);
 
-  const resume = useMutation({
-    mutationFn: () => streamResumeInterview(options.userBookId, { onEvent: handleStreamEvent }),
-    onMutate: () => dispatchStream({ type: 'recover' }),
-    onError: (error) => {
+  const resume = useMutation<void, Error, InterviewStreamGeneration>({
+    mutationFn: ({ generation }) => streamResumeInterview(options.userBookId, {
+      onEvent: (event) => handleStreamEvent(generation, event),
+    }),
+    onMutate: ({ generation }) => {
+      if (generation === streamGeneration.current) dispatchStream({ type: 'recover' });
+    },
+    onError: (error, { generation }) => {
+      if (generation !== streamGeneration.current) return;
       const message = error instanceof ApiError ? error.message : '恢复访谈失败，请稍后重试。';
       setStreamError(message);
       dispatchStream({ type: 'transport_error', message });
@@ -118,7 +133,9 @@ export function useInterviewController(options: {
     }
     if (resumeRequested.current || resume.isPending) return;
     resumeRequested.current = true;
-    resume.mutate();
+    const generation = streamGeneration.current + 1;
+    streamGeneration.current = generation;
+    resume.mutate({ generation });
   }, [interview.data?.canResume, resume]);
 
   useEffect(() => {
@@ -138,11 +155,12 @@ export function useInterviewController(options: {
   }, [interview.data]);
 
   const question = activeQuestion ?? interview.data?.currentQuestion ?? null;
-  const answer = useMutation<void, Error, { questionId: string; optionId?: string; text?: string }>({
-    mutationFn: (input) => streamInterviewAnswer(options.userBookId, input, {
-      onEvent: handleStreamEvent,
+  const answer = useMutation<void, Error, InterviewAnswerRequest>({
+    mutationFn: ({ generation, input }) => streamInterviewAnswer(options.userBookId, input, {
+      onEvent: (event) => handleStreamEvent(generation, event),
     }),
-    onError: (error) => {
+    onError: (error, { generation }) => {
+      if (generation !== streamGeneration.current) return;
       const message = error instanceof ApiError ? error.message : '提交失败，请稍后再试。';
       setStreamError(message);
       dispatchStream({ type: 'transport_error', message });
@@ -165,7 +183,12 @@ export function useInterviewController(options: {
     setActiveQuestion(null);
     setTurnSeq((value) => value + 1);
     dispatchStream({ type: 'begin', sufficiency: question.sufficiency });
-    answer.mutate({ questionId: question.id, ...choice });
+    const generation = streamGeneration.current + 1;
+    streamGeneration.current = generation;
+    answer.mutate({
+      generation,
+      input: { questionId: question.id, ...choice },
+    });
     return true;
   };
 

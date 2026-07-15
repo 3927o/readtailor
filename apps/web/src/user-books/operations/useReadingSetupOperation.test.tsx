@@ -198,9 +198,9 @@ function renderOperation(
     string
   >> | null = null;
 
-  function Harness({ baseKey }: { baseKey: string }) {
+  function Harness({ baseKey, userBookId }: { baseKey: string; userBookId: string }) {
     latest = useReadingSetupOperation({
-      userBookId: 'book-1',
+      userBookId,
       baseKey,
       enabled: true,
       adapter,
@@ -212,9 +212,9 @@ function renderOperation(
   const host = document.createElement('div');
   const root = createRoot(host);
   roots.push(root);
-  const render = async (baseKey = options.baseKey ?? 'base-1') => {
+  const render = async (baseKey = options.baseKey ?? 'base-1', userBookId = 'book-1') => {
     await act(async () => {
-      const content = <QueryClientProvider client={queryClient}><Harness baseKey={baseKey} /></QueryClientProvider>;
+      const content = <QueryClientProvider client={queryClient}><Harness baseKey={baseKey} userBookId={userBookId} /></QueryClientProvider>;
       root.render(options.strict ? <StrictMode>{content}</StrictMode> : content);
     });
   };
@@ -333,7 +333,13 @@ describe('useReadingSetupOperation', () => {
   });
 
   it('resets active state when the base key changes', async () => {
-    const fixture = createAdapter({ stream: vi.fn(() => new Promise<void>(() => {})) });
+    let lateEvent: ((event: TestEvent) => void) | null = null;
+    const fixture = createAdapter({
+      stream: vi.fn((_command, onEvent) => {
+        lateEvent = onEvent;
+        return new Promise<void>(() => {});
+      }),
+    });
     const hook = renderOperation(fixture.adapter);
     await hook.render('base-1');
     act(() => hook.value().submit({ value: 'active' }));
@@ -342,6 +348,72 @@ describe('useReadingSetupOperation', () => {
     await hook.render('base-2');
 
     await waitFor(() => expect(hook.value().state.mode).toBe('idle'));
+    act(() => {
+      lateEvent!({
+        operationId: 'operation-1',
+        operationAttempt: 1,
+        sequence: 1,
+        type: 'final',
+        result: { id: 'late-stream-result' },
+      });
+    });
+    expect(hook.value().state.mode).toBe('idle');
+    expect(fixture.applyCompleted).not.toHaveBeenCalled();
+  });
+
+  it('drops a deferred completed result after the base key changes', async () => {
+    apiMocks.getCurrent.mockResolvedValue(operation('completed'));
+    let expectedBase = 'base-1';
+    let resolveLoad: ((result: TestResult) => void) | null = null;
+    const loadCompleted = vi.fn(() => new Promise<TestResult>((resolve) => { resolveLoad = resolve; }));
+    const fixture = createAdapter({
+      matchesOperation: (value) => value.baseDraftId === expectedBase,
+      loadCompleted,
+    });
+    const hook = renderOperation(fixture.adapter);
+    await hook.render('base-1');
+    await waitFor(() => expect(hook.value().operation).toMatchObject({ status: 'completed' }));
+    await waitFor(() => expect(loadCompleted).toHaveBeenCalledTimes(1));
+
+    expectedBase = 'base-2';
+    await hook.render('base-2');
+    await waitFor(() => expect(hook.value().state.mode).toBe('idle'));
+    await act(async () => {
+      resolveLoad!({ id: 'late-loaded-result' });
+      await Promise.resolve();
+    });
+
+    expect(hook.value().state.mode).toBe('idle');
+    expect(fixture.applyCompleted).not.toHaveBeenCalled();
+  });
+
+  it('resets active state when the user book changes with the same base key', async () => {
+    let lateEvent: ((event: TestEvent) => void) | null = null;
+    const fixture = createAdapter({
+      stream: vi.fn((_command, onEvent) => {
+        lateEvent = onEvent;
+        return new Promise<void>(() => {});
+      }),
+    });
+    const hook = renderOperation(fixture.adapter);
+    await hook.render('base-1', 'book-1');
+    act(() => hook.value().submit({ value: 'active' }));
+    await waitFor(() => expect(hook.value().state.mode).toBe('streaming'));
+
+    await hook.render('base-1', 'book-2');
+    await waitFor(() => expect(hook.value().state.mode).toBe('idle'));
+    act(() => {
+      lateEvent!({
+        operationId: 'operation-1',
+        operationAttempt: 1,
+        sequence: 1,
+        type: 'final',
+        result: { id: 'late-cross-book-result' },
+      });
+    });
+
+    expect(hook.value().state.mode).toBe('idle');
+    expect(fixture.applyCompleted).not.toHaveBeenCalled();
   });
 
   it('uses the adapter conflict message and invalidates canonical caches after 409', async () => {

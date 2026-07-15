@@ -16,6 +16,24 @@ import {
 
 type OperationMode = 'idle' | 'streaming' | 'selecting' | 'recovering' | 'failed' | 'completed';
 
+interface OperationAsyncContext {
+  generation: number;
+  userBookId: string;
+  baseKey: string;
+  operationId?: string;
+  operationAttempt?: number;
+}
+
+interface OperationStreamRequest<Command> {
+  command: Command;
+  context: OperationAsyncContext;
+}
+
+interface OperationResumeRequest {
+  operationId: string;
+  context: OperationAsyncContext;
+}
+
 export interface ReadingSetupOperationMachine<State, Action, Command, Event, Result> {
   initialState: State;
   reduce(state: State, action: Action): State;
@@ -78,12 +96,40 @@ export function useReadingSetupOperation<
   const stateRef = useRef(state);
   stateRef.current = state;
   const commandRef = useRef<{ key: string; command: Command } | null>(null);
-  const activeBaseKey = useRef<string | null>(null);
+  const activeScopeKey = useRef<string | null>(null);
   const resumedAttempts = useRef(new Set<string>());
   const loadingResults = useRef(new Set<string>());
   const completedResults = useRef(new Set<string>());
   const deliveredRecoverableInputs = useRef(new Set<string>());
   const eventFence = useRef(EMPTY_READING_SETUP_EVENT_FENCE);
+  const asyncGeneration = useRef(0);
+  const activeOperationIdentity = useRef<{ operationId: string; operationAttempt: number } | null>(null);
+
+  const captureContext = useCallback((operation?: ReadingSetupOperationResponse): OperationAsyncContext => ({
+    generation: asyncGeneration.current,
+    userBookId: optionsRef.current.userBookId,
+    baseKey: optionsRef.current.baseKey,
+    ...(operation ? {
+      operationId: operation.operationId,
+      operationAttempt: operation.operationAttempt,
+    } : {}),
+  }), []);
+
+  const isContextCurrent = useCallback((context: OperationAsyncContext): boolean => {
+    const current = optionsRef.current;
+    if (
+      context.generation !== asyncGeneration.current
+      || context.userBookId !== current.userBookId
+      || context.baseKey !== current.baseKey
+    ) return false;
+    if (context.operationId === undefined) return true;
+    const identity = activeOperationIdentity.current;
+    return Boolean(
+      identity
+      && identity.operationId === context.operationId
+      && identity.operationAttempt === context.operationAttempt,
+    );
+  }, []);
 
   const dispatchTracked = useCallback((action: Action) => {
     const next = optionsRef.current.adapter.machine.reduce(stateRef.current, action);
@@ -102,19 +148,28 @@ export function useReadingSetupOperation<
     ]);
   }, [queryClient]);
 
-  const complete = useCallback(async (result: Result) => {
+  const complete = useCallback(async (result: Result, context: OperationAsyncContext) => {
+    if (!isContextCurrent(context)) return;
     const current = optionsRef.current;
-    const key = current.adapter.resultKey(result);
+    const key = [
+      context.userBookId,
+      context.baseKey,
+      context.operationId ?? 'stream',
+      context.operationAttempt ?? context.generation,
+      current.adapter.resultKey(result),
+    ].join(':');
     if (completedResults.current.has(key)) return;
     completedResults.current.add(key);
     dispatchTracked(current.adapter.machine.complete(result));
     commandRef.current = null;
     current.onCompleted?.(result);
+    if (!isContextCurrent(context)) return;
     await current.adapter.applyCompleted(result);
+    if (!isContextCurrent(context)) return;
     await queryClient.invalidateQueries({
       queryKey: userBookQueryKeys.readingSetupOperations(current.userBookId),
     });
-  }, [dispatchTracked, queryClient]);
+  }, [dispatchTracked, isContextCurrent, queryClient]);
 
   const deliverRecoverableInput = useCallback((operation: ReadingSetupOperationResponse) => {
     const current = optionsRef.current;
@@ -126,30 +181,45 @@ export function useReadingSetupOperation<
     current.onRecoverableInput?.(recoverable);
   }, []);
 
-  const handleEvent = useCallback((event: Event) => {
+  const handleEvent = useCallback((context: OperationAsyncContext, event: Event) => {
+    if (!isContextCurrent(context)) return;
     const nextFence = advanceReadingSetupEventFence(eventFence.current, event);
     if (!nextFence) return;
     eventFence.current = nextFence;
+    activeOperationIdentity.current = {
+      operationId: event.operationId,
+      operationAttempt: event.operationAttempt,
+    };
     const current = optionsRef.current;
     const nextState = dispatchTracked(current.adapter.machine.event(event));
     const result = current.adapter.resultFromEvent(event, nextState);
     if (result) {
-      void complete(result);
+      void complete(result, {
+        ...context,
+        operationId: event.operationId,
+        operationAttempt: event.operationAttempt,
+      });
     } else if (current.adapter.isErrorEvent(event)) {
       void queryClient.invalidateQueries({
         queryKey: userBookQueryKeys.readingSetupOperations(current.userBookId),
       });
     }
-  }, [complete, dispatchTracked, queryClient]);
+  }, [complete, dispatchTracked, isContextCurrent, queryClient]);
 
-  const stream = useMutation<void, Error, Command>({
-    mutationFn: (command) => optionsRef.current.adapter.stream(command, handleEvent),
-    onMutate: (command) => {
-      activeBaseKey.current = optionsRef.current.baseKey;
+  const stream = useMutation<void, Error, OperationStreamRequest<Command>>({
+    mutationFn: ({ command, context }) => optionsRef.current.adapter.stream(
+      command,
+      (event) => handleEvent(context, event),
+    ),
+    onMutate: ({ command, context }) => {
+      if (!isContextCurrent(context)) return;
+      activeScopeKey.current = `${context.userBookId}:${context.baseKey}`;
+      activeOperationIdentity.current = null;
       eventFence.current = EMPTY_READING_SETUP_EVENT_FENCE;
       dispatchTracked(optionsRef.current.adapter.machine.begin(command));
     },
-    onError: (error) => {
+    onError: (error, { context }) => {
+      if (!isContextCurrent(context)) return;
       const current = optionsRef.current;
       dispatchTracked(current.adapter.machine.recover(
         error instanceof ApiError && error.status === 409
@@ -182,12 +252,17 @@ export function useReadingSetupOperation<
   const observedOperation = operationId ? operationDetail.data : currentOperation.data;
 
   const resume = useMutation({
-    mutationFn: (targetOperationId: string) => resumeReadingSetupOperation(
-      optionsRef.current.userBookId,
+    mutationFn: ({ operationId: targetOperationId, context }: OperationResumeRequest) => resumeReadingSetupOperation(
+      context.userBookId,
       targetOperationId,
     ),
-    onSuccess: (operation) => {
-      const userBookId = optionsRef.current.userBookId;
+    onSuccess: (operation, { context }) => {
+      if (!isContextCurrent(context) || operation.operationId !== context.operationId) return;
+      activeOperationIdentity.current = {
+        operationId: operation.operationId,
+        operationAttempt: operation.operationAttempt,
+      };
+      const userBookId = context.userBookId;
       queryClient.setQueryData(
         userBookQueryKeys.readingSetupOperation(userBookId, operation.operationId),
         operation,
@@ -196,22 +271,32 @@ export function useReadingSetupOperation<
         queryKey: userBookQueryKeys.readingSetupOperations(userBookId),
       });
     },
-    onError: () => void resync(),
+    onError: (_error, { context }) => {
+      if (isContextCurrent(context)) void resync();
+    },
   });
 
   useEffect(() => {
-    if (mode === 'idle' || !activeBaseKey.current || activeBaseKey.current === options.baseKey) return;
+    const scopeKey = `${options.userBookId}:${options.baseKey}`;
+    if (mode === 'idle' || !activeScopeKey.current || activeScopeKey.current === scopeKey) return;
     commandRef.current = null;
-    activeBaseKey.current = null;
+    activeScopeKey.current = null;
+    asyncGeneration.current += 1;
+    activeOperationIdentity.current = null;
     eventFence.current = EMPTY_READING_SETUP_EVENT_FENCE;
     dispatchTracked(optionsRef.current.adapter.machine.reset());
-  }, [dispatchTracked, mode, options.baseKey]);
+  }, [dispatchTracked, mode, options.baseKey, options.userBookId]);
 
   useEffect(() => {
     const operation = currentOperation.data;
     const current = optionsRef.current;
     if (!current.enabled || mode !== 'idle' || !operation || !current.adapter.matchesOperation(operation)) return;
-    activeBaseKey.current = current.baseKey;
+    asyncGeneration.current += 1;
+    activeScopeKey.current = `${current.userBookId}:${current.baseKey}`;
+    activeOperationIdentity.current = {
+      operationId: operation.operationId,
+      operationAttempt: operation.operationAttempt,
+    };
     dispatchTracked(current.adapter.machine.beginRecovery());
     dispatchTracked(current.adapter.machine.recover());
     deliverRecoverableInput(operation);
@@ -229,14 +314,21 @@ export function useReadingSetupOperation<
     const current = optionsRef.current;
     if (!current.enabled || mode !== 'recovering' || !operation || !current.adapter.matchesOperation(operation)) return;
 
+    activeOperationIdentity.current = {
+      operationId: operation.operationId,
+      operationAttempt: operation.operationAttempt,
+    };
     deliverRecoverableInput(operation);
     if (operation.status === 'completed') {
       const loadKey = `${operation.operationId}:${operation.operationAttempt}`;
       if (loadingResults.current.has(loadKey)) return;
       loadingResults.current.add(loadKey);
+      const context = captureContext(operation);
       void current.adapter.loadCompleted(operation)
-        .then(complete)
-        .catch(() => void resync())
+        .then((result) => complete(result, context))
+        .catch(() => {
+          if (isContextCurrent(context)) void resync();
+        })
         .finally(() => loadingResults.current.delete(loadKey));
       return;
     }
@@ -249,16 +341,21 @@ export function useReadingSetupOperation<
       const attemptKey = `${operation.operationId}:${operation.operationAttempt}`;
       if (!resumedAttempts.current.has(attemptKey)) {
         resumedAttempts.current.add(attemptKey);
-        resume.mutate(operation.operationId);
+        resume.mutate({
+          operationId: operation.operationId,
+          context: captureContext(operation),
+        });
       }
     }
   }, [
+    captureContext,
     complete,
     deliverRecoverableInput,
     dispatchTracked,
     mode,
     observedOperation,
     options.enabled,
+    isContextCurrent,
     resync,
   ]);
 
@@ -272,7 +369,8 @@ export function useReadingSetupOperation<
       ? previous.command
       : current.adapter.createCommand(input, crypto.randomUUID());
     commandRef.current = { key, command };
-    stream.mutate(command);
+    asyncGeneration.current += 1;
+    stream.mutate({ command, context: captureContext() });
   };
 
   return {
