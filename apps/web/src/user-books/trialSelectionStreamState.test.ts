@@ -54,6 +54,8 @@ const finalTrial: TrialSnapshot = {
     id: `segment-${ordinal}`,
     ordinal,
     status: 'pending' as const,
+    sectionId: `section-${ordinal}`,
+    segment: ordinal,
     chapterPath: [`章节 ${ordinal}`],
     selectionReason: `原因 ${ordinal}`,
     originalHtml: `<p>原文 ${ordinal}</p>`,

@@ -3530,6 +3530,10 @@ h1 {
   line-height: 1.7;
 }
 
+.trial-sample-stage > .tailored-guide {
+  margin-top: 24px;
+}
+
 .trial-slot-placeholder {
   display: grid;
   place-content: center;

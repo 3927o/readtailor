@@ -237,6 +237,22 @@ describe('versioned setup resources', () => {
       'user-book', 'book-1', 'reading-setup-operation', 'operation-1',
     ]);
   });
+
+  it('degrades an inconsistent ready segment without tailored content to failed', async () => {
+    const raw = trialResponse();
+    raw.segments[0] = { ...raw.segments[0]!, status: 'ready', result: null };
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(raw)));
+
+    const snapshot = await getTrial('book-1', 'trial-1');
+
+    expect(snapshot.samples[0]).toMatchObject({ status: 'failed', tailoredContent: null });
+    expect(error).toHaveBeenCalledWith(
+      '[trial] ready segment is missing tailored content',
+      { segmentId: 'segment-1' },
+    );
+    error.mockRestore();
+  });
 });
 
 describe('reading setup command idempotency', () => {

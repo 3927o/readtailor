@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import type { ReaderPosition } from './api';
 import { domBoundaryForOffset, readerBlockLength, readingBlocks } from './content';
+import type { AnchorProbe } from './content';
 
 export type ReaderLogicalPosition = Pick<
   ReaderPosition,
@@ -93,6 +94,38 @@ const browserGeometry: ReaderAnchorGeometry = {
     return rect.top;
   },
 };
+
+export function browserReaderAnchorProbe(): AnchorProbe {
+  const doc = window.document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  return {
+    caretAtPoint(x, y) {
+      const position = doc.caretPositionFromPoint?.(x, y);
+      if (position) return { node: position.offsetNode, offset: position.offset };
+      const range = doc.caretRangeFromPoint?.(x, y);
+      return range ? { node: range.startContainer, offset: range.startOffset } : null;
+    },
+    boundaryTop(boundary) {
+      try {
+        const range = doc.createRange();
+        range.setStart(boundary.container, boundary.offset);
+        range.collapse(true);
+        const rect = range.getBoundingClientRect();
+        if (rect.top === 0 && rect.bottom === 0 && rect.height === 0 && rect.width === 0) return null;
+        return rect.top || rect.bottom;
+      } catch {
+        return null;
+      }
+    },
+    blockBox(block) {
+      const rect = block.getBoundingClientRect();
+      if (rect.height === 0 && rect.top === 0 && rect.bottom === 0) return null;
+      return { top: rect.top, bottom: rect.bottom };
+    },
+  };
+}
 
 export function measureReaderAnchorViewportTop(
   root: HTMLElement,

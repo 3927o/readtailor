@@ -46,6 +46,8 @@ describe('ProgressiveTrialView', () => {
           id: 'segment-1',
           ordinal: 1,
           status: 'generating',
+          sectionId: 'section-1',
+          segment: 1,
           chapterPath: ['第一章'],
           selectionReason: '进入门槛',
           originalHtml: '<p>第一段原文</p>',
@@ -59,6 +61,74 @@ describe('ProgressiveTrialView', () => {
     expect(html).toContain('正在生成导读与裁读注');
     expect(html).toContain('第一段原文');
     expect(html).toContain('aria-busy="true"');
+  });
+
+  it('renders assistance only for a ready sample with tailored content', () => {
+    const html = renderToStaticMarkup(<ProgressiveTrialView
+      model={{
+        mode: 'review',
+        activeOrdinal: 1,
+        samples: [{
+          id: 'segment-1',
+          ordinal: 1,
+          status: 'ready',
+          sectionId: 'section-1',
+          segment: 1,
+          chapterPath: ['第一章'],
+          selectionReason: '进入门槛',
+          originalHtml: '<p>第一段原文</p>',
+          viewedAt: null,
+          tailoredContent: {
+            guide: '先看结构',
+            annotations: [{
+              id: 'annotation-1',
+              range: {
+                start: { blockIndex: 1, offset: 0 },
+                end: { blockIndex: 1, offset: 2 },
+              },
+              content: '关键概念',
+            }],
+            afterReading: '回看结论',
+          },
+        }],
+      }}
+      onSelectOrdinal={() => {}}
+    />);
+
+    expect(html).toContain('先看结构');
+    expect(html).toContain('回看结论');
+    expect(html).toContain('data-annotation-id="annotation-1"');
+    expect(html).toContain('reader-original trial-original');
+  });
+
+  it('does not read tailored payloads from a non-ready sample', () => {
+    const html = renderToStaticMarkup(<ProgressiveTrialView
+      model={{
+        mode: 'generating',
+        activeOrdinal: 1,
+        samples: [{
+          id: 'segment-1',
+          ordinal: 1,
+          status: 'generating',
+          sectionId: 'section-1',
+          segment: 1,
+          chapterPath: ['第一章'],
+          selectionReason: '进入门槛',
+          originalHtml: '<p>第一段原文</p>',
+          viewedAt: null,
+          tailoredContent: {
+            guide: '不应出现',
+            annotations: [],
+            afterReading: '也不应出现',
+          },
+        } as unknown as import('./api').TrialSample],
+      }}
+      onSelectOrdinal={() => {}}
+    />);
+
+    expect(html).not.toContain('不应出现');
+    expect(html).not.toContain('也不应出现');
+    expect(html).toContain('第一段原文');
   });
 
   it('supports arrow, Home and End keyboard tab selection', () => {
@@ -81,6 +151,53 @@ describe('ProgressiveTrialView', () => {
     });
 
     expect(onSelectOrdinal.mock.calls.map(([ordinal]) => ordinal)).toEqual([2, 3, 1]);
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('forwards clicks from ready annotation anchors', () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const onAnnotationClick = vi.fn();
+    act(() => {
+      root.render(<ProgressiveTrialView
+        model={{
+          mode: 'review',
+          activeOrdinal: 1,
+          samples: [{
+            id: 'segment-1',
+            ordinal: 1,
+            status: 'ready',
+            sectionId: 'section-1',
+            segment: 1,
+            chapterPath: ['第一章'],
+            selectionReason: '进入门槛',
+            originalHtml: '<p>第一段原文</p>',
+            viewedAt: null,
+            tailoredContent: {
+              guide: null,
+              annotations: [{
+                id: 'annotation-1',
+                range: {
+                  start: { blockIndex: 1, offset: 0 },
+                  end: { blockIndex: 1, offset: 2 },
+                },
+                content: '关键概念',
+              }],
+              afterReading: null,
+            },
+          }],
+        }}
+        onSelectOrdinal={() => {}}
+        onAnnotationClick={onAnnotationClick}
+      />);
+    });
+    const anchor = container.querySelector<HTMLElement>('[data-annotation-id="annotation-1"]');
+
+    act(() => anchor?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    expect(onAnnotationClick).toHaveBeenCalledWith('annotation-1', anchor);
     act(() => root.unmount());
     container.remove();
   });

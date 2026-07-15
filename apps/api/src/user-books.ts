@@ -2882,12 +2882,62 @@ function createUserBookServiceForUser(
       })));
     } catch {
       await db.transaction(async (tx) => {
+        const [book] = await tx
+          .select()
+          .from(userBooks)
+          .where(eq(userBooks.id, userBookId))
+          .limit(1)
+          .for('update');
+        const [revision] = await tx
+          .select()
+          .from(trialRevisions)
+          .where(and(
+            eq(trialRevisions.id, trialRevisionId),
+            eq(trialRevisions.userBookId, userBookId),
+          ))
+          .limit(1)
+          .for('update');
+        const draft = revision
+          ? await tx
+              .select({ id: strategyDraftVersions.id, status: strategyDraftVersions.status })
+              .from(strategyDraftVersions)
+              .where(eq(strategyDraftVersions.id, revision.strategyDraftVersionId))
+              .limit(1)
+              .for('update')
+              .then((rows) => rows[0])
+          : undefined;
+        const segments = revision
+          ? await tx
+              .select({ id: trialSegments.id })
+              .from(trialSegments)
+              .where(eq(trialSegments.trialRevisionId, revision.id))
+              .orderBy(asc(trialSegments.ordinal))
+              .for('update')
+          : [];
+        await tx
+          .select({ id: nodeGenerations.id })
+          .from(nodeGenerations)
+          .where(inArray(nodeGenerations.id, generationIds))
+          .for('update');
+        if (
+          !book
+          || !revision
+          || !draft
+          || draft.status !== 'approved_for_trial'
+          || revision.status !== 'generating'
+          || revision.strategyDraftVersionId !== draft.id
+          || book.workflowStatus !== 'trial_generating'
+          || book.currentStrategyDraftVersionId !== draft.id
+          || book.currentTrialRevisionId !== revision.id
+          || segments.length !== 3
+        ) return;
+        const now = new Date();
         const failedGenerations = await tx.update(nodeGenerations).set({
           status: 'failed',
           result: null,
           errorSummary: '内容生成任务入队失败',
-          completedAt: new Date(),
-          updatedAt: new Date(),
+          completedAt: now,
+          updatedAt: now,
         }).where(and(
           inArray(nodeGenerations.id, generationIds),
           inArray(nodeGenerations.status, ['queued', 'generating', 'retrying']),
@@ -2896,27 +2946,33 @@ function createUserBookServiceForUser(
           .map((generation) => generation.trialSegmentId)
           .filter((segmentId): segmentId is string => Boolean(segmentId));
         if (failedSegmentIds.length > 0) {
-          await tx.update(trialSegments).set({ status: 'failed', updatedAt: new Date() }).where(and(
+          await tx.update(trialSegments).set({ status: 'failed', updatedAt: now }).where(and(
             inArray(trialSegments.id, failedSegmentIds),
             inArray(trialSegments.status, ['pending', 'generating']),
           ));
         }
-        await tx.update(trialRevisions).set({
-          status: 'failed',
-          failureSummary: '试读内容暂时无法开始生成，请重试。',
-          failedAt: new Date(),
-          updatedAt: new Date(),
-        }).where(and(
-          eq(trialRevisions.id, trialRevisionId),
-          eq(trialRevisions.status, 'generating'),
-        ));
+        const [failedRevision] = await tx
+          .update(trialRevisions)
+          .set({
+            status: 'failed',
+            failureSummary: '试读内容暂时无法开始生成，请重试。',
+            failedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(trialRevisions.id, trialRevisionId),
+            eq(trialRevisions.status, 'generating'),
+          ))
+          .returning({ id: trialRevisions.id });
+        if (!failedRevision) return;
         await tx.update(userBooks).set({
           workflowStatus: 'trial_generation_failed',
-          updatedAt: new Date(),
+          updatedAt: now,
         }).where(and(
           eq(userBooks.id, userBookId),
           eq(userBooks.workflowStatus, 'trial_generating'),
           eq(userBooks.currentTrialRevisionId, trialRevisionId),
+          eq(userBooks.currentStrategyDraftVersionId, draft.id),
         ));
       }).catch(() => {});
     }

@@ -2,6 +2,7 @@ import { useId } from 'react';
 import type { ProvisionalTrialSample } from '@readtailor/contracts';
 import { prepareStandaloneContent } from '../reader/content';
 import type { TrialSample } from './api';
+import { AssistanceContent } from './components';
 import type { TrialOrdinal, TrialSelectionMode } from './trialSelectionStreamState';
 
 type ProgressiveTrialMode = Exclude<TrialSelectionMode, 'idle' | 'completed'>
@@ -41,9 +42,11 @@ function statusLabel(status: ReturnType<typeof sampleStatus>) {
 export function ProgressiveTrialView({
   model,
   onSelectOrdinal,
+  onAnnotationClick,
 }: {
   model: ProgressiveTrialModel;
   onSelectOrdinal(ordinal: TrialOrdinal): void;
+  onAnnotationClick?(annotationId: string, anchor: HTMLElement): void;
 }) {
   const instanceId = useId();
   const panelId = `${instanceId}-trial-slot-panel`;
@@ -51,8 +54,16 @@ export function ProgressiveTrialView({
   const samples = [...model.samples].sort((left, right) => left.ordinal - right.ordinal);
   const active = samples.find((sample) => sample.ordinal === model.activeOrdinal);
   const activeStatus = sampleStatus(active);
+  const tailoredContent = active && 'status' in active
+    && active.status === 'ready' && active.tailoredContent
+    ? active.tailoredContent
+    : null;
   const originalHtml = active
-    ? prepareStandaloneContent(active.originalHtml, model.assetBaseUrl ?? '', [])
+    ? prepareStandaloneContent(
+        active.originalHtml,
+        model.assetBaseUrl ?? '',
+        tailoredContent?.annotations ?? [],
+      )
     : '';
   const moveFocus = (ordinal: TrialOrdinal) => {
     onSelectOrdinal(ordinal);
@@ -112,6 +123,12 @@ export function ProgressiveTrialView({
         className="trial-sample-stage"
         role="tabpanel"
         aria-labelledby={tabId(model.activeOrdinal)}
+        data-section-id={active?.sectionId}
+        data-segment={active?.segment}
+        onClick={(event) => {
+          const anchor = (event.target as HTMLElement).closest<HTMLElement>('[data-annotation-id]');
+          if (anchor?.dataset.annotationId) onAnnotationClick?.(anchor.dataset.annotationId, anchor);
+        }}
       >
         {active ? (
           <>
@@ -119,7 +136,19 @@ export function ProgressiveTrialView({
               <strong>{active.chapterPath.join(' › ') || '章节位置未详'}</strong>
               <p>{active.selectionReason}</p>
             </header>
-            <div className="trial-original rt-reader-content" dangerouslySetInnerHTML={{ __html: originalHtml }} />
+            {tailoredContent?.guide ? (
+              <section className="tailored-guide">
+                <span>GUIDE · 导读</span>
+                <AssistanceContent content={tailoredContent.guide} />
+              </section>
+            ) : null}
+            <div className="reader-original trial-original rt-reader-content" dangerouslySetInnerHTML={{ __html: originalHtml }} />
+            {tailoredContent?.afterReading ? (
+              <section className="tailored-after-reading">
+                <span>AFTER READING · 节后助读</span>
+                <AssistanceContent content={tailoredContent.afterReading} />
+              </section>
+            ) : null}
           </>
         ) : (
           <div className="trial-slot-placeholder">

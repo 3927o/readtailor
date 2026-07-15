@@ -129,6 +129,8 @@ interface TrialSampleFields {
   id: string;
   ordinal: number;
   status: TrialSegment['status'];
+  sectionId: string;
+  segment: number;
   chapterPath: string[];
   selectionReason: string;
   originalHtml: string;
@@ -304,13 +306,19 @@ function mapTrialSample(segment: TrialSegment): TrialSample {
   const fields = {
     id: segment.id,
     ordinal: segment.ordinal,
+    sectionId: segment.sectionId,
+    segment: segment.segment,
     chapterPath: segment.chapterPath,
     selectionReason: segment.selectionReason,
     originalHtml: segment.originalHtml,
     viewedAt: segment.viewedAt,
   };
   if (segment.status === 'ready') {
-    return { ...fields, status: segment.status, tailoredContent: segment.result };
+    const result = segment.result as TailoredContent | null;
+    if (result) return { ...fields, status: segment.status, tailoredContent: result };
+    // eslint-disable-next-line no-console
+    console.error('[trial] ready segment is missing tailored content', { segmentId: segment.id });
+    return { ...fields, status: 'failed', tailoredContent: null };
   }
   return { ...fields, status: segment.status, tailoredContent: null };
 }
