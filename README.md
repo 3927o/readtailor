@@ -14,8 +14,8 @@ ReadTailor 是一个面向中文 EPUB 的个性化网页陪读产品。它先了
   -> 从书架打开预置书，或上传中文 EPUB
   -> 完成本书访谈
   -> 查看读前简报和个性化处理方式
-  -> 确认处理方式并生成三个试读片段
-  -> 查看试读并最终采用
+  -> 批准策略草稿并生成三个试读片段（approveDraftForTrial）
+  -> 查看试读并正式采用（confirmStrategyAndStartReading）
   -> 阅读原文与个性化辅助内容
   -> 划线、记录笔记或结合当前屏幕向 AI 提问
   -> 查看阅读统计，并在刷新或跨设备后恢复进度
@@ -25,7 +25,8 @@ ReadTailor 是一个面向中文 EPUB 的个性化网页陪读产品。它先了
 
 - **原文不可变**：规范化 HTML 是原书事实来源，AI 内容、划线、笔记和问答均独立保存。
 - **先理解用户，再生成内容**：长期画像不能代替每本书独立的访谈。
-- **两次明确确认**：先确认文字处理方式，再查看试读并最终采用；系统不能替用户完成确认。
+- **两次明确确认**：`approveDraftForTrial` 只批准草稿生成试读；
+  `confirmStrategyAndStartReading` 才创建正式策略并进入阅读，系统不能替用户完成任一确认。
 - **AI 失败不阻断阅读**：增强内容生成失败或尚未完成时，原文仍然可读。
 - **程序保证正确性**：文件哈希、阅读位置、block、权限、状态迁移和发布校验由确定性程序负责。
 
@@ -53,10 +54,10 @@ ReadTailor 是一个面向中文 EPUB 的个性化网页陪读产品。它先了
 
 - 每本书独立访谈，回答通过 SSE 流式返回后续问题和选项。
 - 基于长期画像、本书访谈和书籍画像生成读前简报与处理方式。
-- 用户可以反馈并修订处理方式，确认后才进入试读生成。
+- 用户可以反馈并修订处理方式，批准草稿后才进入试读生成；此时不会创建正式策略。
 - 为三个互不重叠的代表性片段生成试读内容。
 - 三个片段全部就绪后统一发布，避免用户看到半成品试读。
-- 用户查看试读、提交反馈并最终采用后，正式策略才生效。
+- 用户查看试读、提交反馈并最终采用后，系统才创建并启用正式 `strategy_version`。
 
 ### 阅读器
 
@@ -295,6 +296,15 @@ pnpm --filter @readtailor/database db:migrate
 pnpm --filter @readtailor/database db:generate
 ```
 
+### 3.1 数据库集成测试
+
+真实数据库测试使用独立的 `TEST_DATABASE_URL`，不能指向开发或生产数据库。Vitest 为每个 worker
+创建隔离 schema、执行正式 migrations，并在测试结束后清理；未设置该变量时数据库测试会明确跳过。
+
+```bash
+TEST_DATABASE_URL=postgresql://user:password@host:5432/readtailor_test pnpm test:db
+```
+
 ### 4. 启动三个进程
 
 分别在三个终端运行：
@@ -430,6 +440,7 @@ MODEL_NAME
 | `pnpm dev:worker` | 启动 Worker 并监听源码变化 |
 | `pnpm typecheck` | 检查所有 workspace TypeScript 类型 |
 | `pnpm test:ts` | 运行 Vitest 测试 |
+| `pnpm test:db` | 使用 `TEST_DATABASE_URL` 运行真实 PostgreSQL 集成测试 |
 | `pnpm test:python` | 运行 Python unittest |
 | `pnpm test` | 依次运行 TypeScript 和 Python 测试 |
 | `pnpm build` | 构建所有可构建 workspace |
