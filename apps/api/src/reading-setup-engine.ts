@@ -1,6 +1,8 @@
 import {
   runReadingSetupAgent,
+  type CompletionSnapshot,
   type InterviewQuestion,
+  type InterviewCompletionStore,
   type ReadingSetupOutcome,
   type ReadingSetupCallMetrics,
   type ReadingSetupPhase,
@@ -17,8 +19,8 @@ import {
 
 export interface ReadingSetupEngine {
   // One continuous logical session per user_book. `phase` selects the exposed tools:
-  // interviewing → present_interview_question / finish_interview; strategy_review →
-  // save_strategy_draft. The outcome is a discriminated union (question | completed | revised).
+  // interviewing → question or durable multi-tool completion; strategy_review → save_strategy_draft.
+  // The outcome remains a discriminated union (question | completed | revised).
   // `onStream` receives epoch-aware provisional deltas for the public setup streams.
   runTurn(input: {
     sessionId: string;
@@ -28,6 +30,7 @@ export interface ReadingSetupEngine {
     feedback?: string;
     requestId?: string;
     conversationVersion?: number;
+    completionStore?: InterviewCompletionStore;
     onStream?: (delta: ReadingSetupStreamDelta) => void;
   }): Promise<ReadingSetupOutcome>;
 }
@@ -231,6 +234,100 @@ function fakeCompleted(context: Record<string, unknown>): ReadingSetupOutcome {
   };
 }
 
+function emitCompletionSnapshot(
+  onStream: (delta: ReadingSetupStreamDelta) => void,
+  snapshot: CompletionSnapshot,
+  speculativeEpoch: number,
+): void {
+  if (snapshot.briefing) {
+    for (const field of ['book_identity', 'arc', 'assumed_knowledge', 'reading_advice'] as const) {
+      onStream({ type: 'briefing_delta', field, chars: snapshot.briefing[field], speculativeEpoch });
+    }
+  }
+  if (snapshot.strategy) {
+    onStream({ type: 'strategy_delta', chars: snapshot.strategy.publicStrategy, speculativeEpoch });
+  }
+  snapshot.candidates?.forEach((candidate, ordinal) => onStream({
+    type: 'reading_node_added',
+    ordinal: ordinal + 1,
+    sectionId: candidate.section_id,
+    segment: candidate.segment,
+    reason: candidate.reason,
+    speculativeEpoch,
+  }));
+}
+
+async function fakeCompleteInterview(
+  input: Parameters<ReadingSetupEngine['runTurn']>[0],
+): Promise<ReadingSetupOutcome> {
+  const completed = fakeCompleted(input.context);
+  if (completed.type !== 'completed') throw new Error('fake setup did not complete');
+  const store = input.completionStore;
+  if (!store) {
+    if (input.onStream) emitFakeStream(input.onStream, completed);
+    return completed;
+  }
+
+  const speculativeEpoch = 1;
+  let snapshot = await store.load();
+  if (!snapshot.completionId) snapshot = await store.start();
+  if (input.onStream) {
+    input.onStream({ type: 'speculative_reset', speculativeEpoch, toolName: 'finish_interview' });
+    input.onStream({ type: 'draft_started', source: 'interview', speculativeEpoch });
+    emitCompletionSnapshot(input.onStream, snapshot, speculativeEpoch);
+  }
+  if (!snapshot.briefing) {
+    snapshot = await store.submitBriefing(completed.briefing);
+    if (input.onStream) {
+      for (const field of ['book_identity', 'arc', 'assumed_knowledge', 'reading_advice'] as const) {
+        input.onStream({
+          type: 'briefing_delta',
+          field,
+          chars: completed.briefing[field],
+          speculativeEpoch,
+        });
+      }
+    }
+  }
+  if (!snapshot.strategy) {
+    const { trial_candidates: _trialCandidates, ...strategy } = completed.strategy;
+    snapshot = await store.submitStrategy({ publicStrategy: completed.publicStrategy, strategy });
+    input.onStream?.({
+      type: 'strategy_delta',
+      chars: completed.publicStrategy,
+      speculativeEpoch,
+    });
+  }
+  if (!snapshot.candidates) {
+    snapshot = await store.submitCandidates(completed.strategy.trial_candidates);
+    completed.strategy.trial_candidates.forEach((candidate, ordinal) => input.onStream?.({
+      type: 'reading_node_added',
+      ordinal: ordinal + 1,
+      sectionId: candidate.section_id,
+      segment: candidate.segment,
+      reason: candidate.reason,
+      speculativeEpoch,
+    }));
+  }
+  if (!snapshot.profile) {
+    await store.submitProfile({ bookReaderProfile: completed.bookReaderProfile });
+  }
+  const artifacts = await store.complete();
+  return {
+    type: 'completed',
+    briefing: artifacts.briefing,
+    publicStrategy: artifacts.strategy.publicStrategy,
+    strategy: {
+      ...artifacts.strategy.strategy,
+      trial_candidates: artifacts.candidates,
+    },
+    bookReaderProfile: artifacts.profile.bookReaderProfile,
+    ...(artifacts.profile.readerProfilePatch
+      ? { readerProfilePatch: artifacts.profile.readerProfilePatch }
+      : {}),
+  };
+}
+
 // Replays a resolved outcome as epoch-aware deltas so local development exercises the same
 // public stream path as the real agent.
 function emitFakeStream(onStream: (delta: ReadingSetupStreamDelta) => void, outcome: ReadingSetupOutcome): void {
@@ -308,12 +405,14 @@ export function createFakeReadingSetupEngine(): ReadingSetupEngine {
         }
         return outcome;
       }
-      const question = fakeQuestions[input.askedCount];
-      const outcome: ReadingSetupOutcome = question
-        ? { type: 'question', question }
-        : fakeCompleted(input.context);
-      if (input.onStream) emitFakeStream(input.onStream, outcome);
-      return outcome;
+      const completion = input.completionStore ? await input.completionStore.load() : null;
+      const question = completion?.completionId ? undefined : fakeQuestions[input.askedCount];
+      if (question) {
+        const outcome: ReadingSetupOutcome = { type: 'question', question };
+        if (input.onStream) emitFakeStream(input.onStream, outcome);
+        return outcome;
+      }
+      return fakeCompleteInterview(input);
     },
   };
 }

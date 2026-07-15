@@ -1,6 +1,7 @@
 import { createServer, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { CompletionSnapshot, InterviewCompletionStore } from '@readtailor/agent-kit';
 import type { AgentCallPerfEvent, PerfSink } from '@readtailor/observability';
 import { createAgentReadingSetupEngine, createFakeReadingSetupEngine } from './reading-setup-engine';
 
@@ -83,10 +84,42 @@ describe('createAgentReadingSetupEngine', () => {
   it('streams interview completion as briefing, strategy, then trial candidates', async () => {
     const engine = createFakeReadingSetupEngine();
     const eventTypes: string[] = [];
+    let snapshot: CompletionSnapshot = { completionId: null, baseConversationVersion: 2 };
+    const completionStore: InterviewCompletionStore = {
+      load: vi.fn(async () => snapshot),
+      start: vi.fn(async () => {
+        snapshot = { ...snapshot, completionId: 'completion-1' };
+        return snapshot;
+      }),
+      submitBriefing: vi.fn(async (briefing) => {
+        snapshot = { ...snapshot, briefing };
+        return snapshot;
+      }),
+      submitStrategy: vi.fn(async (strategy) => {
+        snapshot = { ...snapshot, strategy };
+        return snapshot;
+      }),
+      submitCandidates: vi.fn(async (candidates) => {
+        snapshot = { ...snapshot, candidates };
+        return snapshot;
+      }),
+      submitProfile: vi.fn(async (profile) => {
+        snapshot = { ...snapshot, profile };
+        return snapshot;
+      }),
+      complete: vi.fn(async () => ({
+        briefing: snapshot.briefing!,
+        strategy: snapshot.strategy!,
+        candidates: snapshot.candidates!,
+        profile: snapshot.profile!,
+      })),
+    };
     const outcome = await engine.runTurn({
       sessionId: 'session-fake',
       phase: 'interviewing',
       askedCount: 99,
+      conversationVersion: 2,
+      completionStore,
       context: {
         book: { title: 'Book' },
         bookProfile: {
@@ -101,6 +134,12 @@ describe('createAgentReadingSetupEngine', () => {
     });
 
     expect(outcome.type).toBe('completed');
+    expect(completionStore.start).toHaveBeenCalledOnce();
+    expect(completionStore.submitBriefing).toHaveBeenCalledOnce();
+    expect(completionStore.submitStrategy).toHaveBeenCalledOnce();
+    expect(completionStore.submitCandidates).toHaveBeenCalledOnce();
+    expect(completionStore.submitProfile).toHaveBeenCalledOnce();
+    expect(completionStore.complete).toHaveBeenCalledOnce();
     expect(eventTypes).toEqual([
       'speculative_reset',
       'draft_started',
@@ -158,7 +197,7 @@ describe('createAgentReadingSetupEngine', () => {
     };
     let requestNo = 0;
     let providerPromptChars = 0;
-    let finishPropertyOrder: string[] = [];
+    let toolProperties = new Map<string, string[]>();
     const server = createServer(async (request, response) => {
       let body = '';
       for await (const chunk of request) body += String(chunk);
@@ -169,8 +208,9 @@ describe('createAgentReadingSetupEngine', () => {
       const tools = Array.isArray(payload.tools) ? payload.tools as Array<{
         function?: { name?: string; parameters?: { properties?: Record<string, unknown> } };
       }> : [];
-      const finishTool = tools.find((tool) => tool.function?.name === 'finish_interview');
-      finishPropertyOrder = Object.keys(finishTool?.function?.parameters?.properties ?? {});
+      toolProperties = new Map(tools.flatMap((tool) => tool.function?.name
+        ? [[tool.function.name, Object.keys(tool.function.parameters?.properties ?? {})] as const]
+        : []));
       providerPromptChars += JSON.stringify(promptPayload).length;
       requestNo += 1;
       if (requestNo === 1) {
@@ -219,13 +259,20 @@ describe('createAgentReadingSetupEngine', () => {
     });
 
     expect(result).toEqual({ type: 'question', question });
-    expect(finishPropertyOrder).toEqual([
-      'briefing',
-      'public_strategy',
-      'strategy',
+    expect(toolProperties.get('finish_interview')).toEqual([]);
+    expect(toolProperties.get('submit_reading_briefing')).toEqual([
+      'book_identity',
+      'arc',
+      'assumed_knowledge',
+      'reading_advice',
+    ]);
+    expect(toolProperties.get('submit_reading_strategy')).toEqual(['public_strategy', 'strategy']);
+    expect(toolProperties.get('submit_trial_candidates')).toEqual(['candidates']);
+    expect(toolProperties.get('submit_interview_profile')).toEqual([
       'book_reader_profile',
       'reader_profile_patch',
     ]);
+    expect(toolProperties.get('complete_interview_result')).toEqual([]);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       requestId: 'request-1',

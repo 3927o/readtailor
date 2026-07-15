@@ -33,6 +33,10 @@ import type { ReadingSetupEngine } from '../../reading-setup-engine';
 import type { OwnedUserBook } from '../context/setup-context';
 import { UserBookError } from '../errors';
 import {
+  createInterviewCompletionStore,
+  InterviewCompletionCheckpointError,
+} from './completion-checkpoint-store';
+import {
   mapInterviewBookReaderProfile,
   mapInterviewBriefing,
   mapInterviewQuestion,
@@ -380,6 +384,19 @@ export function createInterviewService(options: InterviewServiceOptions) {
         manifestValue,
         setup.context.bookProfile,
       );
+      const completionStore = createInterviewCompletionStore({
+        db,
+        claim,
+        validateCandidates: (candidates) => {
+          const seen = new Set<string>();
+          candidates.forEach((candidate, index) => projectNode({
+            ordinal: index + 1,
+            sectionId: candidate.section_id,
+            segment: candidate.segment,
+            reason: candidate.reason,
+          }, seen));
+        },
+      });
       let streamedEpoch = 0;
       let streamedNodes = new Set<string>();
       const outcome = await setupEngine.runTurn({
@@ -388,6 +405,7 @@ export function createInterviewService(options: InterviewServiceOptions) {
         askedCount: claim.questionCount,
         conversationVersion: claim.conversationVersion,
         context: setup.context,
+        completionStore,
         ...(requestId ? { requestId } : {}),
         ...(onStream ? {
           onStream: (delta: ReadingSetupStreamDelta) => {
@@ -748,7 +766,9 @@ export function createInterviewService(options: InterviewServiceOptions) {
     for await (const event of bridge.drain()) yield event;
     await running;
     if (turnError) {
-      const code: ReadingSetupStreamErrorCode = turnError instanceof InterviewTurnLeaseLostError
+      const leaseLost = turnError instanceof InterviewTurnLeaseLostError
+        || (turnError instanceof InterviewCompletionCheckpointError && turnError.code === 'lease_lost');
+      const code: ReadingSetupStreamErrorCode = leaseLost
         ? 'lease_lost'
         : turnError instanceof UserBookError
           ? 'validation_failed'
