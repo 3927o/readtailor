@@ -62,7 +62,15 @@ describe('createAgentReadingSetupEngine', () => {
       sufficiency: 40,
     };
     let requestNo = 0;
-    const server = createServer((_request, response) => {
+    let providerPromptChars = 0;
+    const server = createServer(async (request, response) => {
+      let body = '';
+      for await (const chunk of request) body += String(chunk);
+      const payload = JSON.parse(body) as { messages?: unknown; tools?: unknown };
+      const promptPayload: Record<string, unknown> = {};
+      if (payload.messages !== undefined) promptPayload.messages = payload.messages;
+      if (payload.tools !== undefined) promptPayload.tools = payload.tools;
+      providerPromptChars += JSON.stringify(promptPayload).length;
       requestNo += 1;
       if (requestNo === 1) {
         writeToolCall(response, {
@@ -120,8 +128,11 @@ describe('createAgentReadingSetupEngine', () => {
       conversationVersion: 7,
       kind: 'reading_setup.interviewing',
       status: 'ok',
+      promptChars: expect.any(Number),
+      outputChars: JSON.stringify({}).length + JSON.stringify(question).length,
       turnCount: 2,
     });
+    expect(rows[0]!.promptChars).toBe(providerPromptChars);
 
     const trace = rows[0]!.traceEvents ?? [];
     expect(trace.map((event) => event.type)).toEqual([
