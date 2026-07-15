@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import type { TrialFragmentSelection } from '@readtailor/agent-kit';
 import {
@@ -18,6 +18,8 @@ import {
   getTestDatabase,
   hasTestDatabase,
   strategyReviewGraph,
+  trialGenerationFailedGraph,
+  trialReviewGraph,
 } from '../../test/database';
 
 const describePostgres = hasTestDatabase ? describe : describe.skip;
@@ -61,6 +63,9 @@ const books: BookService = {
   async getAsset() { return null; },
 };
 const askAiEngine: AskAiEngine = {
+  async runTurn() { throw new Error('not used'); },
+};
+const unusedSetupEngine: ReadingSetupEngine = {
   async runTurn() { throw new Error('not used'); },
 };
 
@@ -189,5 +194,214 @@ describePostgres(`trial service${skipReason}`, () => {
       workflowStatus: 'trial_generation_failed',
       currentTrialRevisionId: revision!.id,
     });
+  });
+
+  it('retries a failed trial by superseding history and copying the exact three segments', async () => {
+    const { db } = getTestDatabase();
+    const graph = await trialGenerationFailedGraph(db);
+    const oldSegments = await db
+      .select()
+      .from(trialSegments)
+      .where(eq(trialSegments.trialRevisionId, graph.trialRevisionId))
+      .orderBy(asc(trialSegments.ordinal));
+    const enqueuedGenerationIds: string[] = [];
+    const service = createService(unusedSetupEngine, {
+      async enqueue(input) { enqueuedGenerationIds.push(input.generationId); },
+    }).forUser(graph.userId);
+
+    const snapshot = await service.retryTrial(graph.userBookId);
+
+    const revisions = await db
+      .select()
+      .from(trialRevisions)
+      .where(eq(trialRevisions.userBookId, graph.userBookId))
+      .orderBy(asc(trialRevisions.revision));
+    const allSegments = await db.select().from(trialSegments);
+    const newSegments = allSegments
+      .filter((segment) => segment.trialRevisionId === snapshot.trialRevisionId)
+      .sort((left, right) => left.ordinal - right.ordinal);
+    const generations = await db
+      .select()
+      .from(nodeGenerations)
+      .where(eq(nodeGenerations.userBookId, graph.userBookId));
+    const oldGenerationIds = new Set(graph.nodeGenerationIds);
+    const oldGenerations = generations.filter((generation) => oldGenerationIds.has(generation.id));
+    const newGenerations = generations.filter((generation) => !oldGenerationIds.has(generation.id));
+    const [book] = await db.select().from(userBooks).where(eq(userBooks.id, graph.userBookId));
+
+    expect(revisions).toHaveLength(2);
+    expect(revisions[0]).toMatchObject({
+      id: graph.trialRevisionId,
+      status: 'superseded',
+    });
+    expect(revisions[0]?.supersededAt).toBeInstanceOf(Date);
+    expect(revisions[1]).toMatchObject({
+      id: snapshot.trialRevisionId,
+      revision: 2,
+      status: 'generating',
+      strategyDraftVersionId: graph.strategyDraftVersionId,
+    });
+    expect(oldGenerations).toHaveLength(3);
+    expect(oldGenerations.every((generation) => (
+      generation.status === 'superseded'
+      && generation.result === null
+      && generation.completedAt instanceof Date
+    ))).toBe(true);
+    expect(newSegments).toHaveLength(3);
+    expect(newSegments.map(({ ordinal }) => ordinal)).toEqual([1, 2, 3]);
+    expect(newSegments.map((segment) => ({
+      ordinal: segment.ordinal,
+      sectionId: segment.sectionId,
+      segment: segment.segment,
+      range: [
+        segment.startBlockIndex,
+        segment.startOffset,
+        segment.endBlockIndex,
+        segment.endOffset,
+      ],
+    }))).toEqual(oldSegments.map((segment) => ({
+      ordinal: segment.ordinal,
+      sectionId: segment.sectionId,
+      segment: segment.segment,
+      range: [
+        segment.startBlockIndex,
+        segment.startOffset,
+        segment.endBlockIndex,
+        segment.endOffset,
+      ],
+    })));
+    expect(newSegments.every((segment) => segment.status === 'pending')).toBe(true);
+    expect(newGenerations).toHaveLength(3);
+    expect(newGenerations.every((generation) => generation.status === 'queued')).toBe(true);
+    expect(new Set(enqueuedGenerationIds)).toEqual(
+      new Set(newGenerations.map(({ id }) => id)),
+    );
+    expect(book).toMatchObject({
+      workflowStatus: 'trial_generating',
+      currentStrategyDraftVersionId: graph.strategyDraftVersionId,
+      currentTrialRevisionId: snapshot.trialRevisionId,
+    });
+    expect(snapshot).toMatchObject({
+      workflowStatus: 'trial_generating',
+      status: 'generating',
+      canAdopt: false,
+    });
+  });
+
+  it('compensates a retried revision when generation enqueue fails', async () => {
+    const { db } = getTestDatabase();
+    const graph = await trialGenerationFailedGraph(db);
+    const service = createService(unusedSetupEngine, {
+      async enqueue() { throw new Error('queue unavailable'); },
+    }).forUser(graph.userId);
+
+    const snapshot = await service.retryTrial(graph.userBookId);
+
+    const revisions = await db
+      .select()
+      .from(trialRevisions)
+      .where(eq(trialRevisions.userBookId, graph.userBookId))
+      .orderBy(asc(trialRevisions.revision));
+    const generations = await db
+      .select()
+      .from(nodeGenerations)
+      .where(eq(nodeGenerations.userBookId, graph.userBookId));
+    const newGenerations = generations.filter((generation) => (
+      !graph.nodeGenerationIds.includes(generation.id)
+    ));
+    const newSegments = await db
+      .select()
+      .from(trialSegments)
+      .where(eq(trialSegments.trialRevisionId, snapshot.trialRevisionId));
+    const [book] = await db.select().from(userBooks).where(eq(userBooks.id, graph.userBookId));
+
+    expect(revisions).toHaveLength(2);
+    expect(revisions[0]?.status).toBe('superseded');
+    expect(revisions[1]).toMatchObject({
+      id: snapshot.trialRevisionId,
+      status: 'failed',
+    });
+    expect(revisions[1]?.failedAt).toBeInstanceOf(Date);
+    expect(newSegments).toHaveLength(3);
+    expect(newSegments.every((segment) => segment.status === 'failed')).toBe(true);
+    expect(newGenerations).toHaveLength(3);
+    expect(newGenerations.every((generation) => (
+      generation.status === 'failed'
+      && generation.errorSummary === '内容生成任务入队失败'
+      && generation.completedAt instanceof Date
+    ))).toBe(true);
+    expect(book).toMatchObject({
+      workflowStatus: 'trial_generation_failed',
+      currentTrialRevisionId: snapshot.trialRevisionId,
+    });
+    expect(snapshot).toMatchObject({
+      workflowStatus: 'trial_generation_failed',
+      status: 'failed',
+      canAdopt: false,
+    });
+  });
+
+  it('marks a current ready segment viewed repeatedly without changing adoption eligibility', async () => {
+    const { db } = getTestDatabase();
+    const graph = await trialReviewGraph(db);
+    const service = createService(unusedSetupEngine, { async enqueue() {} }).forUser(graph.userId);
+    const input = {
+      trialRevisionId: graph.trialRevisionId,
+      trialSegmentId: graph.trialSegmentIds[0]!,
+    };
+
+    const first = await service.markTrialViewed(graph.userBookId, input);
+    const second = await service.markTrialViewed(graph.userBookId, input);
+    const [segment] = await db
+      .select()
+      .from(trialSegments)
+      .where(eq(trialSegments.id, input.trialSegmentId));
+
+    expect(segment?.viewedAt).toBeInstanceOf(Date);
+    expect(first.canAdopt).toBe(true);
+    expect(second.canAdopt).toBe(true);
+    expect(second.segments[0]?.viewedAt).not.toBeNull();
+  });
+
+  it('rejects viewing a segment through a non-current revision', async () => {
+    const { db } = getTestDatabase();
+    const graph = await trialReviewGraph(db);
+    const now = new Date();
+    const [otherRevision] = await db
+      .insert(trialRevisions)
+      .values({
+        userBookId: graph.userBookId,
+        strategyDraftVersionId: graph.strategyDraftVersionId,
+        revision: 2,
+        status: 'adopted',
+        publishedAt: now,
+        adoptedAt: now,
+      })
+      .returning({ id: trialRevisions.id });
+    await db
+      .update(userBooks)
+      .set({ currentTrialRevisionId: otherRevision!.id })
+      .where(eq(userBooks.id, graph.userBookId));
+    const service = createService(unusedSetupEngine, { async enqueue() {} }).forUser(graph.userId);
+
+    await expect(service.markTrialViewed(graph.userBookId, {
+      trialRevisionId: graph.trialRevisionId,
+      trialSegmentId: graph.trialSegmentIds[0]!,
+    })).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it('rejects viewing a segment that is not ready', async () => {
+    const { db } = getTestDatabase();
+    const graph = await trialReviewGraph(db);
+    await db
+      .update(trialSegments)
+      .set({ status: 'generating' })
+      .where(eq(trialSegments.id, graph.trialSegmentIds[0]!));
+    const service = createService(unusedSetupEngine, { async enqueue() {} }).forUser(graph.userId);
+
+    await expect(service.markTrialViewed(graph.userBookId, {
+      trialRevisionId: graph.trialRevisionId,
+      trialSegmentId: graph.trialSegmentIds[0]!,
+    })).rejects.toMatchObject({ statusCode: 409 });
   });
 });

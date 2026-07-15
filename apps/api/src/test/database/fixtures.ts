@@ -79,6 +79,8 @@ export interface TrialGeneratingGraph extends StrategyReviewGraph {
   nodeGenerationIds: string[];
 }
 
+export interface TrialGenerationFailedGraph extends TrialGeneratingGraph {}
+
 export async function onShelfGraph(db: Database): Promise<OnShelfGraph> {
   const userId = randomUUID();
   const readerProfileId = randomUUID();
@@ -291,6 +293,59 @@ export async function trialGeneratingGraph(db: Database): Promise<TrialGeneratin
     trialSegmentIds: segmentRows.map(({ id }) => id),
     nodeGenerationIds: generationRows.map(({ id }) => id),
   };
+}
+
+export async function trialGenerationFailedGraph(
+  db: Database,
+): Promise<TrialGenerationFailedGraph> {
+  const graph = await trialGeneratingGraph(db);
+  const failedAt = new Date('2026-07-16T00:20:00.000Z');
+
+  await db
+    .update(nodeGenerations)
+    .set({
+      status: 'ready',
+      result: { guide: '已完成导读', annotations: [], afterReading: '已完成回顾' },
+      completedAt: failedAt,
+      updatedAt: failedAt,
+    })
+    .where(eq(nodeGenerations.id, graph.nodeGenerationIds[0]!));
+  await db
+    .update(trialSegments)
+    .set({ status: 'ready', updatedAt: failedAt })
+    .where(eq(trialSegments.id, graph.trialSegmentIds[0]!));
+  for (const generationId of graph.nodeGenerationIds.slice(1)) {
+    await db
+      .update(nodeGenerations)
+      .set({
+        status: 'failed',
+        errorSummary: '测试终态失败',
+        completedAt: failedAt,
+        updatedAt: failedAt,
+      })
+      .where(eq(nodeGenerations.id, generationId));
+  }
+  for (const segmentId of graph.trialSegmentIds.slice(1)) {
+    await db
+      .update(trialSegments)
+      .set({ status: 'failed', updatedAt: failedAt })
+      .where(eq(trialSegments.id, segmentId));
+  }
+  await db
+    .update(trialRevisions)
+    .set({
+      status: 'failed',
+      failureSummary: '试读内容生成失败，请重试当前版本。',
+      failedAt,
+      updatedAt: failedAt,
+    })
+    .where(eq(trialRevisions.id, graph.trialRevisionId));
+  await db
+    .update(userBooks)
+    .set({ workflowStatus: 'trial_generation_failed', updatedAt: failedAt })
+    .where(eq(userBooks.id, graph.userBookId));
+
+  return graph;
 }
 
 export async function trialReviewGraph(db: Database): Promise<TrialReviewGraph> {
