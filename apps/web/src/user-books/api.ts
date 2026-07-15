@@ -1,4 +1,14 @@
-import type { Briefing, InterviewStreamEvent, SharedBookStatus } from '@readtailor/contracts';
+import type {
+  Briefing,
+  CurrentReadingSetupOperationResponse,
+  InterviewStreamEvent,
+  ReadingNodePreview,
+  ReadingSetupOperationResponse,
+  SharedBookStatus,
+  StrategyReviewResponse,
+  TrialReviewResponse,
+  TrialSegment,
+} from '@readtailor/contracts';
 import { apiBaseUrl } from '../library/api';
 
 export type WorkflowStatus =
@@ -31,6 +41,12 @@ export interface UserBookSummary {
   updatedAt: string;
   sharedBook: UserBookSharedBook;
   readingProgress: ReadingProgressSummary | null;
+}
+
+export interface UserBookDetail extends UserBookSummary {
+  currentStrategyDraftVersionId: string | null;
+  currentStrategyVersionId: string | null;
+  currentTrialRevisionId: string | null;
 }
 
 export interface UserBookListResponse {
@@ -79,6 +95,7 @@ export interface StrategySnapshot {
   draftVersion: number;
   readingBriefing: Briefing;
   userFacingSummary: string;
+  trialCandidatePreviews: ReadingNodePreview[];
   adjustmentCount: number;
   adjustmentLimit: number;
   canAdjust: boolean;
@@ -106,14 +123,19 @@ export interface TailoredContent {
   afterReading: string | null;
 }
 
-export interface TrialSample {
+interface TrialSampleFields {
   id: string;
   ordinal: number;
+  status: TrialSegment['status'];
   chapterPath: string[];
+  selectionReason: string;
   originalHtml: string;
   viewedAt: string | null;
-  tailoredContent: TailoredContent;
 }
+
+export type TrialSample =
+  | (TrialSampleFields & { status: 'pending' | 'generating' | 'failed'; tailoredContent: null })
+  | (TrialSampleFields & { status: 'ready'; tailoredContent: TailoredContent });
 
 export interface TrialSnapshot {
   revisionId: string;
@@ -158,13 +180,12 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(
   path: string,
   body: Record<string, unknown> = {},
-  includeIdempotencyKey = true,
 ): Promise<T> {
   return readJson<T>(await fetch(path, {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ...(includeIdempotencyKey ? { idempotencyKey: crypto.randomUUID() } : {}), ...body }),
+    body: JSON.stringify(body),
   }));
 }
 
@@ -179,6 +200,13 @@ interface RawShelfItem {
   errorSummary: string | null;
   progress: number | null;
   lastActivityAt: string;
+}
+
+interface RawUserBookDetail {
+  book: RawShelfItem;
+  currentStrategyDraftVersionId?: string | null;
+  currentStrategyVersionId?: string | null;
+  currentTrialRevisionId?: string | null;
 }
 
 interface RawInterviewSnapshot {
@@ -206,37 +234,8 @@ interface RawInterviewSnapshot {
   }>;
 }
 
-interface RawStrategySnapshot {
-  draft: {
-    id: string;
-    version: number;
-    readingBriefing: Briefing;
-    userFacingSummary: string;
-  };
-  adjustmentCount: number;
-  adjustmentLimit: number;
-  canAdjust: boolean;
-}
-
-interface RawTrialSnapshot {
-  trialRevisionId: string;
-  revision: number;
-  status: 'draft' | 'generating' | 'ready' | 'published' | 'adopted' | 'failed' | 'superseded';
-  strategyDraftVersionId: string;
-  segments: Array<{
-    id: string;
-    ordinal: number;
-    chapterPath: string[];
-    originalHtml: string;
-    status: 'pending' | 'generating' | 'ready' | 'failed';
-    result: TailoredContent | null;
-    viewedAt: string | null;
-  }>;
-  adjustmentCount: number;
-  adjustmentLimit: number;
-  canAdjust: boolean;
-  canAdopt: boolean;
-}
+type RawStrategySnapshot = StrategyReviewResponse;
+type RawTrialSnapshot = TrialReviewResponse;
 
 function mapShelfItem(item: RawShelfItem): UserBookSummary {
   return {
@@ -292,14 +291,26 @@ function mapStrategy(raw: RawStrategySnapshot): StrategySnapshot {
     draftVersion: raw.draft.version,
     readingBriefing: raw.draft.readingBriefing,
     userFacingSummary: raw.draft.userFacingSummary,
+    trialCandidatePreviews: raw.trialCandidatePreviews,
     adjustmentCount: raw.adjustmentCount,
     adjustmentLimit: raw.adjustmentLimit,
     canAdjust: raw.canAdjust,
   };
 }
 
-function emptyTailoredContent(): TailoredContent {
-  return { guide: null, annotations: [], afterReading: null };
+function mapTrialSample(segment: TrialSegment): TrialSample {
+  const fields = {
+    id: segment.id,
+    ordinal: segment.ordinal,
+    chapterPath: segment.chapterPath,
+    selectionReason: segment.selectionReason,
+    originalHtml: segment.originalHtml,
+    viewedAt: segment.viewedAt,
+  };
+  if (segment.status === 'ready') {
+    return { ...fields, status: segment.status, tailoredContent: segment.result };
+  }
+  return { ...fields, status: segment.status, tailoredContent: null };
 }
 
 function mapTrial(raw: RawTrialSnapshot): TrialSnapshot {
@@ -317,14 +328,7 @@ function mapTrial(raw: RawTrialSnapshot): TrialSnapshot {
     adjustmentLimit: raw.adjustmentLimit,
     canAdjust: raw.canAdjust,
     allViewed: raw.canAdopt,
-    samples: published ? raw.segments.map((segment) => ({
-      id: segment.id,
-      ordinal: segment.ordinal,
-      chapterPath: segment.chapterPath,
-      originalHtml: segment.originalHtml,
-      viewedAt: segment.viewedAt,
-      tailoredContent: segment.result ?? emptyTailoredContent(),
-    })) : [],
+    samples: raw.segments.map(mapTrialSample),
     errorSummary: raw.status === 'failed' ? '至少一个片段在技术重试后仍未成功。' : null,
   };
 }
@@ -334,9 +338,14 @@ export async function getUserBooks(): Promise<UserBookListResponse> {
   return { userBooks: raw.books.map(mapShelfItem) };
 }
 
-export async function getUserBook(userBookId: string): Promise<UserBookSummary> {
-  const raw = await get<{ book: RawShelfItem }>(userBookRoot(userBookId));
-  return mapShelfItem(raw.book);
+export async function getUserBook(userBookId: string): Promise<UserBookDetail> {
+  const raw = await get<RawUserBookDetail>(userBookRoot(userBookId));
+  return {
+    ...mapShelfItem(raw.book),
+    currentStrategyDraftVersionId: raw.currentStrategyDraftVersionId ?? null,
+    currentStrategyVersionId: raw.currentStrategyVersionId ?? null,
+    currentTrialRevisionId: raw.currentTrialRevisionId ?? null,
+  };
 }
 
 export async function getInterview(userBookId: string): Promise<InterviewSnapshot> {
@@ -344,11 +353,11 @@ export async function getInterview(userBookId: string): Promise<InterviewSnapsho
 }
 
 export async function startInterview(userBookId: string): Promise<InterviewSnapshot> {
-  return mapInterview(await post<RawInterviewSnapshot>(`${userBookRoot(userBookId)}/interview/start`, {}, false));
+  return mapInterview(await post<RawInterviewSnapshot>(`${userBookRoot(userBookId)}/interview/start`));
 }
 
 export async function resumeInterview(userBookId: string): Promise<InterviewSnapshot> {
-  return mapInterview(await post<RawInterviewSnapshot>(`${userBookRoot(userBookId)}/interview/resume`, {}, false));
+  return mapInterview(await post<RawInterviewSnapshot>(`${userBookRoot(userBookId)}/interview/resume`));
 }
 
 // Handlers for the streaming answer endpoint (§4.2). Every callback is optional so a caller
@@ -451,24 +460,63 @@ export async function streamInterviewAnswer(
   }
 }
 
-export async function getStrategy(userBookId: string): Promise<StrategySnapshot> {
-  return mapStrategy(await get<RawStrategySnapshot>(`${userBookRoot(userBookId)}/strategy`));
+export async function getStrategy(userBookId: string, draftId?: string): Promise<StrategySnapshot> {
+  const path = draftId
+    ? `${userBookRoot(userBookId)}/strategy/versions/${encodeURIComponent(draftId)}`
+    : `${userBookRoot(userBookId)}/strategy`;
+  return mapStrategy(await get<RawStrategySnapshot>(path));
 }
 
-export function submitStrategyFeedback(userBookId: string, draftId: string, feedback: string): Promise<StrategySnapshot> {
+export function submitStrategyFeedback(
+  userBookId: string,
+  draftId: string,
+  feedback: string,
+  idempotencyKey: string,
+): Promise<StrategySnapshot> {
   return post<RawStrategySnapshot>(`${userBookRoot(userBookId)}/strategy/feedback`, {
     strategyDraftVersionId: draftId,
     feedback,
+    idempotencyKey,
   }).then(mapStrategy);
 }
 
-export async function approveStrategyForTrial(userBookId: string, draftId: string): Promise<TrialSnapshot> {
-  await post(`${userBookRoot(userBookId)}/strategy/approve`, { strategyDraftVersionId: draftId }, false);
-  return getTrial(userBookId);
+export async function approveStrategyForTrial(
+  userBookId: string,
+  draftId: string,
+  idempotencyKey: string,
+): Promise<TrialSnapshot> {
+  const result = await post<{ trialRevisionId: string }>(`${userBookRoot(userBookId)}/strategy/approve`, {
+    strategyDraftVersionId: draftId,
+    idempotencyKey,
+  });
+  return getTrial(userBookId, result.trialRevisionId);
 }
 
-export async function getTrial(userBookId: string): Promise<TrialSnapshot> {
-  return mapTrial(await get<RawTrialSnapshot>(`${userBookRoot(userBookId)}/trial`));
+export async function getTrial(userBookId: string, trialRevisionId?: string): Promise<TrialSnapshot> {
+  const path = trialRevisionId
+    ? `${userBookRoot(userBookId)}/trial/revisions/${encodeURIComponent(trialRevisionId)}`
+    : `${userBookRoot(userBookId)}/trial`;
+  return mapTrial(await get<RawTrialSnapshot>(path));
+}
+
+export function getCurrentReadingSetupOperation(
+  userBookId: string,
+): Promise<CurrentReadingSetupOperationResponse> {
+  return get(`${userBookRoot(userBookId)}/reading-setup-operation/current`);
+}
+
+export function getReadingSetupOperation(
+  userBookId: string,
+  operationId: string,
+): Promise<ReadingSetupOperationResponse> {
+  return get(`${userBookRoot(userBookId)}/reading-setup-operation/${encodeURIComponent(operationId)}`);
+}
+
+export function resumeReadingSetupOperation(
+  userBookId: string,
+  operationId: string,
+): Promise<ReadingSetupOperationResponse> {
+  return post(`${userBookRoot(userBookId)}/reading-setup-operation/${encodeURIComponent(operationId)}/resume`);
 }
 
 export function markTrialSampleViewed(
@@ -479,21 +527,23 @@ export function markTrialSampleViewed(
   return post<RawTrialSnapshot>(`${userBookRoot(userBookId)}/trial/viewed`, {
     trialRevisionId: revisionId,
     trialSegmentId: sampleId,
-  }, false).then(mapTrial);
+  }).then(mapTrial);
 }
 
 export function retryTrial(userBookId: string): Promise<TrialSnapshot> {
-  return post<RawTrialSnapshot>(`${userBookRoot(userBookId)}/trial/retry`, {}, false).then(mapTrial);
+  return post<RawTrialSnapshot>(`${userBookRoot(userBookId)}/trial/retry`).then(mapTrial);
 }
 
 export function submitTrialFeedback(
   userBookId: string,
   revisionId: string,
   feedback: string,
+  idempotencyKey: string,
 ): Promise<StrategySnapshot> {
   return post<RawStrategySnapshot>(`${userBookRoot(userBookId)}/trial/feedback`, {
     trialRevisionId: revisionId,
     feedback,
+    idempotencyKey,
   }).then(mapStrategy);
 }
 
@@ -505,6 +555,6 @@ export async function adoptTrial(
   await post(`${userBookRoot(userBookId)}/trial/adopt`, {
     trialRevisionId: revisionId,
     strategyDraftVersionId: draftId,
-  }, false);
+  });
   return getUserBook(userBookId);
 }

@@ -11,6 +11,7 @@ import {
   AuthSessionResponseSchema,
   BookCatalogResponseSchema,
   BookNormalizationStatusSchema,
+  CurrentReadingSetupOperationResponseSchema,
   AdoptTrialRequestSchema,
   AdoptTrialResponseSchema,
   ApproveStrategyRequestSchema,
@@ -51,6 +52,7 @@ import {
   ReadingStatsGlobalSchema,
   ReadingStatsPerBookSchema,
   ReadingStatsQuerySchema,
+  ReadingSetupOperationResponseSchema,
   SharedBookSchema,
   StrategyReviewResponseSchema,
   SubmitInterviewAnswerRequestSchema,
@@ -110,6 +112,18 @@ const bookIdParams = Type.Object({
 });
 const userBookIdParams = Type.Object({
   id: Type.String({ pattern: UUID_PATTERN }),
+});
+const userBookStrategyVersionParams = Type.Object({
+  id: Type.String({ pattern: UUID_PATTERN }),
+  draftId: Type.String({ pattern: UUID_PATTERN }),
+});
+const userBookTrialRevisionParams = Type.Object({
+  id: Type.String({ pattern: UUID_PATTERN }),
+  trialRevisionId: Type.String({ pattern: UUID_PATTERN }),
+});
+const userBookReadingSetupOperationParams = Type.Object({
+  id: Type.String({ pattern: UUID_PATTERN }),
+  operationId: Type.String({ pattern: UUID_PATTERN }),
 });
 const userBookHighlightParams = Type.Object({
   id: Type.String({ pattern: UUID_PATTERN }),
@@ -797,6 +811,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
+        reply.header('cache-control', 'private, no-store');
         return await deps.userBooks
           .forUser(request.authUser!.id)
           .listQaSessions(request.params.id, request.query.cursor, request.query.limit);
@@ -821,6 +836,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
+        reply.header('cache-control', 'private, no-store');
         return await deps.userBooks
           .forUser(request.authUser!.id)
           .qaSession(request.params.id, request.params.sessionId);
@@ -905,6 +921,84 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
   );
 
   app.get(
+    '/v1/user-books/:id/reading-setup-operation/current',
+    {
+      schema: {
+        params: userBookIdParams,
+        response: {
+          200: CurrentReadingSetupOperationResponseSchema,
+          404: ErrorResponseSchema,
+          409: ErrorResponseSchema,
+          503: ErrorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        reply.header('cache-control', 'private, no-store');
+        return await deps.userBooks
+          .forUser(request.authUser!.id, { requestId: request.id })
+          .currentReadingSetupOperation(request.params.id);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.get(
+    '/v1/user-books/:id/reading-setup-operation/:operationId',
+    {
+      schema: {
+        params: userBookReadingSetupOperationParams,
+        response: {
+          200: ReadingSetupOperationResponseSchema,
+          404: ErrorResponseSchema,
+          409: ErrorResponseSchema,
+          503: ErrorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        reply.header('cache-control', 'private, no-store');
+        return await deps.userBooks
+          .forUser(request.authUser!.id, { requestId: request.id })
+          .readingSetupOperation(request.params.id, request.params.operationId);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.post(
+    '/v1/user-books/:id/reading-setup-operation/:operationId/resume',
+    {
+      schema: {
+        params: userBookReadingSetupOperationParams,
+        body: Type.Object({}),
+        response: {
+          200: ReadingSetupOperationResponseSchema,
+          404: ErrorResponseSchema,
+          409: ErrorResponseSchema,
+          503: ErrorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        return await deps.userBooks
+          .forUser(request.authUser!.id, { requestId: request.id })
+          .resumeReadingSetupOperation(request.params.id, request.params.operationId);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.get(
     '/v1/user-books/:id/strategy',
     {
       schema: {
@@ -916,6 +1010,27 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
         return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).strategyState(request.params.id);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.get(
+    '/v1/user-books/:id/strategy/versions/:draftId',
+    {
+      schema: {
+        params: userBookStrategyVersionParams,
+        response: { 200: StrategyReviewResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        reply.header('cache-control', 'private, no-store');
+        return await deps.userBooks
+          .forUser(request.authUser!.id, { requestId: request.id })
+          .strategyStateByDraftId(request.params.id, request.params.draftId);
       } catch (error) {
         return userBookFailure(error, reply);
       }
@@ -947,7 +1062,7 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       schema: {
         params: userBookIdParams,
         body: ApproveStrategyRequestSchema,
-        response: { 200: ApproveStrategyResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+        response: { 200: ApproveStrategyResponseSchema, 400: ErrorResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
       },
     },
     async (request, reply) => {
@@ -972,6 +1087,27 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       try {
         return await deps.userBooks.forUser(request.authUser!.id, { requestId: request.id }).trialState(request.params.id);
+      } catch (error) {
+        return userBookFailure(error, reply);
+      }
+    },
+  );
+
+  app.get(
+    '/v1/user-books/:id/trial/revisions/:trialRevisionId',
+    {
+      schema: {
+        params: userBookTrialRevisionParams,
+        response: { 200: TrialReviewResponseSchema, 404: ErrorResponseSchema, 409: ErrorResponseSchema, 503: ErrorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
+      try {
+        reply.header('cache-control', 'private, no-store');
+        return await deps.userBooks
+          .forUser(request.authUser!.id, { requestId: request.id })
+          .trialStateByRevisionId(request.params.id, request.params.trialRevisionId);
       } catch (error) {
         return userBookFailure(error, reply);
       }

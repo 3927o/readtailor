@@ -22,34 +22,43 @@ import {
   WorkflowMessage,
   WorkflowPage,
 } from './components';
+import { userBookQueryKeys } from './queryKeys';
 import { useWorkflowGate } from './useWorkflowGate';
+
+interface TrialFeedbackCommand {
+  trialRevisionId: string;
+  feedback: string;
+  idempotencyKey: string;
+}
 
 export function TrialPage() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const gate = useWorkflowGate(id, ['trial_generating', 'trial_generation_failed', 'trial_review']);
+  const currentTrialRevisionId = gate.query.data?.currentTrialRevisionId ?? '';
   const trial = useQuery({
-    queryKey: ['user-book', id, 'trial'],
-    queryFn: () => getTrial(id),
-    enabled: gate.active,
+    queryKey: userBookQueryKeys.trial(id, currentTrialRevisionId),
+    queryFn: () => getTrial(id, currentTrialRevisionId),
+    enabled: gate.active && Boolean(currentTrialRevisionId),
     refetchInterval: (current) => current.state.data?.status === 'generating' ? 1800 : false,
   });
   const [sampleIndex, setSampleIndex] = useState(0);
   const [feedback, setFeedback] = useState('');
   const [popover, setPopover] = useState<ActivePopover | null>(null);
   const viewedAttempts = useRef(new Set<string>());
+  const feedbackCommand = useRef<TrialFeedbackCommand | null>(null);
   const resyncOnConflict = async (error: Error) => {
     if (error instanceof ApiError && error.status === 409) {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['user-book', id] }),
-        queryClient.invalidateQueries({ queryKey: ['user-book', id, 'trial'] }),
+        queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) }),
+        queryClient.invalidateQueries({ queryKey: userBookQueryKeys.trials(id) }),
       ]);
     }
   };
 
   const saveSnapshot = (snapshot: TrialSnapshot) => {
-    queryClient.setQueryData(['user-book', id, 'trial'], snapshot);
+    queryClient.setQueryData(userBookQueryKeys.trial(id, snapshot.revisionId), snapshot);
   };
   const viewed = useMutation({
     mutationFn: (sample: TrialSample) => markTrialSampleViewed(id, trial.data?.revisionId ?? '', sample.id),
@@ -60,30 +69,46 @@ export function TrialPage() {
     mutationFn: () => retryTrial(id),
     onSuccess: async (snapshot) => {
       saveSnapshot(snapshot);
-      await queryClient.invalidateQueries({ queryKey: ['user-book', id] });
+      await queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
     },
     onError: resyncOnConflict,
   });
-  const revise = useMutation({
-    mutationFn: () => {
-      if (!trial.data) throw new Error('当前试读版本已经失效。');
-      return submitTrialFeedback(id, trial.data.revisionId, feedback.trim());
-    },
+  const revise = useMutation<Awaited<ReturnType<typeof submitTrialFeedback>>, Error, TrialFeedbackCommand>({
+    mutationFn: (command) => submitTrialFeedback(
+      id,
+      command.trialRevisionId,
+      command.feedback,
+      command.idempotencyKey,
+    ),
     onSuccess: async (strategy) => {
-      queryClient.removeQueries({ queryKey: ['user-book', id, 'trial'] });
-      queryClient.setQueryData(['user-book', id, 'strategy'], strategy);
-      await queryClient.invalidateQueries({ queryKey: ['user-book', id] });
+      feedbackCommand.current = null;
+      queryClient.setQueryData(userBookQueryKeys.strategy(id, strategy.draftId), strategy);
+      await queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
       navigate(`/user-books/${encodeURIComponent(id)}/strategy`, { replace: true });
     },
     onError: resyncOnConflict,
   });
+  const submitFeedback = () => {
+    if (!trial.data) return;
+    const trimmedFeedback = feedback.trim();
+    const previous = feedbackCommand.current;
+    const command = previous?.trialRevisionId === trial.data.revisionId && previous.feedback === trimmedFeedback
+      ? previous
+      : {
+          trialRevisionId: trial.data.revisionId,
+          feedback: trimmedFeedback,
+          idempotencyKey: crypto.randomUUID(),
+        };
+    feedbackCommand.current = command;
+    revise.mutate(command);
+  };
   const adopt = useMutation({
     mutationFn: () => {
       if (!trial.data) throw new Error('当前试读版本已经失效。');
       return adoptTrial(id, trial.data.revisionId, trial.data.draftId);
     },
     onSuccess: (userBook) => {
-      queryClient.setQueryData(['user-book', id], userBook);
+      queryClient.setQueryData(userBookQueryKeys.detail(id), userBook);
       navigate(`/user-books/${encodeURIComponent(id)}/read`, { replace: true });
     },
     onError: resyncOnConflict,
@@ -98,7 +123,7 @@ export function TrialPage() {
     () => current ? prepareStandaloneContent(
       current.originalHtml,
       bookAssetBaseUrl(gate.query.data?.sharedBook.id ?? ''),
-      current.tailoredContent.annotations,
+      current.tailoredContent?.annotations ?? [],
     ) : '',
     [current, gate.query.data?.sharedBook.id],
   );
@@ -106,7 +131,7 @@ export function TrialPage() {
   // popover — the same interaction as the reader — instead of scrolling to a list.
   const annotationContentById = useMemo(() => {
     const map = new Map<string, string>();
-    for (const annotation of current?.tailoredContent.annotations ?? []) map.set(annotation.id, annotation.content);
+    for (const annotation of current?.tailoredContent?.annotations ?? []) map.set(annotation.id, annotation.content);
     return map;
   }, [current]);
 
@@ -116,7 +141,7 @@ export function TrialPage() {
   }, [trial.data?.revision]);
 
   useEffect(() => {
-    if (!trial.data || trial.data.status !== 'ready' || !current || current.viewedAt) return;
+    if (!trial.data || trial.data.status !== 'ready' || !current || current.status !== 'ready' || current.viewedAt) return;
     const key = `${trial.data.revision}:${current.id}`;
     if (viewedAttempts.current.has(key)) return;
     viewedAttempts.current.add(key);
@@ -185,14 +210,14 @@ export function TrialPage() {
               setPopover({ body: { kind: 'tailored', content }, ...popoverPlacement(anchor.getBoundingClientRect()) });
             }}
           >
-            {current.tailoredContent.guide ? (
+            {current.tailoredContent?.guide ? (
               <section className="tailored-guide">
                 <span>GUIDE · 导读</span>
                 <AssistanceContent content={current.tailoredContent.guide} />
               </section>
             ) : null}
             <div className="trial-original rt-reader-content" dangerouslySetInnerHTML={{ __html: currentHtml }} />
-            {current.tailoredContent.afterReading ? (
+            {current.tailoredContent?.afterReading ? (
               <section className="tailored-after-reading">
                 <span>AFTER READING · 节后助读</span>
                 <AssistanceContent content={current.tailoredContent.afterReading} />
@@ -215,7 +240,7 @@ export function TrialPage() {
             <AdjustmentForm
               value={feedback}
               onChange={setFeedback}
-              onSubmit={() => revise.mutate()}
+              onSubmit={submitFeedback}
               pending={revise.isPending}
               label={`试读不对味？反馈会回到处理方式 · 还可调整 ${Math.max(0, snapshot.adjustmentLimit - snapshot.adjustmentCount)} 次`}
               placeholder="比如：导读再短一点；术语解释不要太浅；注释只留真正影响理解的地方。"

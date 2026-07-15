@@ -2,21 +2,35 @@ import { Value } from '@sinclair/typebox/value';
 import { describe, expect, it } from 'vitest';
 import {
   AdoptTrialRequestSchema,
+  ApproveStrategyRequestSchema,
   BookNormalizationStatusSchema,
   ContentGenerationJobPayloadSchema,
+  CurrentReadingSetupOperationResponseSchema,
   GenerationResultSchema,
   HealthResponseSchema,
   ImportBookResponseSchema,
   InterviewQuestionSchema,
   PasswordLoginRequestSchema,
   PasswordRegisterRequestSchema,
+  ProvisionalTrialSampleSchema,
   ProposalDecisionRequestSchema,
   ProposalFeedbackRequestSchema,
   QaQuestionContextSchema,
+  ReadingNodePreviewSchema,
+  ReadingSetupOperationDetailParamsSchema,
+  ReadingSetupOperationPayloadSchema,
+  ReadingSetupOperationResponseSchema,
   SharedBookSchema,
+  StrategyDraftSnapshotParamsSchema,
+  StrategyRevisionStreamEventSchema,
+  SubmitInterviewAnswerRequestSchema,
+  SubmitStrategyFeedbackRequestSchema,
+  SubmitTrialFeedbackRequestSchema,
   SystemJobPayloadSchema,
   SystemJobSchema,
+  TrialRevisionSnapshotParamsSchema,
   TrialReviewResponseSchema,
+  TrialSelectionStreamEventSchema,
   UserBookDetailResponseSchema,
 } from './index';
 
@@ -373,6 +387,58 @@ describe('phase three workflow contracts', () => {
     );
   });
 
+  it('binds trial segment results to their generation status', () => {
+    const segment = {
+      id: 'segment-1',
+      ordinal: 1,
+      sectionId: 'chapter-1',
+      segment: 1,
+      range: {
+        start: { blockIndex: 1, offset: 0 },
+        end: { blockIndex: 2, offset: 10 },
+      },
+      chapterPath: [],
+      originalHtml: '<p>Original text.</p>',
+      selectionReason: 'Represents the main conceptual threshold.',
+      viewedAt: null,
+    };
+
+    expect(Value.Check(TrialReviewResponseSchema, {
+      userBookId: 'user-book-id',
+      workflowStatus: 'trial_generating',
+      trialRevisionId: 'revision-id',
+      revision: 1,
+      status: 'generating',
+      strategyDraftVersionId: 'draft-id',
+      segments: [
+        { ...segment, status: 'ready', result: generationResult },
+        { ...segment, id: 'segment-2', ordinal: 2, status: 'generating', result: null },
+        { ...segment, id: 'segment-3', ordinal: 3, status: 'failed', result: null },
+      ],
+      adjustmentCount: 0,
+      adjustmentLimit: 5,
+      canAdjust: true,
+      canAdopt: false,
+    })).toBe(true);
+    expect(Value.Check(TrialReviewResponseSchema, {
+      userBookId: 'user-book-id',
+      workflowStatus: 'trial_generating',
+      trialRevisionId: 'revision-id',
+      revision: 1,
+      status: 'generating',
+      strategyDraftVersionId: 'draft-id',
+      segments: [
+        { ...segment, status: 'ready', result: null },
+        { ...segment, id: 'segment-2', ordinal: 2, status: 'generating', result: generationResult },
+        { ...segment, id: 'segment-3', ordinal: 3, status: 'failed', result: null },
+      ],
+      adjustmentCount: 0,
+      adjustmentLimit: 5,
+      canAdjust: true,
+      canAdopt: false,
+    })).toBe(false);
+  });
+
   it('accepts the read-only user book detail response', () => {
     expect(
       Value.Check(UserBookDetailResponseSchema, {
@@ -408,5 +474,354 @@ describe('phase three workflow contracts', () => {
         idempotencyKey: 'adopt-1',
       }),
     ).toBe(true);
+  });
+});
+
+describe('progressive reading setup contracts', () => {
+  const ids = {
+    userBook: '10000000-0000-0000-0000-000000000001',
+    operation: '10000000-0000-0000-0000-000000000002',
+    draft: '10000000-0000-0000-0000-000000000003',
+    trial: '10000000-0000-0000-0000-000000000004',
+  };
+
+  const range = {
+    start: { blockIndex: 1, offset: 0 },
+    end: { blockIndex: 1, offset: 20 },
+  };
+
+  const previews = [
+    {
+      ordinal: 1,
+      sectionId: 'chapter-1',
+      segment: 1,
+      chapterPath: ['Part I', 'Chapter 1'],
+      reason: 'Entry threshold.',
+    },
+    {
+      ordinal: 2,
+      sectionId: 'chapter-2',
+      segment: 1,
+      chapterPath: ['Part I', 'Chapter 2'],
+      reason: 'Typical argument.',
+    },
+    {
+      ordinal: 3,
+      sectionId: 'chapter-3',
+      segment: 1,
+      chapterPath: ['Part II', 'Chapter 3'],
+      reason: 'Hardest concept.',
+    },
+  ];
+
+  const strategy = {
+    userBookId: ids.userBook,
+    workflowStatus: 'strategy_review',
+    draft: {
+      id: ids.draft,
+      version: 2,
+      status: 'draft',
+      readingBriefing: {
+        bookIdentity: 'A book about systems.',
+        arc: 'It moves from principles to practice.',
+        assumedKnowledge: 'No specialist background required.',
+        readingAdvice: 'Pause at the worked examples.',
+      },
+      userFacingSummary: 'Read for the core argument and its practical consequences.',
+      strategy: {
+        goals: ['Understand the central argument.'],
+        expressionPrinciples: ['Prefer concise explanations.'],
+        guide: { enabled: true, objectives: ['Orient each section.'] },
+        annotations: { enabled: true, focuses: ['Key terms.'], exclusions: [] },
+        afterReading: { enabled: false, objectives: [] },
+        trialCandidates: previews.map(({ sectionId, segment, reason }) => ({
+          sectionId,
+          segment,
+          reason,
+        })),
+      },
+      createdAt: '2026-07-15T00:00:00.000Z',
+      approvedForTrialAt: null,
+    },
+    trialCandidatePreviews: previews,
+    adjustmentCount: 1,
+    adjustmentLimit: 5,
+    canAdjust: true,
+  };
+
+  const provisionalSample = {
+    ordinal: 1,
+    tag: 'threshold',
+    sectionId: 'chapter-1',
+    segment: 1,
+    range,
+    chapterPath: ['Part I', 'Chapter 1'],
+    originalHtml: '<p>Original threshold text.</p>',
+    selectionReason: 'Shows the entry threshold.',
+  };
+
+  const trial = {
+    userBookId: ids.userBook,
+    workflowStatus: 'trial_generating',
+    trialRevisionId: ids.trial,
+    revision: 1,
+    status: 'generating',
+    strategyDraftVersionId: ids.draft,
+    segments: [1, 2, 3].map((ordinal) => ({
+      id: `segment-${ordinal}`,
+      ordinal,
+      sectionId: `chapter-${ordinal}`,
+      segment: 1,
+      range,
+      chapterPath: [`Chapter ${ordinal}`],
+      originalHtml: `<p>Sample ${ordinal}</p>`,
+      selectionReason: `Reason ${ordinal}`,
+      status: 'generating',
+      result: null,
+      viewedAt: null,
+    })),
+    adjustmentCount: 1,
+    adjustmentLimit: 5,
+    canAdjust: true,
+    canAdopt: false,
+  };
+
+  const envelope = {
+    userBookId: ids.userBook,
+    operationId: ids.operation,
+    operationAttempt: 2,
+    sequence: 1,
+  };
+
+  it('validates public node and provisional sample projections', () => {
+    expect(Value.Check(ReadingNodePreviewSchema, previews[0])).toBe(true);
+    expect(Value.Check(ProvisionalTrialSampleSchema, provisionalSample)).toBe(true);
+    expect(
+      Value.Check(ProvisionalTrialSampleSchema, {
+        ...provisionalSample,
+        ordinal: 2,
+      }),
+    ).toBe(false);
+  });
+
+  it('validates operation payloads, recovery responses, and UUID params', () => {
+    expect(Value.Check(ReadingSetupOperationPayloadSchema, {
+      source: 'strategy_feedback',
+      strategyDraftVersionId: ids.draft,
+      feedback: 'Use shorter annotations.',
+    })).toBe(true);
+    expect(Value.Check(ReadingSetupOperationPayloadSchema, {
+      source: 'strategy_approve',
+      strategyDraftVersionId: ids.draft,
+    })).toBe(true);
+    expect(Value.Check(ReadingSetupOperationPayloadSchema, {
+      source: 'unknown',
+    })).toBe(false);
+
+    const operation = {
+      operationId: ids.operation,
+      operationAttempt: 2,
+      kind: 'strategy_revision',
+      source: 'trial_feedback',
+      status: 'failed',
+      baseDraftId: ids.draft,
+      baseTrialRevisionId: ids.trial,
+      resultDraftId: null,
+      resultTrialRevisionId: null,
+      canResume: true,
+      errorSummary: 'The agent response was invalid.',
+      recoverableInput: { feedback: 'Use shorter annotations.' },
+    };
+    expect(Value.Check(ReadingSetupOperationResponseSchema, operation)).toBe(true);
+    expect(Value.Check(ReadingSetupOperationResponseSchema, {
+      operationId: ids.operation,
+      operationAttempt: 1,
+      kind: 'trial_selection',
+      source: 'strategy_approve',
+      status: 'completed',
+      baseDraftId: ids.draft,
+      baseTrialRevisionId: null,
+      resultDraftId: null,
+      resultTrialRevisionId: ids.trial,
+      canResume: false,
+      errorSummary: null,
+      recoverableInput: null,
+    })).toBe(true);
+    expect(Value.Check(CurrentReadingSetupOperationResponseSchema, null)).toBe(true);
+    expect(Value.Check(ReadingSetupOperationResponseSchema, {
+      ...operation,
+      kind: 'trial_selection',
+    })).toBe(false);
+    expect(Value.Check(ReadingSetupOperationResponseSchema, {
+      ...operation,
+      operationId: 'not-a-uuid',
+    })).toBe(false);
+    expect(Value.Check(ReadingSetupOperationResponseSchema, {
+      ...operation,
+      errorSummary: null,
+    })).toBe(false);
+
+    expect(Value.Check(ReadingSetupOperationDetailParamsSchema, {
+      id: ids.userBook,
+      operationId: ids.operation,
+    })).toBe(true);
+    expect(Value.Check(StrategyDraftSnapshotParamsSchema, {
+      id: ids.userBook,
+      draftId: ids.draft,
+    })).toBe(true);
+    expect(Value.Check(TrialRevisionSnapshotParamsSchema, {
+      id: ids.userBook,
+      trialRevisionId: 'invalid',
+    })).toBe(false);
+  });
+
+  it('requires stable idempotency keys on reading setup operation commands', () => {
+    const commands = [
+      [SubmitInterviewAnswerRequestSchema, {
+        questionId: 'question-1',
+        selectedOptionIds: ['overview'],
+        freeText: null,
+      }],
+      [SubmitStrategyFeedbackRequestSchema, {
+        strategyDraftVersionId: ids.draft,
+        feedback: 'Make the guide more concise.',
+      }],
+      [ApproveStrategyRequestSchema, {
+        strategyDraftVersionId: ids.draft,
+      }],
+      [SubmitTrialFeedbackRequestSchema, {
+        trialRevisionId: ids.trial,
+        feedback: 'Use a more representative sample.',
+      }],
+    ] as const;
+
+    for (const [schema, command] of commands) {
+      expect(Value.Check(schema, { ...command, idempotencyKey: 'command-1' })).toBe(true);
+      expect(Value.Check(schema, command)).toBe(false);
+      expect(Value.Check(schema, { ...command, idempotencyKey: '' })).toBe(false);
+      expect(Value.Check(schema, { ...command, idempotencyKey: '   ' })).toBe(false);
+    }
+    expect(Value.Check(SubmitStrategyFeedbackRequestSchema, {
+      strategyDraftVersionId: ids.draft,
+      feedback: '   ',
+      idempotencyKey: 'command-1',
+    })).toBe(false);
+    expect(Value.Check(SubmitTrialFeedbackRequestSchema, {
+      trialRevisionId: 'not-a-uuid',
+      feedback: 'Use a more representative sample.',
+      idempotencyKey: 'command-1',
+    })).toBe(false);
+  });
+
+  it('validates every strategy revision stream discriminator and envelope', () => {
+    const events = [
+      {
+        ...envelope,
+        type: 'speculative_reset',
+        speculativeEpoch: 2,
+        phase: 'strategy_review',
+      },
+      {
+        ...envelope,
+        type: 'revision_started',
+        speculativeEpoch: 2,
+        source: 'strategy_feedback',
+        baseDraftId: ids.draft,
+        baseTrialRevisionId: null,
+      },
+      {
+        ...envelope,
+        type: 'strategy_delta',
+        speculativeEpoch: 2,
+        chars: 'Read for the argument.',
+      },
+      {
+        ...envelope,
+        type: 'reading_node_added',
+        speculativeEpoch: 2,
+        node: previews[0],
+      },
+      {
+        ...envelope,
+        type: 'revision_final',
+        strategy,
+      },
+      {
+        ...envelope,
+        type: 'error',
+        code: 'validation_failed',
+        message: 'The revised strategy was invalid.',
+      },
+    ];
+
+    for (const event of events) {
+      expect(Value.Check(StrategyRevisionStreamEventSchema, event)).toBe(true);
+    }
+    expect(Value.Check(StrategyRevisionStreamEventSchema, {
+      ...events[2],
+      operationAttempt: 0,
+    })).toBe(false);
+    expect(Value.Check(StrategyRevisionStreamEventSchema, {
+      ...events[1],
+      source: 'trial_feedback',
+      baseTrialRevisionId: null,
+    })).toBe(false);
+  });
+
+  it('validates every trial selection stream discriminator and fixed slots', () => {
+    const events = [
+      {
+        ...envelope,
+        type: 'speculative_reset',
+        speculativeEpoch: 1,
+        phase: 'select_trial',
+      },
+      {
+        ...envelope,
+        type: 'selection_started',
+        speculativeEpoch: 1,
+        draftId: ids.draft,
+        slots: [
+          { ordinal: 1, tag: 'threshold' },
+          { ordinal: 2, tag: 'typical' },
+          { ordinal: 3, tag: 'hardest' },
+        ],
+      },
+      {
+        ...envelope,
+        type: 'fragment_selected',
+        speculativeEpoch: 1,
+        draftId: ids.draft,
+        sample: provisionalSample,
+      },
+      {
+        ...envelope,
+        type: 'trial_created',
+        draftId: ids.draft,
+        trial,
+      },
+      {
+        ...envelope,
+        type: 'error',
+        code: 'lease_lost',
+        message: 'The operation lease was lost.',
+      },
+    ];
+
+    for (const event of events) {
+      expect(Value.Check(TrialSelectionStreamEventSchema, event)).toBe(true);
+    }
+    expect(Value.Check(TrialSelectionStreamEventSchema, {
+      ...events[1],
+      slots: [
+        { ordinal: 1, tag: 'threshold' },
+        { ordinal: 3, tag: 'hardest' },
+        { ordinal: 2, tag: 'typical' },
+      ],
+    })).toBe(false);
+    expect(Value.Check(TrialSelectionStreamEventSchema, {
+      ...events[2],
+      speculativeEpoch: 0,
+    })).toBe(false);
   });
 });

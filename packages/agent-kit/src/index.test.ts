@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   completeJson,
   createInterviewStreamParser,
+  createReadingSetupStreamParser,
   reconstructAskAiHistory,
   reconstructReadingSetupHistory,
   runAskAiAgent,
@@ -14,6 +15,7 @@ import {
   type InterviewStreamDelta,
   type NormalizationAgentToolbox,
   type NormalizationFinishBinding,
+  type ReadingSetupStreamDelta,
   type StrategyChangeProposal,
 } from './index';
 
@@ -276,6 +278,7 @@ describe('reading setup Pi Agent', () => {
     if (!address || typeof address === 'string') throw new Error('test server did not bind');
 
     const deltas: InterviewStreamDelta[] = [];
+    const setupDeltas: ReadingSetupStreamDelta[] = [];
     const result = await runReadingSetupAgent({
       apiBaseUrl: `http://127.0.0.1:${address.port}/v1`,
       apiKey: 'test-key',
@@ -286,6 +289,7 @@ describe('reading setup Pi Agent', () => {
       context: { book: { title: 'Book' } },
       timeoutMs: 5000,
       onStream: (delta) => deltas.push(delta),
+      onReadingSetupStream: (delta) => setupDeltas.push(delta),
     });
 
     expect(result).toEqual({ type: 'question', question });
@@ -295,6 +299,12 @@ describe('reading setup Pi Agent', () => {
     expect(chars('prompt_delta')).toBe('你希望从这本书里得到什么？');
     expect(deltas.filter((d) => d.type === 'option_added').map((d) => (d as { id: string }).id)).toEqual(['understand', 'apply']);
     expect(deltas.filter((d) => d.type === 'sufficiency').map((d) => (d as { value: number }).value).at(-1)).toBe(40);
+    expect(setupDeltas[0]).toEqual({
+      type: 'speculative_reset',
+      speculativeEpoch: 1,
+      toolName: 'present_interview_question',
+    });
+    expect(setupDeltas.filter((delta) => delta.type === 'prompt_delta').every((delta) => delta.speculativeEpoch === 1)).toBe(true);
   });
 });
 
@@ -477,6 +487,173 @@ describe('createInterviewStreamParser', () => {
     parser.onToolStart(''); // provider withheld the name on toolcall_start
     for (const part of chunk(question, 3)) parser.onDelta(part);
     expect(reassemble(events).ack).toBe('好，我记下了。');
+  });
+});
+
+describe('createReadingSetupStreamParser', () => {
+  const candidates = [
+    { section_id: 'chapter-1', segment: 1, reason: '用于观察进入门槛。' },
+    { section_id: 'chapter-2', segment: 2, reason: '典型内容含有括号（以及“引号”）。' },
+    { section_id: 'chapter-3', segment: 3, reason: '较难内容包含反斜杠 \\ 和右花括号 }。' },
+  ];
+  const finish = JSON.stringify({
+    briefing: {
+      book_identity: '这是一本讨论复杂系统的书。',
+      arc: '全书从局部问题逐步走向整体结构。',
+      assumed_knowledge: '默认读者知道基础概念。',
+      reading_advice: '先抓住论证主线，再处理细节。',
+    },
+    public_strategy: '先建立结构，再只解释真正阻碍理解的概念。',
+    strategy: {
+      goals: ['理解主线'],
+      expression_principles: ['保持克制'],
+      guide: { enabled: true, objectives: ['定位'] },
+      annotations: { enabled: true, focuses: ['概念'], exclusions: [] },
+      after_reading: { enabled: true, objectives: ['回顾'] },
+      trial_candidates: candidates,
+    },
+    book_reader_profile: {},
+  });
+
+  const fragments = [
+    {
+      section_id: 'chapter-1',
+      segment: 1,
+      tag: 'threshold',
+      range: { start: { block_index: 1, offset: 0 }, end: { block_index: 2, offset: 12 } },
+      reason: '覆盖进入本书时的理解门槛。',
+    },
+    {
+      section_id: 'chapter-2',
+      segment: 2,
+      tag: 'typical',
+      range: { start: { block_index: 3, offset: 4 }, end: { block_index: 5, offset: 20 } },
+      reason: '覆盖典型内容，并保留“关键”例子。',
+    },
+    {
+      section_id: 'chapter-3',
+      segment: 3,
+      tag: 'hardest',
+      range: { start: { block_index: 6, offset: 1 }, end: { block_index: 8, offset: 30 } },
+      reason: '覆盖较难内容与嵌套关系 {A\\B}。',
+    },
+  ] as const;
+
+  for (const size of [1, 2, 7, 10_000]) {
+    it(`streams visible strategy fields and complete candidates at chunk size ${size}`, () => {
+      const events: ReadingSetupStreamDelta[] = [];
+      const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+      parser.onToolStart('finish_interview');
+      for (const part of chunk(finish, size)) parser.onDelta(part);
+
+      expect(events[0]).toEqual({
+        type: 'speculative_reset',
+        speculativeEpoch: 1,
+        toolName: 'finish_interview',
+      });
+      expect(events[1]).toEqual({ type: 'draft_started', source: 'interview', speculativeEpoch: 1 });
+      const briefing = Object.fromEntries(
+        ['book_identity', 'arc', 'assumed_knowledge', 'reading_advice'].map((field) => [
+          field,
+          events
+            .filter((event) => event.type === 'briefing_delta' && event.field === field)
+            .map((event) => event.type === 'briefing_delta' ? event.chars : '')
+            .join(''),
+        ]),
+      );
+      expect(briefing).toEqual({
+        book_identity: '这是一本讨论复杂系统的书。',
+        arc: '全书从局部问题逐步走向整体结构。',
+        assumed_knowledge: '默认读者知道基础概念。',
+        reading_advice: '先抓住论证主线，再处理细节。',
+      });
+      expect(events.filter((event) => event.type === 'strategy_delta').map((event) => event.type === 'strategy_delta' ? event.chars : '').join(''))
+        .toBe('先建立结构，再只解释真正阻碍理解的概念。');
+      expect(events.filter((event) => event.type === 'reading_node_added')).toEqual(
+        candidates.map((candidate, index) => ({
+          type: 'reading_node_added',
+          speculativeEpoch: 1,
+          ordinal: index + 1,
+          sectionId: candidate.section_id,
+          segment: candidate.segment,
+          reason: candidate.reason,
+        })),
+      );
+    });
+  }
+
+  it('never emits a candidate before its real closing brace arrives', () => {
+    const events: ReadingSetupStreamDelta[] = [];
+    const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+    parser.onToolStart('finish_interview');
+    const marker = finish.indexOf('用于观察进入门槛。') + '用于观察进入门槛。'.length;
+    parser.onDelta(finish.slice(0, marker));
+    expect(events.some((event) => event.type === 'reading_node_added')).toBe(false);
+    parser.onDelta(finish.slice(marker));
+    expect(events.filter((event) => event.type === 'reading_node_added')).toHaveLength(3);
+  });
+
+  for (const size of [1, 3, 11, 10_000]) {
+    it(`emits each complete fragment once at chunk size ${size}`, () => {
+      const events: ReadingSetupStreamDelta[] = [];
+      const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+      parser.onToolStart('select_trial_fragments');
+      for (const part of chunk(JSON.stringify({ fragments }), size)) parser.onDelta(part);
+      expect(events.slice(0, 2)).toEqual([
+        { type: 'speculative_reset', speculativeEpoch: 1, toolName: 'select_trial_fragments' },
+        { type: 'selection_started', speculativeEpoch: 1, total: 3 },
+      ]);
+      expect(events.filter((event) => event.type === 'fragment_added')).toEqual(
+        fragments.map((fragment, index) => ({
+          type: 'fragment_added',
+          speculativeEpoch: 1,
+          ordinal: index + 1,
+          fragment,
+        })),
+      );
+    });
+  }
+
+  it('does not accept a fragment whose numeric offset may still grow', () => {
+    const source = JSON.stringify({ fragments });
+    const events: ReadingSetupStreamDelta[] = [];
+    const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+    parser.onToolStart('select_trial_fragments');
+    const offset = source.indexOf('12');
+    parser.onDelta(source.slice(0, offset + 1));
+    expect(events.some((event) => event.type === 'fragment_added')).toBe(false);
+    parser.onDelta(source.slice(offset + 1));
+    expect(events.filter((event) => event.type === 'fragment_added')).toHaveLength(3);
+  });
+
+  it('increments speculativeEpoch and resets streamed state for a replacement tool call', () => {
+    const events: ReadingSetupStreamDelta[] = [];
+    const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+    parser.onToolStart('save_strategy_draft');
+    parser.onDelta('{"public_strategy":"第一版尚未通过');
+    parser.onToolFinished('save_strategy_draft', false);
+    parser.onToolStart('save_strategy_draft');
+    parser.onDelta(JSON.stringify({ public_strategy: '第二版完整内容', strategy: { trial_candidates: candidates } }));
+
+    expect(events.filter((event) => event.type === 'speculative_reset')).toEqual([
+      { type: 'speculative_reset', speculativeEpoch: 1, toolName: 'save_strategy_draft' },
+      { type: 'speculative_reset', speculativeEpoch: 2, toolName: 'save_strategy_draft' },
+    ]);
+    expect(events.filter((event) => event.type === 'draft_started')).toEqual([
+      { type: 'draft_started', source: 'revision', speculativeEpoch: 1 },
+      { type: 'draft_started', source: 'revision', speculativeEpoch: 2 },
+    ]);
+    expect(events.filter((event) => event.type === 'strategy_delta' && event.speculativeEpoch === 2)
+      .map((event) => event.type === 'strategy_delta' ? event.chars : '').join('')).toBe('第二版完整内容');
+  });
+
+  it('infers finish_interview and emits its start event when the provider withholds the name', () => {
+    const events: ReadingSetupStreamDelta[] = [];
+    const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+    parser.onToolStart('');
+    for (const part of chunk(finish, 5)) parser.onDelta(part);
+    expect(events[0]).toEqual({ type: 'speculative_reset', speculativeEpoch: 1, toolName: null });
+    expect(events.some((event) => event.type === 'draft_started' && event.source === 'interview')).toBe(true);
   });
 });
 

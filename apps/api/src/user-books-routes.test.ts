@@ -72,6 +72,9 @@ const detail = {
 
 const HIGHLIGHT_ID = '11111111-2222-3333-4444-555555555555';
 const STRATEGY_VERSION_ID = '22222222-3333-4444-8555-666666666666';
+const OPERATION_ID = '44444444-5555-4666-8777-888888888888';
+const STRATEGY_DRAFT_ID = '55555555-6666-4777-8888-999999999999';
+const TRIAL_REVISION_ID = '66666666-7777-4888-8999-aaaaaaaaaaaa';
 const QA_RANGE = { start: { blockIndex: 1, offset: 0 }, end: { blockIndex: 1, offset: 5 } };
 const HIGHLIGHT = {
   id: HIGHLIGHT_ID,
@@ -365,16 +368,14 @@ describe('user book workflow routes', () => {
       method: 'POST',
       url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve`,
       headers: { origin: 'http://localhost:5173' },
-      payload: { strategyDraftVersionId: SHARED_BOOK_ID },
+      payload: { strategyDraftVersionId: SHARED_BOOK_ID, idempotencyKey: 'approve-stale-1' },
     });
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ error: '处理方式已经更新，请刷新后继续' });
   });
 
-  // §6.5: approve/adopt dropped their unused idempotencyKey (both are idempotent by state).
-  // A body without the key must still be accepted — the schema no longer requires it.
-  it('approves a strategy without an idempotency key', async () => {
+  it('requires and forwards the approve idempotency key', async () => {
     let received: unknown;
     const app = await buildApiApp(config, {
       auth: fakeAuth,
@@ -394,11 +395,203 @@ describe('user book workflow routes', () => {
       method: 'POST',
       url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve`,
       headers: { origin: 'http://localhost:5173' },
-      payload: { strategyDraftVersionId: SHARED_BOOK_ID },
+      payload: { strategyDraftVersionId: SHARED_BOOK_ID, idempotencyKey: 'approve-1' },
     });
     expect(response.statusCode).toBe(200);
-    expect(received).toEqual({ strategyDraftVersionId: SHARED_BOOK_ID });
+    expect(received).toEqual({ strategyDraftVersionId: SHARED_BOOK_ID, idempotencyKey: 'approve-1' });
     expect(response.json()).toMatchObject({ workflowStatus: 'trial_generating' });
+
+    const missingKey = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: { strategyDraftVersionId: SHARED_BOOK_ID },
+    });
+    expect(missingKey.statusCode).toBe(400);
+  });
+
+  it('rejects malformed reading setup commands before calling the service', async () => {
+    let calls = 0;
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async submitStrategyFeedback() { calls += 1; throw new Error('must not run'); },
+        async approveStrategy() { calls += 1; throw new Error('must not run'); },
+        async submitTrialFeedback() { calls += 1; throw new Error('must not run'); },
+      }),
+    });
+    const requests = [
+      app.inject({
+        method: 'POST',
+        url: `/v1/user-books/${USER_BOOK_ID}/strategy/feedback`,
+        headers: { origin: 'http://localhost:5173' },
+        payload: { strategyDraftVersionId: 'not-a-uuid', feedback: 'clearer', idempotencyKey: 'command-1' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/v1/user-books/${USER_BOOK_ID}/strategy/feedback`,
+        headers: { origin: 'http://localhost:5173' },
+        payload: { strategyDraftVersionId: STRATEGY_DRAFT_ID, feedback: '   ', idempotencyKey: 'command-2' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/v1/user-books/${USER_BOOK_ID}/strategy/approve`,
+        headers: { origin: 'http://localhost:5173' },
+        payload: { strategyDraftVersionId: STRATEGY_DRAFT_ID, idempotencyKey: '   ' },
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/v1/user-books/${USER_BOOK_ID}/trial/feedback`,
+        headers: { origin: 'http://localhost:5173' },
+        payload: { trialRevisionId: 'not-a-uuid', feedback: 'clearer', idempotencyKey: 'command-3' },
+      }),
+    ];
+
+    const responses = await Promise.all(requests);
+    expect(responses.map((response) => response.statusCode)).toEqual([400, 400, 400, 400]);
+    expect(calls).toBe(0);
+  });
+
+  it('reads exact strategy and trial versions by pointer', async () => {
+    const calls: string[] = [];
+    const strategy = {
+      userBookId: USER_BOOK_ID,
+      workflowStatus: 'strategy_review' as const,
+      draft: {
+        id: STRATEGY_DRAFT_ID,
+        version: 2,
+        status: 'draft' as const,
+        readingBriefing: BRIEFING,
+        userFacingSummary: 'Strategy',
+        strategy: {
+          goals: ['goal'],
+          expressionPrinciples: ['plain'],
+          guide: { enabled: true, objectives: ['orient'] },
+          annotations: { enabled: true, focuses: ['terms'], exclusions: [] },
+          afterReading: { enabled: true, objectives: ['recap'] },
+          trialCandidates: [1, 2, 3].map((segment) => ({ sectionId: 'chapter-1', segment, reason: `reason-${segment}` })),
+        },
+        createdAt: '2026-07-14T00:00:00.000Z',
+        approvedForTrialAt: null,
+      },
+      trialCandidatePreviews: [1, 2, 3].map((segment) => ({
+        ordinal: segment,
+        sectionId: 'chapter-1',
+        segment,
+        chapterPath: ['Chapter 1'],
+        reason: `reason-${segment}`,
+      })),
+      adjustmentCount: 1,
+      adjustmentLimit: 5,
+      canAdjust: true,
+    };
+    const trial = {
+      userBookId: USER_BOOK_ID,
+      workflowStatus: 'trial_generating' as const,
+      trialRevisionId: TRIAL_REVISION_ID,
+      revision: 3,
+      status: 'generating' as const,
+      strategyDraftVersionId: STRATEGY_DRAFT_ID,
+      segments: [1, 2, 3].map((ordinal) => ({
+        id: `${ordinal}1111111-2222-4333-8444-555555555555`,
+        ordinal,
+        sectionId: 'chapter-1',
+        segment: ordinal,
+        range: { start: { blockIndex: 1, offset: 0 }, end: { blockIndex: 1, offset: 5 } },
+        chapterPath: ['Chapter 1'],
+        originalHtml: '<p>text</p>',
+        selectionReason: `reason-${ordinal}`,
+        status: 'pending' as const,
+        result: null,
+        viewedAt: null,
+      })),
+      adjustmentCount: 1,
+      adjustmentLimit: 5,
+      canAdjust: true,
+      canAdopt: false,
+    };
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async strategyStateByDraftId(_userBookId, draftId) {
+          calls.push(`strategy:${draftId}`);
+          return strategy;
+        },
+        async trialStateByRevisionId(_userBookId, revisionId) {
+          calls.push(`trial:${revisionId}`);
+          return trial;
+        },
+      }),
+    });
+
+    const strategyResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/user-books/${USER_BOOK_ID}/strategy/versions/${STRATEGY_DRAFT_ID}`,
+    });
+    const trialResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/user-books/${USER_BOOK_ID}/trial/revisions/${TRIAL_REVISION_ID}`,
+    });
+    expect(strategyResponse.statusCode).toBe(200);
+    expect(trialResponse.statusCode).toBe(200);
+    expect(strategyResponse.headers['cache-control']).toBe('private, no-store');
+    expect(trialResponse.headers['cache-control']).toBe('private, no-store');
+    expect(calls).toEqual([`strategy:${STRATEGY_DRAFT_ID}`, `trial:${TRIAL_REVISION_ID}`]);
+  });
+
+  it('exposes current, detail and resume operation routes', async () => {
+    const calls: string[] = [];
+    const operation = {
+      operationId: OPERATION_ID,
+      operationAttempt: 1,
+      kind: 'strategy_revision' as const,
+      source: 'strategy_feedback' as const,
+      status: 'pending' as const,
+      baseDraftId: STRATEGY_DRAFT_ID,
+      baseTrialRevisionId: null,
+      resultDraftId: null,
+      resultTrialRevisionId: null,
+      canResume: true,
+      errorSummary: null,
+      recoverableInput: { feedback: 'make it clearer' },
+    };
+    const app = await buildApiApp(config, {
+      auth: fakeAuth,
+      userBooks: fakeService({
+        async currentReadingSetupOperation() {
+          calls.push('current');
+          return operation;
+        },
+        async readingSetupOperation(_userBookId, operationId) {
+          calls.push(`detail:${operationId}`);
+          return operation;
+        },
+        async resumeReadingSetupOperation(_userBookId, operationId) {
+          calls.push(`resume:${operationId}`);
+          return { ...operation, status: 'running' as const, canResume: false };
+        },
+      }),
+    });
+    const current = await app.inject({
+      method: 'GET',
+      url: `/v1/user-books/${USER_BOOK_ID}/reading-setup-operation/current`,
+    });
+    const detailResponse = await app.inject({
+      method: 'GET',
+      url: `/v1/user-books/${USER_BOOK_ID}/reading-setup-operation/${OPERATION_ID}`,
+    });
+    const resumed = await app.inject({
+      method: 'POST',
+      url: `/v1/user-books/${USER_BOOK_ID}/reading-setup-operation/${OPERATION_ID}/resume`,
+      headers: { origin: 'http://localhost:5173' },
+      payload: {},
+    });
+    expect(current.statusCode).toBe(200);
+    expect(detailResponse.statusCode).toBe(200);
+    expect(resumed.statusCode).toBe(200);
+    expect(current.headers['cache-control']).toBe('private, no-store');
+    expect(detailResponse.headers['cache-control']).toBe('private, no-store');
+    expect(calls).toEqual(['current', `detail:${OPERATION_ID}`, `resume:${OPERATION_ID}`]);
   });
 
   it('adopts a trial without an idempotency key', async () => {

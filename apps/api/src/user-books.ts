@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import type {
@@ -42,6 +42,7 @@ import type {
   ReadingStatsGlobal,
   ReadingStatsPerBook,
   ReadingStatsQuery,
+  ReadingSetupOperationResponse,
   Strategy,
   StrategyReviewResponse,
   TextPosition,
@@ -73,6 +74,7 @@ import {
   readerProfileVersions,
   readerReadNodes,
   readerStates,
+  readingSetupOperations,
   readingActivitySlices,
   readingDailyBookStats,
   readingSessions,
@@ -443,6 +445,20 @@ export class UserBookError extends Error {
   }
 }
 
+class ReadingSetupLeaseLostError extends Error {
+  constructor() {
+    super('reading setup operation lease lost');
+    this.name = 'ReadingSetupLeaseLostError';
+  }
+}
+
+class ReadingSetupClaimConflictError extends Error {
+  constructor() {
+    super('reading setup operation claim conflict');
+    this.name = 'ReadingSetupClaimConflictError';
+  }
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type QaSessionCursor = { updatedAt: string; sessionId: string };
@@ -508,18 +524,16 @@ export function applyReaderProfilePatch(
   };
 }
 
-// A concurrent duplicate feedback (same idempotency key) loses the race on the partial unique
-// index `interview_messages_feedback_idempotency_unique`. Surfacing that as an idempotent
-// success — rather than a 500 — is the DB-level backstop behind the fast-path pre-check (§6.5).
-// postgres-js exposes the Postgres unique-violation as code 23505 with the index name in
-// `constraint_name`; check the wrapped cause too in case a driver layer re-throws.
-function isFeedbackIdempotencyConflict(error: unknown): boolean {
+function postgresConstraintName(error: unknown): string | null {
   const candidates = [error, (error as { cause?: unknown } | null)?.cause];
-  return candidates.some((candidate) => {
-    if (typeof candidate !== 'object' || candidate === null) return false;
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'object' || candidate === null) continue;
     const pg = candidate as { code?: unknown; constraint_name?: unknown };
-    return pg.code === '23505' && pg.constraint_name === 'interview_messages_feedback_idempotency_unique';
-  });
+    if (pg.code === '23505' && typeof pg.constraint_name === 'string') {
+      return pg.constraint_name;
+    }
+  }
+  return null;
 }
 
 function asManifest(value: unknown): ReadingManifest {
@@ -1056,6 +1070,69 @@ type InterviewTurnClaim = {
   conversationVersion: number;
 };
 
+type ReadingSetupOperationClaim = {
+  operationId: string;
+  leaseId: string;
+  attemptCount: number;
+};
+
+type ReadingSetupOperationCommand = {
+  kind: 'strategy_revision' | 'trial_selection';
+  source: 'strategy_feedback' | 'trial_feedback' | 'strategy_approve';
+  baseStrategyDraftVersionId: string;
+  baseTrialRevisionId: string | null;
+  idempotencyKey: string;
+  payload:
+    | {
+        source: 'strategy_feedback';
+        strategyDraftVersionId: string;
+        feedback: string;
+      }
+    | {
+        source: 'trial_feedback';
+        strategyDraftVersionId: string;
+        trialRevisionId: string;
+        feedback: string;
+      }
+    | {
+        source: 'strategy_approve';
+        strategyDraftVersionId: string;
+      };
+};
+
+type ReadingSetupOperationRow = typeof readingSetupOperations.$inferSelect;
+type ReadingSetupOperationObservation = {
+  operation: ReadingSetupOperationRow;
+  leaseExpired: boolean;
+};
+
+const READING_SETUP_OPERATION_LEASE_SQL = sql`interval '6 minutes'`;
+const READING_SETUP_OPERATION_RENEW_INTERVAL_MS = 60_000;
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalJsonValue(item)]),
+    );
+  }
+  return value;
+}
+
+export function readingSetupOperationRequestHash(
+  command: Pick<
+    ReadingSetupOperationCommand,
+    'source' | 'baseStrategyDraftVersionId' | 'baseTrialRevisionId' | 'payload'
+  >,
+): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalJsonValue(command)))
+    .digest('hex');
+}
+
 const INTERVIEW_TURN_LEASE_SQL = sql`interval '6 minutes'`;
 
 export function createUserBookService(options: UserBookServiceOptions) {
@@ -1082,6 +1159,547 @@ function createUserBookServiceForUser(
       .limit(1);
     if (!row) throw new UserBookError('用户书籍不存在', 404);
     return row;
+  };
+
+  const readOperationByIdempotencyKey = async (
+    userBookId: string,
+    idempotencyKey: string,
+  ): Promise<ReadingSetupOperationRow | undefined> => db
+    .select()
+    .from(readingSetupOperations)
+    .where(and(
+      eq(readingSetupOperations.userBookId, userBookId),
+      eq(readingSetupOperations.idempotencyKey, idempotencyKey),
+    ))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  const readOperationById = async (
+    userBookId: string,
+    operationId: string,
+  ): Promise<ReadingSetupOperationRow | undefined> => db
+    .select()
+    .from(readingSetupOperations)
+    .where(and(
+      eq(readingSetupOperations.id, operationId),
+      eq(readingSetupOperations.userBookId, userBookId),
+    ))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  const observeOperationById = async (
+    userBookId: string,
+    operationId: string,
+  ): Promise<ReadingSetupOperationObservation | undefined> => db
+    .select({
+      operation: readingSetupOperations,
+      leaseExpired: sql<boolean>`coalesce(${readingSetupOperations.leaseExpiresAt} <= now(), false)`,
+    })
+    .from(readingSetupOperations)
+    .where(and(
+      eq(readingSetupOperations.id, operationId),
+      eq(readingSetupOperations.userBookId, userBookId),
+    ))
+    .limit(1)
+    .then((rows) => rows[0]);
+
+  const assertOperationHash = (
+    operation: ReadingSetupOperationRow,
+    requestHash: string,
+  ) => {
+    if (operation.requestHash !== requestHash) {
+      throw new UserBookError('幂等键已用于不同的阅读准备操作', 409);
+    }
+  };
+
+  const validateReadingSetupOperation = async (operation: ReadingSetupOperationRow) => {
+    const owned = await getOwnedBook(operation.userBookId);
+    const book = owned.userBook;
+    if (book.currentStrategyDraftVersionId !== operation.baseStrategyDraftVersionId) {
+      throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
+    }
+    const [draft] = await db
+      .select({ status: strategyDraftVersions.status })
+      .from(strategyDraftVersions)
+      .where(and(
+        eq(strategyDraftVersions.id, operation.baseStrategyDraftVersionId),
+        eq(strategyDraftVersions.userBookId, operation.userBookId),
+      ))
+      .limit(1);
+    if (!draft) throw new UserBookError('处理方式版本不存在', 404);
+
+    if (operation.source === 'strategy_approve') {
+      if (
+        book.workflowStatus !== 'strategy_review'
+        || book.currentTrialRevisionId !== null
+        || draft.status !== 'draft'
+      ) {
+        throw new UserBookError('处理方式已经确认或更新', 409);
+      }
+      return;
+    }
+
+    if (book.adjustmentCount >= ADJUSTMENT_LIMIT) {
+      throw new UserBookError('已经达到 5 次调整上限', 409);
+    }
+    if (operation.source === 'strategy_feedback') {
+      if (
+        book.workflowStatus !== 'strategy_review'
+        || book.currentTrialRevisionId !== null
+        || !['draft', 'approved_for_trial'].includes(draft.status)
+      ) {
+        throw new UserBookError('当前阶段不能修改处理方式', 409);
+      }
+      return;
+    }
+
+    if (
+      book.workflowStatus !== 'trial_review'
+      || book.currentTrialRevisionId !== operation.baseTrialRevisionId
+    ) {
+      throw new UserBookError('试读版本已经更新', 409);
+    }
+    const [revision] = await db
+      .select({ status: trialRevisions.status })
+      .from(trialRevisions)
+      .where(and(
+        eq(trialRevisions.id, operation.baseTrialRevisionId!),
+        eq(trialRevisions.userBookId, operation.userBookId),
+      ))
+      .limit(1);
+    if (!revision || revision.status !== 'published') {
+      throw new UserBookError('试读版本尚未发布或已经更新', 409);
+    }
+  };
+
+  const resolveReadingSetupOperation = async (
+    userBookId: string,
+    command: ReadingSetupOperationCommand,
+  ): Promise<ReadingSetupOperationRow> => {
+    await getOwnedBook(userBookId);
+    const requestHash = readingSetupOperationRequestHash(command);
+    const existing = await readOperationByIdempotencyKey(userBookId, command.idempotencyKey);
+    if (existing) {
+      assertOperationHash(existing, requestHash);
+      return existing;
+    }
+
+    const candidate: ReadingSetupOperationRow = {
+      id: randomUUID(),
+      userBookId,
+      kind: command.kind,
+      source: command.source,
+      baseStrategyDraftVersionId: command.baseStrategyDraftVersionId,
+      baseTrialRevisionId: command.baseTrialRevisionId,
+      idempotencyKey: command.idempotencyKey,
+      requestHash,
+      payload: command.payload,
+      status: 'pending',
+      attemptCount: 0,
+      leaseId: null,
+      leaseClaimedAt: null,
+      leaseExpiresAt: null,
+      resultStrategyDraftVersionId: null,
+      resultTrialRevisionId: null,
+      errorSummary: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      completedAt: null,
+    };
+    await validateReadingSetupOperation(candidate);
+
+    try {
+      const [created] = await db
+        .insert(readingSetupOperations)
+        .values({
+          id: candidate.id,
+          userBookId,
+          kind: command.kind,
+          source: command.source,
+          baseStrategyDraftVersionId: command.baseStrategyDraftVersionId,
+          baseTrialRevisionId: command.baseTrialRevisionId,
+          idempotencyKey: command.idempotencyKey,
+          requestHash,
+          payload: command.payload,
+        })
+        .returning();
+      if (!created) throw new Error('failed to create reading setup operation');
+      return created;
+    } catch (error) {
+      const constraint = postgresConstraintName(error);
+      if (constraint === 'reading_setup_operations_book_idempotency_unique') {
+        const raced = await readOperationByIdempotencyKey(userBookId, command.idempotencyKey);
+        if (!raced) throw error;
+        assertOperationHash(raced, requestHash);
+        return raced;
+      }
+      if (constraint === 'reading_setup_operations_one_active_per_book') {
+        throw new UserBookError('当前已有阅读准备操作正在进行', 409);
+      }
+      throw error;
+    }
+  };
+
+  const claimReadingSetupOperation = async (
+    operation: ReadingSetupOperationRow,
+  ): Promise<ReadingSetupOperationClaim> => {
+    if (operation.status === 'completed') {
+      throw new UserBookError('阅读准备操作已完成', 409);
+    }
+    await validateReadingSetupOperation(operation);
+    const leaseId = randomUUID();
+    const attemptCount = operation.attemptCount + 1;
+    const stateGate = operation.source === 'strategy_approve'
+      ? sql`exists (
+          select 1
+          from ${userBooks}
+          inner join ${strategyDraftVersions}
+            on ${strategyDraftVersions.id} = ${userBooks.currentStrategyDraftVersionId}
+          where ${userBooks.id} = ${operation.userBookId}
+            and ${userBooks.workflowStatus} = 'strategy_review'
+            and ${userBooks.currentStrategyDraftVersionId} = ${operation.baseStrategyDraftVersionId}
+            and ${userBooks.currentTrialRevisionId} is null
+            and ${strategyDraftVersions.status} = 'draft'
+        )`
+      : operation.source === 'strategy_feedback'
+        ? sql`exists (
+            select 1
+            from ${userBooks}
+            inner join ${strategyDraftVersions}
+              on ${strategyDraftVersions.id} = ${userBooks.currentStrategyDraftVersionId}
+            where ${userBooks.id} = ${operation.userBookId}
+              and ${userBooks.workflowStatus} = 'strategy_review'
+              and ${userBooks.currentStrategyDraftVersionId} = ${operation.baseStrategyDraftVersionId}
+              and ${userBooks.currentTrialRevisionId} is null
+              and ${userBooks.adjustmentCount} < ${ADJUSTMENT_LIMIT}
+              and ${strategyDraftVersions.status} in ('draft', 'approved_for_trial')
+          )`
+        : sql`exists (
+            select 1
+            from ${userBooks}
+            inner join ${trialRevisions}
+              on ${trialRevisions.id} = ${userBooks.currentTrialRevisionId}
+            where ${userBooks.id} = ${operation.userBookId}
+              and ${userBooks.workflowStatus} = 'trial_review'
+              and ${userBooks.currentStrategyDraftVersionId} = ${operation.baseStrategyDraftVersionId}
+              and ${userBooks.currentTrialRevisionId} = ${operation.baseTrialRevisionId}
+              and ${userBooks.adjustmentCount} < ${ADJUSTMENT_LIMIT}
+              and ${trialRevisions.status} = 'published'
+          )`;
+    const [claimed] = await db
+      .update(readingSetupOperations)
+      .set({
+        status: 'running',
+        attemptCount,
+        leaseId,
+        leaseClaimedAt: sql`now()`,
+        leaseExpiresAt: sql`now() + ${READING_SETUP_OPERATION_LEASE_SQL}`,
+        resultStrategyDraftVersionId: null,
+        resultTrialRevisionId: null,
+        errorSummary: null,
+        completedAt: null,
+        updatedAt: sql`now()`,
+      })
+      .where(and(
+        eq(readingSetupOperations.id, operation.id),
+        eq(readingSetupOperations.attemptCount, operation.attemptCount),
+        stateGate,
+        or(
+          eq(readingSetupOperations.status, 'pending'),
+          eq(readingSetupOperations.status, 'failed'),
+          and(
+            eq(readingSetupOperations.status, 'running'),
+            sql`${readingSetupOperations.leaseExpiresAt} <= now()`,
+          ),
+        ),
+      ))
+      .returning({ id: readingSetupOperations.id });
+    if (!claimed) {
+      const latest = await observeOperationById(operation.userBookId, operation.id);
+      if (
+        latest
+        && latest.operation.status === operation.status
+        && latest.operation.attemptCount === operation.attemptCount
+        && latest.operation.leaseId === operation.leaseId
+      ) {
+        await validateReadingSetupOperation(operation);
+      }
+      throw new ReadingSetupClaimConflictError();
+    }
+    return { operationId: operation.id, leaseId, attemptCount };
+  };
+
+  const waitForReadingSetupOperationOutcome = async (
+    operation: ReadingSetupOperationRow,
+  ): Promise<ReadingSetupOperationObservation> => {
+    for (;;) {
+      const observed = await observeOperationById(operation.userBookId, operation.id);
+      if (!observed) throw new UserBookError('阅读准备操作不存在', 404);
+      if (
+        observed.operation.status === 'completed'
+        || observed.operation.status === 'failed'
+        || (observed.operation.status === 'running' && observed.leaseExpired)
+      ) {
+        return observed;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  };
+
+  const prepareReadingSetupOperationExecution = async (
+    initial: ReadingSetupOperationRow,
+  ): Promise<{
+    operation: ReadingSetupOperationRow;
+    claim: ReadingSetupOperationClaim | null;
+  }> => {
+    let operation = initial;
+    let observedInFlight = false;
+    if (operation.status === 'running') {
+      observedInFlight = true;
+      operation = (await waitForReadingSetupOperationOutcome(operation)).operation;
+    }
+    if (operation.status === 'completed' || (operation.status === 'failed' && observedInFlight)) {
+      return { operation, claim: null };
+    }
+    try {
+      return { operation, claim: await claimReadingSetupOperation(operation) };
+    } catch (error) {
+      if (!(error instanceof ReadingSetupClaimConflictError)) throw error;
+      const settled = await waitForReadingSetupOperationOutcome(operation);
+      if (settled.operation.status === 'completed' || settled.operation.status === 'failed') {
+        return { operation: settled.operation, claim: null };
+      }
+      return prepareReadingSetupOperationExecution(settled.operation);
+    }
+  };
+
+  const renewReadingSetupOperation = async (claim: ReadingSetupOperationClaim) => {
+    const [renewed] = await db
+      .update(readingSetupOperations)
+      .set({
+        leaseExpiresAt: sql`now() + ${READING_SETUP_OPERATION_LEASE_SQL}`,
+        updatedAt: sql`now()`,
+      })
+      .where(and(
+        eq(readingSetupOperations.id, claim.operationId),
+        eq(readingSetupOperations.status, 'running'),
+        eq(readingSetupOperations.leaseId, claim.leaseId),
+        eq(readingSetupOperations.attemptCount, claim.attemptCount),
+        sql`${readingSetupOperations.leaseExpiresAt} > now()`,
+      ))
+      .returning({ id: readingSetupOperations.id });
+    return Boolean(renewed);
+  };
+
+  const startOperationLeaseRenewal = (claim: ReadingSetupOperationClaim) => {
+    let stopped = false;
+    let lost = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      timer = setTimeout(async () => {
+        if (stopped) return;
+        try {
+          lost = !(await renewReadingSetupOperation(claim));
+        } catch {
+          lost = true;
+        }
+        if (!lost && !stopped) schedule();
+      }, READING_SETUP_OPERATION_RENEW_INTERVAL_MS);
+      timer.unref?.();
+    };
+    schedule();
+    return {
+      assertActive() {
+        if (lost) throw new ReadingSetupLeaseLostError();
+      },
+      stop() {
+        stopped = true;
+        if (timer) clearTimeout(timer);
+      },
+    };
+  };
+
+  const failReadingSetupOperation = async (
+    claim: ReadingSetupOperationClaim,
+    error: unknown,
+  ) => {
+    const rawSummary = error instanceof UserBookError
+      ? error.message
+      : '阅读准备操作失败';
+    const errorSummary = rawSummary.trim() || '阅读准备操作失败';
+    await db
+      .update(readingSetupOperations)
+      .set({
+        status: 'failed',
+        leaseId: null,
+        leaseClaimedAt: null,
+        leaseExpiresAt: null,
+        resultStrategyDraftVersionId: null,
+        resultTrialRevisionId: null,
+        errorSummary,
+        completedAt: sql`now()`,
+        updatedAt: sql`now()`,
+      })
+      .where(and(
+        eq(readingSetupOperations.id, claim.operationId),
+        eq(readingSetupOperations.status, 'running'),
+        eq(readingSetupOperations.leaseId, claim.leaseId),
+        eq(readingSetupOperations.attemptCount, claim.attemptCount),
+        sql`${readingSetupOperations.leaseExpiresAt} > now()`,
+      ));
+  };
+
+  const projectReadingSetupOperation = (
+    operation: ReadingSetupOperationRow,
+    leaseExpired = false,
+  ): ReadingSetupOperationResponse => {
+    const common = {
+      operationId: operation.id,
+      operationAttempt: operation.attemptCount,
+      baseDraftId: operation.baseStrategyDraftVersionId,
+      canResume: operation.status === 'pending' || (
+        operation.status === 'running' && leaseExpired
+      ),
+    };
+    if (
+      operation.kind === 'trial_selection'
+      && operation.source === 'strategy_approve'
+      && operation.payload.source === 'strategy_approve'
+      && operation.baseTrialRevisionId === null
+    ) {
+      const identity = {
+        ...common,
+        kind: 'trial_selection' as const,
+        source: 'strategy_approve' as const,
+        baseTrialRevisionId: null,
+      };
+      if (operation.status === 'completed' && operation.resultTrialRevisionId) {
+        return {
+          ...identity,
+          status: 'completed',
+          resultDraftId: null,
+          resultTrialRevisionId: operation.resultTrialRevisionId,
+          errorSummary: null,
+          recoverableInput: null,
+        };
+      }
+      if (operation.status === 'failed' && operation.errorSummary) {
+        return {
+          ...identity,
+          status: 'failed',
+          resultDraftId: null,
+          resultTrialRevisionId: null,
+          errorSummary: operation.errorSummary,
+          recoverableInput: null,
+        };
+      }
+      if (operation.status === 'pending' || operation.status === 'running') {
+        return {
+          ...identity,
+          status: operation.status,
+          resultDraftId: null,
+          resultTrialRevisionId: null,
+          errorSummary: null,
+          recoverableInput: null,
+        };
+      }
+      throw new UserBookError('阅读准备操作结果损坏', 409);
+    }
+
+    if (
+      operation.kind === 'strategy_revision'
+      && operation.source === operation.payload.source
+      && operation.payload.source !== 'strategy_approve'
+      && (
+        (operation.source === 'strategy_feedback' && operation.baseTrialRevisionId === null)
+        || (operation.source === 'trial_feedback' && operation.baseTrialRevisionId !== null)
+      )
+    ) {
+      const identity = operation.source === 'strategy_feedback'
+        ? {
+            ...common,
+            kind: 'strategy_revision' as const,
+            source: 'strategy_feedback' as const,
+            baseTrialRevisionId: null,
+          }
+        : {
+            ...common,
+            kind: 'strategy_revision' as const,
+            source: 'trial_feedback' as const,
+            baseTrialRevisionId: operation.baseTrialRevisionId!,
+          };
+      if (operation.status === 'completed' && operation.resultStrategyDraftVersionId) {
+        return {
+          ...identity,
+          status: 'completed',
+          resultDraftId: operation.resultStrategyDraftVersionId,
+          resultTrialRevisionId: null,
+          errorSummary: null,
+          recoverableInput: null,
+        };
+      }
+      if (operation.status === 'failed' && operation.errorSummary) {
+        return {
+          ...identity,
+          status: 'failed',
+          resultDraftId: null,
+          resultTrialRevisionId: null,
+          errorSummary: operation.errorSummary,
+          recoverableInput: { feedback: operation.payload.feedback },
+        };
+      }
+      if (operation.status === 'pending' || operation.status === 'running') {
+        return {
+          ...identity,
+          status: operation.status,
+          resultDraftId: null,
+          resultTrialRevisionId: null,
+          errorSummary: null,
+          recoverableInput: { feedback: operation.payload.feedback },
+        };
+      }
+    }
+    throw new UserBookError('阅读准备操作结果损坏', 409);
+  };
+
+  const currentReadingSetupOperation = async (userBookId: string) => {
+    const owned = await getOwnedBook(userBookId);
+    if (![
+      'strategy_review',
+      'trial_generating',
+      'trial_generation_failed',
+      'trial_review',
+    ].includes(owned.userBook.workflowStatus)) {
+      return null;
+    }
+    const observations = await db
+      .select({
+        operation: readingSetupOperations,
+        leaseExpired: sql<boolean>`coalesce(${readingSetupOperations.leaseExpiresAt} <= now(), false)`,
+      })
+      .from(readingSetupOperations)
+      .where(eq(readingSetupOperations.userBookId, userBookId))
+      .orderBy(desc(readingSetupOperations.updatedAt), desc(readingSetupOperations.id));
+    const active = observations.find(({ operation }) => ['pending', 'running'].includes(operation.status));
+    if (active) return projectReadingSetupOperation(active.operation, active.leaseExpired);
+
+    const current = owned.userBook.workflowStatus === 'strategy_review'
+      ? observations.find(({ operation }) => (
+          operation.status === 'completed'
+          && operation.resultStrategyDraftVersionId === owned.userBook.currentStrategyDraftVersionId
+        ) || (
+          operation.status === 'failed'
+          && operation.baseStrategyDraftVersionId === owned.userBook.currentStrategyDraftVersionId
+          && operation.baseTrialRevisionId === null
+        ))
+      : observations.find(({ operation }) => (
+          operation.status === 'completed'
+          && operation.resultTrialRevisionId === owned.userBook.currentTrialRevisionId
+        ) || (
+          operation.status === 'failed'
+          && operation.baseTrialRevisionId === owned.userBook.currentTrialRevisionId
+        ));
+    return current ? projectReadingSetupOperation(current.operation, current.leaseExpired) : null;
   };
 
   const shelfItem = (row: { userBook: typeof userBooks.$inferSelect; sharedBook: typeof sharedBooks.$inferSelect }): UserBookShelfItem => ({
@@ -1578,12 +2196,41 @@ function createUserBookServiceForUser(
     }
   };
 
-  const strategyState = async (userBookId: string): Promise<StrategyReviewResponse> => {
+  const strategyStateByDraftId = async (
+    userBookId: string,
+    draftId: string,
+  ): Promise<StrategyReviewResponse> => {
     const owned = await getOwnedBook(userBookId);
-    const draftId = owned.userBook.currentStrategyDraftVersionId;
-    if (!draftId) throw new UserBookError('当前处理方式不存在', 409);
-    const [draft] = await db.select().from(strategyDraftVersions).where(eq(strategyDraftVersions.id, draftId)).limit(1);
-    if (!draft || draft.userBookId !== userBookId) throw new UserBookError('当前处理方式不存在', 404);
+    const [draft, manifestValue] = await Promise.all([
+      db
+        .select()
+        .from(strategyDraftVersions)
+        .where(and(
+          eq(strategyDraftVersions.id, draftId),
+          eq(strategyDraftVersions.userBookId, userBookId),
+        ))
+        .limit(1)
+        .then((rows) => rows[0]),
+      options.books.getManifest(owned.sharedBook.id),
+    ]);
+    if (!draft) throw new UserBookError('处理方式版本不存在', 404);
+    if (!manifestValue) throw new UserBookError('书籍阅读索引不存在', 409);
+    const manifest = asManifest(manifestValue);
+    const trialCandidatePreviews = draft.strategy.trialCandidates.map((candidate, index) => {
+      const node = manifest.nodes.find(
+        (item) => item.section_id === candidate.sectionId && item.segment === candidate.segment,
+      );
+      if (!node) throw new UserBookError('处理方式引用的试读候选不存在', 409);
+      return {
+        ordinal: index + 1,
+        sectionId: candidate.sectionId,
+        segment: candidate.segment,
+        chapterPath: chapterPath(node, manifest.outline),
+        reason: candidate.reason,
+      };
+    });
+    const isCurrent = owned.userBook.workflowStatus === 'strategy_review'
+      && owned.userBook.currentStrategyDraftVersionId === draft.id;
     return {
       userBookId,
       workflowStatus: owned.userBook.workflowStatus,
@@ -1597,29 +2244,18 @@ function createUserBookServiceForUser(
         createdAt: draft.createdAt.toISOString(),
         approvedForTrialAt: draft.approvedForTrialAt?.toISOString() ?? null,
       },
+      trialCandidatePreviews,
       adjustmentCount: owned.userBook.adjustmentCount,
       adjustmentLimit: ADJUSTMENT_LIMIT,
-      canAdjust: owned.userBook.adjustmentCount < ADJUSTMENT_LIMIT,
+      canAdjust: isCurrent && owned.userBook.adjustmentCount < ADJUSTMENT_LIMIT,
     };
   };
 
-  // Fast-path idempotency (§6.5): a replay with a key we already recorded returns the current
-  // strategy without re-running the LLM. Backed by the indexed `idempotencyKey` column (was a
-  // jsonb payload full-scan); the partial unique index is the race-safe backstop for the rare
-  // concurrent duplicate (see isFeedbackIdempotencyConflict).
-  const feedbackAlreadyApplied = async (userBookId: string, idempotencyKey: string) => {
+  const strategyState = async (userBookId: string): Promise<StrategyReviewResponse> => {
     const owned = await getOwnedBook(userBookId);
-    if (!owned.userBook.currentInterviewSessionId) return false;
-    const [message] = await db
-      .select({ id: interviewMessages.id })
-      .from(interviewMessages)
-      .where(and(
-        eq(interviewMessages.interviewSessionId, owned.userBook.currentInterviewSessionId),
-        eq(interviewMessages.kind, 'feedback'),
-        eq(interviewMessages.idempotencyKey, idempotencyKey),
-      ))
-      .limit(1);
-    return Boolean(message);
+    const draftId = owned.userBook.currentStrategyDraftVersionId;
+    if (!draftId) throw new UserBookError('当前处理方式不存在', 409);
+    return strategyStateByDraftId(userBookId, draftId);
   };
 
   // §6.4 / §10.7 shared revision engine. Runs the revision LLM FIRST (no writes), then applies
@@ -1636,6 +2272,7 @@ function createUserBookServiceForUser(
       feedback: string;
       idempotencyKey: string;
       trialRevisionId?: string;
+      operationClaim: ReadingSetupOperationClaim;
     },
   ): Promise<StrategyReviewResponse> => {
     const setup = await getSetupContext(userBookId);
@@ -1650,7 +2287,7 @@ function createUserBookServiceForUser(
     if (outcome.type !== 'revised') throw new UserBookError('处理方式修订失败', 503);
     const revised = outcome;
     try {
-      await db.transaction(async (tx) => {
+      const resultDraftId = await db.transaction(async (tx) => {
         const [bookGate] = await tx.select().from(userBooks).where(eq(userBooks.id, userBookId)).limit(1);
         if (!bookGate || bookGate.currentStrategyDraftVersionId !== params.draft.id || bookGate.adjustmentCount >= 5) {
           throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
@@ -1669,14 +2306,21 @@ function createUserBookServiceForUser(
             ))
             .returning({ id: trialRevisions.id });
           if (changedRevision.length !== 1) throw new UserBookError('试读版本已经更新', 409);
-          await tx
-            .update(nodeGenerations)
-            .set({ status: 'superseded', result: null, completedAt: new Date(), updatedAt: new Date() })
-            .where(and(
-              eq(nodeGenerations.userBookId, userBookId),
-              eq(nodeGenerations.generationScope, 'trial'),
-              inArray(nodeGenerations.status, ['queued', 'generating', 'retrying', 'ready', 'failed']),
-            ));
+          const sourceSegments = await tx
+            .select({ id: trialSegments.id })
+            .from(trialSegments)
+            .where(eq(trialSegments.trialRevisionId, params.trialRevisionId));
+          if (sourceSegments.length > 0) {
+            await tx
+              .update(nodeGenerations)
+              .set({ status: 'superseded', result: null, completedAt: new Date(), updatedAt: new Date() })
+              .where(and(
+                eq(nodeGenerations.userBookId, userBookId),
+                eq(nodeGenerations.generationScope, 'trial'),
+                inArray(nodeGenerations.trialSegmentId, sourceSegments.map((segment) => segment.id)),
+                inArray(nodeGenerations.status, ['queued', 'generating', 'retrying', 'ready', 'failed']),
+              ));
+          }
         } else if (bookGate.workflowStatus !== 'strategy_review' || bookGate.currentTrialRevisionId) {
           throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
         }
@@ -1736,12 +2380,38 @@ function createUserBookServiceForUser(
           ))
           .returning({ id: userBooks.id });
         if (updated.length !== 1) throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
+        const completed = await tx
+          .update(readingSetupOperations)
+          .set({
+            status: 'completed',
+            leaseId: null,
+            leaseClaimedAt: null,
+            leaseExpiresAt: null,
+            resultStrategyDraftVersionId: draft.id,
+            resultTrialRevisionId: null,
+            errorSummary: null,
+            completedAt: sql`now()`,
+            updatedAt: sql`now()`,
+          })
+          .where(and(
+            eq(readingSetupOperations.id, params.operationClaim.operationId),
+            eq(readingSetupOperations.status, 'running'),
+            eq(readingSetupOperations.leaseId, params.operationClaim.leaseId),
+            eq(readingSetupOperations.attemptCount, params.operationClaim.attemptCount),
+            sql`${readingSetupOperations.leaseExpiresAt} > now()`,
+            eq(readingSetupOperations.baseStrategyDraftVersionId, params.draft.id),
+            params.trialRevisionId
+              ? eq(readingSetupOperations.baseTrialRevisionId, params.trialRevisionId)
+              : isNull(readingSetupOperations.baseTrialRevisionId),
+          ))
+          .returning({ id: readingSetupOperations.id });
+        if (completed.length !== 1) throw new ReadingSetupLeaseLostError();
+        return draft.id;
       });
+      return strategyStateByDraftId(userBookId, resultDraftId);
     } catch (error) {
-      if (isFeedbackIdempotencyConflict(error)) return strategyState(userBookId);
       throw error;
     }
-    return strategyState(userBookId);
   };
 
   const getManifestAndHtml = async (sharedBookId: string) => {
@@ -1758,6 +2428,7 @@ function createUserBookServiceForUser(
     draftId: string,
     approveDraft = false,
     fragments?: TrialCandidate[],
+    operationClaim?: ReadingSetupOperationClaim,
   ) => {
     const owned = await getOwnedBook(userBookId);
     const [draft] = await db
@@ -1871,10 +2542,37 @@ function createUserBookServiceForUser(
         .set({ workflowStatus: 'trial_generating', currentTrialRevisionId: revision.id, updatedAt: new Date() })
         .where(and(
           eq(userBooks.id, userBookId),
+          eq(userBooks.currentStrategyDraftVersionId, draftId),
           inArray(userBooks.workflowStatus, ['strategy_review', 'trial_generation_failed']),
         ))
         .returning({ id: userBooks.id });
       if (advanced.length !== 1) throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
+      if (operationClaim) {
+        const completed = await tx
+          .update(readingSetupOperations)
+          .set({
+            status: 'completed',
+            leaseId: null,
+            leaseClaimedAt: null,
+            leaseExpiresAt: null,
+            resultStrategyDraftVersionId: null,
+            resultTrialRevisionId: revision.id,
+            errorSummary: null,
+            completedAt: sql`now()`,
+            updatedAt: sql`now()`,
+          })
+          .where(and(
+            eq(readingSetupOperations.id, operationClaim.operationId),
+            eq(readingSetupOperations.status, 'running'),
+            eq(readingSetupOperations.leaseId, operationClaim.leaseId),
+            eq(readingSetupOperations.attemptCount, operationClaim.attemptCount),
+            sql`${readingSetupOperations.leaseExpiresAt} > now()`,
+            eq(readingSetupOperations.baseStrategyDraftVersionId, draftId),
+            isNull(readingSetupOperations.baseTrialRevisionId),
+          ))
+          .returning({ id: readingSetupOperations.id });
+        if (completed.length !== 1) throw new ReadingSetupLeaseLostError();
+      }
       return { revision, generationIds };
     });
     try {
@@ -1943,12 +2641,21 @@ function createUserBookServiceForUser(
     return mapFragments(outcome.fragments);
   };
 
-  const trialState = async (userBookId: string): Promise<TrialReviewResponse> => {
+  const trialStateByRevisionId = async (
+    userBookId: string,
+    revisionId: string,
+  ): Promise<TrialReviewResponse> => {
     const owned = await getOwnedBook(userBookId);
-    const revisionId = owned.userBook.currentTrialRevisionId;
-    if (!revisionId) throw new UserBookError('当前试读不存在', 409);
     const [revision, segmentRows, source] = await Promise.all([
-      db.select().from(trialRevisions).where(eq(trialRevisions.id, revisionId)).limit(1).then((rows) => rows[0]),
+      db
+        .select()
+        .from(trialRevisions)
+        .where(and(
+          eq(trialRevisions.id, revisionId),
+          eq(trialRevisions.userBookId, userBookId),
+        ))
+        .limit(1)
+        .then((rows) => rows[0]),
       db
         .select({ segment: trialSegments, generation: nodeGenerations })
         .from(trialSegments)
@@ -1957,12 +2664,7 @@ function createUserBookServiceForUser(
         .orderBy(asc(trialSegments.ordinal)),
       getManifestAndHtml(owned.sharedBook.id),
     ]);
-    if (!revision) throw new UserBookError('当前试读不存在', 404);
-    // §6.3 / §10.5: all-or-nothing is a server-side guarantee, not just the client-side
-    // `canAdopt` gate. Until the whole revision is published we withhold every per-segment
-    // `result`, so `trialState()` during `trial_generating` and a `failed`/`superseded` round
-    // never leak a partially-generated fragment.
-    const exposeResults = revision.status === 'published';
+    if (!revision) throw new UserBookError('试读版本不存在', 404);
     const segments = segmentRows.map(({ segment, generation }) => {
       const extracted = extractNodeSourceFromHtml(source.html, segment.sectionId, segment.segment);
       const range = {
@@ -1971,7 +2673,7 @@ function createUserBookServiceForUser(
       };
       const sliced = sliceNodeSource(extracted, range);
       const node = source.manifest.nodes.find((item) => item.section_id === segment.sectionId && item.segment === segment.segment)!;
-      return {
+      const common = {
         id: segment.id,
         ordinal: segment.ordinal,
         sectionId: segment.sectionId,
@@ -1983,11 +2685,21 @@ function createUserBookServiceForUser(
         chapterPath: chapterPath(node, source.manifest.outline),
         originalHtml: sliced.structuredHtml,
         selectionReason: segment.selectionReason,
-        status: segment.status,
-        result: exposeResults ? generation?.result ?? null : null,
         viewedAt: segment.viewedAt?.toISOString() ?? null,
       };
+      if (segment.status === 'ready' && generation?.status === 'ready' && generation.result) {
+        return { ...common, status: 'ready' as const, result: generation.result };
+      }
+      if (segment.status === 'generating') {
+        return { ...common, status: 'generating' as const, result: null };
+      }
+      if (segment.status === 'failed' || segment.status === 'ready') {
+        return { ...common, status: 'failed' as const, result: null };
+      }
+      return { ...common, status: 'pending' as const, result: null };
     });
+    const isCurrent = owned.userBook.workflowStatus === 'trial_review'
+      && owned.userBook.currentTrialRevisionId === revision.id;
     return {
       userBookId,
       workflowStatus: owned.userBook.workflowStatus,
@@ -1998,11 +2710,148 @@ function createUserBookServiceForUser(
       segments,
       adjustmentCount: owned.userBook.adjustmentCount,
       adjustmentLimit: ADJUSTMENT_LIMIT,
-      canAdjust: owned.userBook.adjustmentCount < ADJUSTMENT_LIMIT,
+      canAdjust: isCurrent && owned.userBook.adjustmentCount < ADJUSTMENT_LIMIT,
       // Adoption only requires the three fragments to be generated and published — the reader
       // is not forced to open all three first (the prototype has no such gate).
-      canAdopt: revision.status === 'published' && segments.length === 3 && segments.every((segment) => segment.status === 'ready'),
+      canAdopt: isCurrent
+        && revision.status === 'published'
+        && segments.length === 3
+        && segments.every((segment) => segment.status === 'ready'),
     };
+  };
+
+  const trialState = async (userBookId: string): Promise<TrialReviewResponse> => {
+    const owned = await getOwnedBook(userBookId);
+    const revisionId = owned.userBook.currentTrialRevisionId;
+    if (!revisionId) throw new UserBookError('当前试读不存在', 409);
+    return trialStateByRevisionId(userBookId, revisionId);
+  };
+
+  const executeRevisionOperation = async (
+    initialOperation: ReadingSetupOperationRow,
+  ): Promise<StrategyReviewResponse> => {
+    const prepared = await prepareReadingSetupOperationExecution(initialOperation);
+    const operation = prepared.operation;
+    if (operation.kind !== 'strategy_revision') {
+      throw new UserBookError('阅读准备操作类型不匹配', 409);
+    }
+    if (operation.status === 'completed') {
+      if (!operation.resultStrategyDraftVersionId) {
+        throw new UserBookError('阅读准备操作结果损坏', 409);
+      }
+      return strategyStateByDraftId(operation.userBookId, operation.resultStrategyDraftVersionId);
+    }
+    if (!prepared.claim) {
+      throw new UserBookError(operation.errorSummary ?? '阅读准备操作失败', 503);
+    }
+    if (operation.payload.source === 'strategy_approve') {
+      throw new UserBookError('阅读准备操作载荷不匹配', 409);
+    }
+
+    const claim = prepared.claim;
+    const lease = startOperationLeaseRenewal(claim);
+    try {
+      const current = await strategyStateByDraftId(
+        operation.userBookId,
+        operation.baseStrategyDraftVersionId,
+      );
+      lease.assertActive();
+      return await reviseFromFeedback(operation.userBookId, {
+        draft: current.draft,
+        feedback: operation.payload.feedback,
+        idempotencyKey: operation.idempotencyKey,
+        ...(operation.payload.source === 'trial_feedback'
+          ? { trialRevisionId: operation.payload.trialRevisionId }
+          : {}),
+        operationClaim: claim,
+      });
+    } catch (error) {
+      if (error instanceof ReadingSetupLeaseLostError) {
+        throw new UserBookError('阅读准备操作已由新请求接管，请查询恢复状态', 409);
+      }
+      await failReadingSetupOperation(claim, error).catch(() => {});
+      throw error;
+    } finally {
+      lease.stop();
+    }
+  };
+
+  const executeTrialSelectionOperation = async (
+    initialOperation: ReadingSetupOperationRow,
+  ): Promise<ApproveStrategyResponse> => {
+    const prepared = await prepareReadingSetupOperationExecution(initialOperation);
+    const operation = prepared.operation;
+    if (operation.kind !== 'trial_selection' || operation.payload.source !== 'strategy_approve') {
+      throw new UserBookError('阅读准备操作类型不匹配', 409);
+    }
+    if (operation.status === 'completed') {
+      if (!operation.resultTrialRevisionId) {
+        throw new UserBookError('阅读准备操作结果损坏', 409);
+      }
+      const snapshot = await trialStateByRevisionId(
+        operation.userBookId,
+        operation.resultTrialRevisionId,
+      );
+      return {
+        userBookId: operation.userBookId,
+        workflowStatus: snapshot.workflowStatus,
+        strategyDraftVersionId: snapshot.strategyDraftVersionId,
+        trialRevisionId: snapshot.trialRevisionId,
+      };
+    }
+    if (!prepared.claim) {
+      throw new UserBookError(operation.errorSummary ?? '阅读准备操作失败', 503);
+    }
+
+    const claim = prepared.claim;
+    const lease = startOperationLeaseRenewal(claim);
+    try {
+      const current = await strategyStateByDraftId(
+        operation.userBookId,
+        operation.baseStrategyDraftVersionId,
+      );
+      const fragments = await selectTrialFragments(operation.userBookId, current.draft);
+      lease.assertActive();
+      const revision = await createTrialRevision(
+        operation.userBookId,
+        current.draft.id,
+        true,
+        fragments,
+        claim,
+      );
+      const owned = await getOwnedBook(operation.userBookId);
+      return {
+        userBookId: operation.userBookId,
+        workflowStatus: owned.userBook.workflowStatus,
+        strategyDraftVersionId: current.draft.id,
+        trialRevisionId: revision.id,
+      };
+    } catch (error) {
+      if (error instanceof ReadingSetupLeaseLostError) {
+        throw new UserBookError('阅读准备操作已由新请求接管，请查询恢复状态', 409);
+      }
+      await failReadingSetupOperation(claim, error).catch(() => {});
+      throw error;
+    } finally {
+      lease.stop();
+    }
+  };
+
+  const resumeReadingSetupOperation = async (
+    userBookId: string,
+    operationId: string,
+  ) => {
+    await getOwnedBook(userBookId);
+    const operation = await readOperationById(userBookId, operationId);
+    if (!operation) throw new UserBookError('阅读准备操作不存在', 404);
+    if (operation.kind === 'strategy_revision') {
+      await executeRevisionOperation(operation);
+    } else {
+      await executeTrialSelectionOperation(operation);
+    }
+    const latest = await observeOperationById(userBookId, operationId);
+    if (!latest) throw new UserBookError('阅读准备操作不存在', 404);
+    return projectReadingSetupOperation(latest.operation, latest.leaseExpired);
   };
 
   const enqueuePendingFormalGenerations = async (userBookId: string) => {
@@ -2992,6 +3841,17 @@ function createUserBookServiceForUser(
       };
     },
 
+    currentReadingSetupOperation,
+
+    async readingSetupOperation(userBookId: string, operationId: string) {
+      await getOwnedBook(userBookId);
+      const observed = await observeOperationById(userBookId, operationId);
+      if (!observed) throw new UserBookError('阅读准备操作不存在', 404);
+      return projectReadingSetupOperation(observed.operation, observed.leaseExpired);
+    },
+
+    resumeReadingSetupOperation,
+
     interviewState,
 
     async startInterview(userBookId: string): Promise<InterviewStateResponse> {
@@ -3043,56 +3903,52 @@ function createUserBookServiceForUser(
     },
 
     strategyState,
+    strategyStateByDraftId,
 
     async submitStrategyFeedback(userBookId: string, input: SubmitStrategyFeedbackRequest) {
-      if (await feedbackAlreadyApplied(userBookId, input.idempotencyKey)) {
-        return strategyState(userBookId);
+      const strategyDraftVersionId = input.strategyDraftVersionId.toLowerCase();
+      const feedback = input.feedback.trim();
+      const idempotencyKey = input.idempotencyKey.trim();
+      if (!UUID_RE.test(strategyDraftVersionId) || !feedback || !idempotencyKey) {
+        throw new UserBookError('处理方式反馈请求无效', 400);
       }
-      const owned = await getOwnedBook(userBookId);
-      if (owned.userBook.workflowStatus !== 'strategy_review') {
-        throw new UserBookError('当前阶段不能修改处理方式', 409);
-      }
-      const current = await strategyState(userBookId);
-      if (!current.canAdjust) throw new UserBookError('已经达到 5 次调整上限', 409);
-      if (current.draft.id !== input.strategyDraftVersionId) throw new UserBookError('处理方式已经更新，请刷新后继续', 409);
-      if (
-        current.draft.status !== 'draft'
-        && !(current.draft.status === 'approved_for_trial' && !owned.userBook.currentTrialRevisionId)
-      ) {
-        throw new UserBookError('当前处理方式已经进入试读，不能从旧页面直接修改', 409);
-      }
-      return reviseFromFeedback(userBookId, {
-        draft: current.draft,
-        feedback: input.feedback,
-        idempotencyKey: input.idempotencyKey,
+      const operation = await resolveReadingSetupOperation(userBookId, {
+        kind: 'strategy_revision',
+        source: 'strategy_feedback',
+        baseStrategyDraftVersionId: strategyDraftVersionId,
+        baseTrialRevisionId: null,
+        idempotencyKey,
+        payload: {
+          source: 'strategy_feedback',
+          strategyDraftVersionId,
+          feedback,
+        },
       });
+      return executeRevisionOperation(operation);
     },
 
     async approveStrategy(userBookId: string, input: ApproveStrategyRequest): Promise<ApproveStrategyResponse> {
-      const current = await strategyState(userBookId);
-      const owned = await getOwnedBook(userBookId);
-      if (
-        current.draft.id === input.strategyDraftVersionId
-        && current.draft.status === 'approved_for_trial'
-        && owned.userBook.currentTrialRevisionId
-        && ['trial_generating', 'trial_generation_failed', 'trial_review'].includes(owned.userBook.workflowStatus)
-      ) {
-        return {
-          userBookId,
-          workflowStatus: owned.userBook.workflowStatus,
-          strategyDraftVersionId: current.draft.id,
-          trialRevisionId: owned.userBook.currentTrialRevisionId,
-        };
+      const strategyDraftVersionId = input.strategyDraftVersionId.toLowerCase();
+      const idempotencyKey = input.idempotencyKey.trim();
+      if (!UUID_RE.test(strategyDraftVersionId) || !idempotencyKey) {
+        throw new UserBookError('处理方式确认请求无效', 400);
       }
-      if (current.draft.id !== input.strategyDraftVersionId || current.draft.status !== 'draft') {
-        throw new UserBookError('处理方式已经确认或更新', 409);
-      }
-      const fragments = await selectTrialFragments(userBookId, current.draft);
-      const revision = await createTrialRevision(userBookId, current.draft.id, true, fragments);
-      return { userBookId, workflowStatus: 'trial_generating', strategyDraftVersionId: current.draft.id, trialRevisionId: revision.id };
+      const operation = await resolveReadingSetupOperation(userBookId, {
+        kind: 'trial_selection',
+        source: 'strategy_approve',
+        baseStrategyDraftVersionId: strategyDraftVersionId,
+        baseTrialRevisionId: null,
+        idempotencyKey,
+        payload: {
+          source: 'strategy_approve',
+          strategyDraftVersionId,
+        },
+      });
+      return executeTrialSelectionOperation(operation);
     },
 
     trialState,
+    trialStateByRevisionId,
 
     async retryTrial(userBookId: string) {
       const current = await trialState(userBookId);
@@ -3157,23 +4013,36 @@ function createUserBookServiceForUser(
     },
 
     async submitTrialFeedback(userBookId: string, input: SubmitTrialFeedbackRequest) {
-      if (await feedbackAlreadyApplied(userBookId, input.idempotencyKey)) {
-        return strategyState(userBookId);
+      const trialRevisionId = input.trialRevisionId.toLowerCase();
+      const feedback = input.feedback.trim();
+      const idempotencyKey = input.idempotencyKey.trim();
+      if (!UUID_RE.test(trialRevisionId) || !feedback || !idempotencyKey) {
+        throw new UserBookError('试读反馈请求无效', 400);
       }
-      const current = await trialState(userBookId);
-      if (!current.canAdjust) throw new UserBookError('已经达到 5 次调整上限', 409);
-      if (current.trialRevisionId !== input.trialRevisionId) throw new UserBookError('试读版本已经更新', 409);
-      // §6.4: void the published trial round AND produce the revised draft in ONE recoverable
-      // transaction (reviseFromFeedback), replacing the previous two-commit split that could
-      // strand the book in strategy_review with the trial voided but no new draft and no count
-      // bump — after which a retry hit `当前试读不存在` (currentTrialRevisionId already null).
-      const { draft } = await strategyState(userBookId);
-      return reviseFromFeedback(userBookId, {
-        draft,
-        feedback: input.feedback,
-        idempotencyKey: input.idempotencyKey,
-        trialRevisionId: input.trialRevisionId,
+      await getOwnedBook(userBookId);
+      const [revision] = await db
+        .select({ strategyDraftVersionId: trialRevisions.strategyDraftVersionId })
+        .from(trialRevisions)
+        .where(and(
+          eq(trialRevisions.id, trialRevisionId),
+          eq(trialRevisions.userBookId, userBookId),
+        ))
+        .limit(1);
+      if (!revision) throw new UserBookError('试读版本不存在', 404);
+      const operation = await resolveReadingSetupOperation(userBookId, {
+        kind: 'strategy_revision',
+        source: 'trial_feedback',
+        baseStrategyDraftVersionId: revision.strategyDraftVersionId,
+        baseTrialRevisionId: trialRevisionId,
+        idempotencyKey,
+        payload: {
+          source: 'trial_feedback',
+          strategyDraftVersionId: revision.strategyDraftVersionId,
+          trialRevisionId,
+          feedback,
+        },
       });
+      return executeRevisionOperation(operation);
     },
 
     async adoptTrial(userBookId: string, input: AdoptTrialRequest): Promise<AdoptTrialResponse> {

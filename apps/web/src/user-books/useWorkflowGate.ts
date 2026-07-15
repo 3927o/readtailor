@@ -3,12 +3,13 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router';
 import { getUserBook } from './api';
 import type { WorkflowStatus } from './api';
+import { userBookQueryKeys } from './queryKeys';
 import { routeForUserBook } from './routes';
 
 export function useWorkflowGate(userBookId: string, allowed: readonly WorkflowStatus[]) {
   const navigate = useNavigate();
   const query = useQuery({
-    queryKey: ['user-book', userBookId],
+    queryKey: userBookQueryKeys.detail(userBookId),
     queryFn: () => getUserBook(userBookId),
     enabled: Boolean(userBookId),
     refetchInterval: (current) => {

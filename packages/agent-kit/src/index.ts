@@ -534,19 +534,6 @@ export const InterviewQuestionSchema = Type.Object({
 });
 export type InterviewQuestion = Static<typeof InterviewQuestionSchema>;
 
-// Token-level streaming for the interview (§4). As the model streams the
-// present_interview_question tool call, its argument JSON arrives one fragment at a
-// time; we parse the partial buffer and diff it against what we already emitted to push
-// clean semantic deltas. `concluding` fires only after finish_interview executes
-// successfully; callers may delay forwarding it until the outcome is durably committed.
-export type InterviewStreamDelta =
-  | { type: 'ack_delta'; chars: string }
-  | { type: 'prompt_delta'; chars: string }
-  | { type: 'hint_delta'; chars: string }
-  | { type: 'option_added'; id: string; label: string }
-  | { type: 'sufficiency'; value: number }
-  | { type: 'concluding' };
-
 // Closes the open strings/arrays/objects of a truncated JSON buffer so it parses. Returns
 // undefined when the prefix is unbalanced (more closers than openers).
 function closeJsonStructures(src: string): string | undefined {
@@ -595,102 +582,6 @@ export function completeJson(src: string): unknown {
     }
   }
   return undefined;
-}
-
-// Stateful parser that turns a stream of tool-call argument fragments into interview
-// deltas. Field order (id → acknowledgment → prompt → options → allow_text →
-// profile_dimension → sufficiency) is assumed but not required: each field diffs
-// independently, so out-of-order streaming degrades to "appears once complete".
-export function createInterviewStreamParser(emit: (delta: InterviewStreamDelta) => void) {
-  let toolName: string | undefined;
-  let buffer = '';
-  let concluded = false;
-  const emitted = { ack: 0, prompt: 0, hint: 0, options: 0, sufficiency: undefined as number | undefined };
-
-  const markConcluding = () => {
-    if (concluded) return;
-    concluded = true;
-    emit({ type: 'concluding' });
-  };
-
-  return {
-    // A new tool call started — reset the buffer for its argument stream. `name` comes from
-    // the assistant message's tool-call content part (empty until the provider sends it).
-    onToolStart(name: string) {
-      buffer = '';
-      if (name === 'present_interview_question' || name === 'finish_interview') toolName = name;
-    },
-    onToolFinished(name: string, succeeded: boolean) {
-      if (name === 'finish_interview' && succeeded) markConcluding();
-    },
-    onDelta(delta: string) {
-      buffer += delta;
-      if (toolName === undefined) {
-        // The tool name was not on toolcall_start — infer it from the argument keys.
-        const probe = completeJson(buffer);
-        if (probe && typeof probe === 'object') {
-          const keys = Object.keys(probe);
-          if (keys.some((k) => k === 'acknowledgment' || k === 'prompt' || k === 'options')) {
-            toolName = 'present_interview_question';
-          } else if (keys.some((k) => k === 'book_reader_profile' || k === 'briefing' || k === 'public_strategy')) {
-            toolName = 'finish_interview';
-          }
-        }
-      }
-      if (toolName !== 'present_interview_question') return;
-      const parsed = completeJson(buffer);
-      if (!parsed || typeof parsed !== 'object') return;
-      const obj = parsed as {
-        acknowledgment?: unknown;
-        prompt?: unknown;
-        hint?: unknown;
-        options?: unknown;
-        allow_text?: unknown;
-        profile_dimension?: unknown;
-        sufficiency?: unknown;
-      };
-      if (typeof obj.acknowledgment === 'string' && obj.acknowledgment.length > emitted.ack) {
-        emit({ type: 'ack_delta', chars: obj.acknowledgment.slice(emitted.ack) });
-        emitted.ack = obj.acknowledgment.length;
-      }
-      if (typeof obj.prompt === 'string' && obj.prompt.length > emitted.prompt) {
-        emit({ type: 'prompt_delta', chars: obj.prompt.slice(emitted.prompt) });
-        emitted.prompt = obj.prompt.length;
-      }
-      // `hint` sits between prompt and options in the schema, so it streams here — after the
-      // prompt, before the first option — which is the order the UI reveals them in.
-      if (typeof obj.hint === 'string' && obj.hint.length > emitted.hint) {
-        emit({ type: 'hint_delta', chars: obj.hint.slice(emitted.hint) });
-        emitted.hint = obj.hint.length;
-      }
-      if (Array.isArray(obj.options)) {
-        // The last parsed option may still be streaming; only treat it as complete once a
-        // later field (allow_text / profile_dimension / sufficiency) has appeared.
-        const optionsClosed =
-          obj.allow_text !== undefined || obj.profile_dimension !== undefined || obj.sufficiency !== undefined;
-        const safeCount = optionsClosed ? obj.options.length : obj.options.length - 1;
-        for (let i = emitted.options; i < safeCount; i++) {
-          const option = obj.options[i] as { id?: unknown; label?: unknown };
-          if (option && typeof option.id === 'string' && option.id && typeof option.label === 'string' && option.label) {
-            emit({ type: 'option_added', id: option.id, label: option.label });
-            emitted.options = i + 1;
-          } else {
-            break; // don't skip past an option that isn't fully formed yet
-          }
-        }
-      }
-      if (
-        typeof obj.sufficiency === 'number'
-        && Number.isInteger(obj.sufficiency)
-        && emitted.sufficiency !== obj.sufficiency
-        // Only once the number is definitely terminated in the raw buffer (a delimiter follows).
-        && /"sufficiency"\s*:\s*-?\d+\s*[,}\]]/.test(buffer)
-      ) {
-        emit({ type: 'sufficiency', value: obj.sufficiency });
-        emitted.sufficiency = obj.sufficiency;
-      }
-    },
-  };
 }
 
 export const ReaderProfilePatchSchema = Type.Object({
@@ -813,6 +704,417 @@ export const TrialFragmentSchema = Type.Object({
   reason: Type.String({ minLength: 5, maxLength: 500 }),
 });
 export type TrialFragmentSelection = Static<typeof TrialFragmentSchema>;
+
+export type ReadingSetupToolName =
+  | 'present_interview_question'
+  | 'finish_interview'
+  | 'save_strategy_draft'
+  | 'select_trial_fragments';
+
+export type ReadingBriefingField =
+  | 'book_identity'
+  | 'arc'
+  | 'assumed_knowledge'
+  | 'reading_advice';
+
+// Kept as the compatibility surface used by the current interview SSE service.
+export type InterviewStreamDelta =
+  | { type: 'ack_delta'; chars: string }
+  | { type: 'prompt_delta'; chars: string }
+  | { type: 'hint_delta'; chars: string }
+  | { type: 'option_added'; id: string; label: string }
+  | { type: 'sufficiency'; value: number }
+  | { type: 'concluding' };
+
+type SpeculativeDelta<T> = T & { speculativeEpoch: number };
+
+export type ReadingSetupStreamDelta =
+  | {
+      type: 'speculative_reset';
+      speculativeEpoch: number;
+      toolName: ReadingSetupToolName | null;
+    }
+  | SpeculativeDelta<{ type: 'ack_delta'; chars: string }>
+  | SpeculativeDelta<{ type: 'prompt_delta'; chars: string }>
+  | SpeculativeDelta<{ type: 'hint_delta'; chars: string }>
+  | SpeculativeDelta<{ type: 'option_added'; id: string; label: string }>
+  | SpeculativeDelta<{ type: 'sufficiency'; value: number }>
+  | SpeculativeDelta<{ type: 'concluding' }>
+  | SpeculativeDelta<{ type: 'draft_started'; source: 'interview' | 'revision' }>
+  | SpeculativeDelta<{ type: 'briefing_delta'; field: ReadingBriefingField; chars: string }>
+  | SpeculativeDelta<{ type: 'strategy_delta'; chars: string }>
+  | SpeculativeDelta<{
+      type: 'reading_node_added';
+      ordinal: number;
+      sectionId: string;
+      segment: number;
+      reason: string;
+    }>
+  | SpeculativeDelta<{ type: 'selection_started'; total: 3 }>
+  | SpeculativeDelta<{
+      type: 'fragment_added';
+      ordinal: number;
+      fragment: TrialFragmentSelection;
+    }>;
+
+type CompletedArrayItem = { raw: string; end: number };
+
+function isReadingSetupToolName(name: string): name is ReadingSetupToolName {
+  return name === 'present_interview_question'
+    || name === 'finish_interview'
+    || name === 'save_strategy_draft'
+    || name === 'select_trial_fragments';
+}
+
+function findNamedArrayStart(source: string, propertyName: string): number | undefined {
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== '"') continue;
+    const start = index;
+    let escaped = false;
+    index += 1;
+    for (; index < source.length; index += 1) {
+      const char = source[index]!;
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') break;
+    }
+    if (index >= source.length) return undefined;
+    let key: unknown;
+    try {
+      key = JSON.parse(source.slice(start, index + 1));
+    } catch {
+      continue;
+    }
+    if (key !== propertyName) continue;
+    let cursor = index + 1;
+    while (/\s/.test(source[cursor] ?? '')) cursor += 1;
+    if (source[cursor] !== ':') continue;
+    cursor += 1;
+    while (/\s/.test(source[cursor] ?? '')) cursor += 1;
+    if (source[cursor] === '[') return cursor;
+  }
+  return undefined;
+}
+
+// Extracts only array items whose object-closing brace has actually arrived in the raw stream.
+// Unlike completeJson(), this never invents a closing quote, bracket, brace, or number delimiter.
+function scanCompletedArrayItems(source: string, propertyName: string): CompletedArrayItem[] {
+  const arrayStart = findNamedArrayStart(source, propertyName);
+  if (arrayStart === undefined) return [];
+  const items: CompletedArrayItem[] = [];
+  let cursor = arrayStart + 1;
+  while (cursor < source.length) {
+    while (/\s|,/.test(source[cursor] ?? '')) cursor += 1;
+    if (source[cursor] === ']' || cursor >= source.length) break;
+    if (source[cursor] !== '{') break;
+    const itemStart = cursor;
+    let objectDepth = 0;
+    let arrayDepth = 0;
+    let inString = false;
+    let escaped = false;
+    let completed = false;
+    for (; cursor < source.length; cursor += 1) {
+      const char = source[cursor]!;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') inString = true;
+      else if (char === '{') objectDepth += 1;
+      else if (char === '[') arrayDepth += 1;
+      else if (char === ']') arrayDepth -= 1;
+      else if (char === '}') {
+        objectDepth -= 1;
+        if (objectDepth === 0 && arrayDepth === 0) {
+          const end = cursor + 1;
+          items.push({ raw: source.slice(itemStart, end), end });
+          cursor = end;
+          completed = true;
+          break;
+        }
+      }
+      if (objectDepth < 0 || arrayDepth < 0) return items;
+    }
+    if (!completed) break;
+  }
+  return items;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function boundedString(value: unknown, minimum: number, maximum: number): value is string {
+  return typeof value === 'string' && value.length >= minimum && value.length <= maximum;
+}
+
+function parseQuestionOption(raw: string): { id: string; label: string } | undefined {
+  try {
+    const value = recordValue(JSON.parse(raw));
+    if (!value || !boundedString(value.id, 1, 100) || !boundedString(value.label, 1, 80)) return undefined;
+    return { id: value.id, label: value.label };
+  } catch {
+    return undefined;
+  }
+}
+
+function parseTrialCandidate(raw: string): { sectionId: string; segment: number; reason: string } | undefined {
+  try {
+    const value = recordValue(JSON.parse(raw));
+    if (
+      !value
+      || !boundedString(value.section_id, 1, 200)
+      || !Number.isInteger(value.segment)
+      || (value.segment as number) < 1
+      || !boundedString(value.reason, 5, 500)
+    ) return undefined;
+    return { sectionId: value.section_id, segment: value.segment as number, reason: value.reason };
+  } catch {
+    return undefined;
+  }
+}
+
+function parseTextPosition(value: unknown): { block_index: number; offset: number } | undefined {
+  const position = recordValue(value);
+  if (
+    !position
+    || !Number.isInteger(position.block_index)
+    || (position.block_index as number) < 1
+    || !Number.isInteger(position.offset)
+    || (position.offset as number) < 0
+  ) return undefined;
+  return { block_index: position.block_index as number, offset: position.offset as number };
+}
+
+function parseTrialFragment(raw: string): TrialFragmentSelection | undefined {
+  try {
+    const value = recordValue(JSON.parse(raw));
+    const range = recordValue(value?.range);
+    const start = parseTextPosition(range?.start);
+    const end = parseTextPosition(range?.end);
+    if (
+      !value
+      || !boundedString(value.section_id, 1, 200)
+      || !Number.isInteger(value.segment)
+      || (value.segment as number) < 1
+      || (value.tag !== 'threshold' && value.tag !== 'typical' && value.tag !== 'hardest')
+      || !start
+      || !end
+      || !boundedString(value.reason, 5, 500)
+    ) return undefined;
+    return {
+      section_id: value.section_id,
+      segment: value.segment as number,
+      tag: value.tag,
+      range: { start, end },
+      reason: value.reason,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function inferReadingSetupTool(buffer: string): ReadingSetupToolName | undefined {
+  const parsed = recordValue(completeJson(buffer));
+  if (!parsed) return undefined;
+  const keys = new Set(Object.keys(parsed));
+  if (keys.has('acknowledgment') || keys.has('prompt') || keys.has('options')) {
+    return 'present_interview_question';
+  }
+  if (keys.has('fragments')) return 'select_trial_fragments';
+  if (keys.has('briefing') || keys.has('book_reader_profile') || keys.has('reader_profile_patch')) {
+    return 'finish_interview';
+  }
+  if (keys.has('public_strategy') || keys.has('strategy')) return 'save_strategy_draft';
+  return undefined;
+}
+
+export function createReadingSetupStreamParser(emit: (delta: ReadingSetupStreamDelta) => void) {
+  let speculativeEpoch = 0;
+  let toolName: ReadingSetupToolName | undefined;
+  let buffer = '';
+  let startedForEpoch = false;
+  let concludingEpoch = 0;
+  let consumedOptionsEnd = 0;
+  let consumedCandidatesEnd = 0;
+  let consumedFragmentsEnd = 0;
+  let emittedCandidates = 0;
+  let emittedFragments = 0;
+  let emitted = {
+    ack: 0,
+    prompt: 0,
+    hint: 0,
+    strategy: 0,
+    briefing: {
+      book_identity: 0,
+      arc: 0,
+      assumed_knowledge: 0,
+      reading_advice: 0,
+    } satisfies Record<ReadingBriefingField, number>,
+    sufficiency: undefined as number | undefined,
+  };
+
+  const withEpoch = <T extends object>(delta: T): T & { speculativeEpoch: number } => ({
+    ...delta,
+    speculativeEpoch,
+  });
+
+  const emitToolStarted = () => {
+    if (!toolName || startedForEpoch) return;
+    startedForEpoch = true;
+    if (toolName === 'finish_interview') {
+      emit(withEpoch({ type: 'draft_started' as const, source: 'interview' as const }));
+    } else if (toolName === 'save_strategy_draft') {
+      emit(withEpoch({ type: 'draft_started' as const, source: 'revision' as const }));
+    } else if (toolName === 'select_trial_fragments') {
+      emit(withEpoch({ type: 'selection_started' as const, total: 3 as const }));
+    }
+  };
+
+  const reset = (name: string) => {
+    speculativeEpoch += 1;
+    toolName = isReadingSetupToolName(name) ? name : undefined;
+    buffer = '';
+    startedForEpoch = false;
+    consumedOptionsEnd = 0;
+    consumedCandidatesEnd = 0;
+    consumedFragmentsEnd = 0;
+    emittedCandidates = 0;
+    emittedFragments = 0;
+    emitted = {
+      ack: 0,
+      prompt: 0,
+      hint: 0,
+      strategy: 0,
+      briefing: { book_identity: 0, arc: 0, assumed_knowledge: 0, reading_advice: 0 },
+      sufficiency: undefined,
+    };
+    emit({ type: 'speculative_reset', speculativeEpoch, toolName: toolName ?? null });
+    emitToolStarted();
+  };
+
+  const emitStringSuffix = (
+    value: unknown,
+    previousLength: number,
+    create: (chars: string) => ReadingSetupStreamDelta,
+  ): number => {
+    if (typeof value !== 'string' || value.length <= previousLength) return previousLength;
+    emit(create(value.slice(previousLength)));
+    return value.length;
+  };
+
+  return {
+    onToolStart(name: string) {
+      reset(name);
+    },
+    onToolFinished(name: string, succeeded: boolean) {
+      if (name === 'finish_interview' && succeeded && concludingEpoch !== speculativeEpoch) {
+        concludingEpoch = speculativeEpoch;
+        emit(withEpoch({ type: 'concluding' as const }));
+      }
+    },
+    onDelta(delta: string) {
+      buffer += delta;
+      if (!toolName) {
+        toolName = inferReadingSetupTool(buffer);
+        emitToolStarted();
+      }
+      if (!toolName) return;
+      const parsed = recordValue(completeJson(buffer));
+      if (!parsed) return;
+
+      if (toolName === 'present_interview_question') {
+        emitted.ack = emitStringSuffix(parsed.acknowledgment, emitted.ack, (chars) => withEpoch({ type: 'ack_delta' as const, chars }));
+        emitted.prompt = emitStringSuffix(parsed.prompt, emitted.prompt, (chars) => withEpoch({ type: 'prompt_delta' as const, chars }));
+        emitted.hint = emitStringSuffix(parsed.hint, emitted.hint, (chars) => withEpoch({ type: 'hint_delta' as const, chars }));
+        for (const item of scanCompletedArrayItems(buffer, 'options')) {
+          if (item.end <= consumedOptionsEnd) continue;
+          const option = parseQuestionOption(item.raw);
+          if (!option) break;
+          emit(withEpoch({ type: 'option_added' as const, ...option }));
+          consumedOptionsEnd = item.end;
+        }
+        if (
+          typeof parsed.sufficiency === 'number'
+          && Number.isInteger(parsed.sufficiency)
+          && emitted.sufficiency !== parsed.sufficiency
+          && /"sufficiency"\s*:\s*-?\d+\s*[,}\]]/.test(buffer)
+        ) {
+          emitted.sufficiency = parsed.sufficiency;
+          emit(withEpoch({ type: 'sufficiency' as const, value: parsed.sufficiency }));
+        }
+        return;
+      }
+
+      if (toolName === 'finish_interview') {
+        const briefing = recordValue(parsed.briefing);
+        if (briefing) {
+          for (const field of ['book_identity', 'arc', 'assumed_knowledge', 'reading_advice'] as const) {
+            emitted.briefing[field] = emitStringSuffix(
+              briefing[field],
+              emitted.briefing[field],
+              (chars) => withEpoch({ type: 'briefing_delta' as const, field, chars }),
+            );
+          }
+        }
+      }
+
+      if (toolName === 'finish_interview' || toolName === 'save_strategy_draft') {
+        emitted.strategy = emitStringSuffix(
+          parsed.public_strategy,
+          emitted.strategy,
+          (chars) => withEpoch({ type: 'strategy_delta' as const, chars }),
+        );
+        for (const item of scanCompletedArrayItems(buffer, 'trial_candidates')) {
+          if (item.end <= consumedCandidatesEnd) continue;
+          const candidate = parseTrialCandidate(item.raw);
+          if (!candidate) break;
+          emit(withEpoch({
+            type: 'reading_node_added' as const,
+            ordinal: emittedCandidates + 1,
+            ...candidate,
+          }));
+          consumedCandidatesEnd = item.end;
+          emittedCandidates += 1;
+        }
+        return;
+      }
+
+      for (const item of scanCompletedArrayItems(buffer, 'fragments')) {
+        if (item.end <= consumedFragmentsEnd) continue;
+        const fragment = parseTrialFragment(item.raw);
+        if (!fragment) break;
+        emit(withEpoch({
+          type: 'fragment_added' as const,
+          ordinal: emittedFragments + 1,
+          fragment,
+        }));
+        consumedFragmentsEnd = item.end;
+        emittedFragments += 1;
+      }
+    },
+  };
+}
+
+// Compatibility adapter for the existing interview-only SSE service. New callers should use
+// createReadingSetupStreamParser so they can observe speculative resets and epochs.
+export function createInterviewStreamParser(emit: (delta: InterviewStreamDelta) => void) {
+  return createReadingSetupStreamParser((delta) => {
+    switch (delta.type) {
+      case 'ack_delta': emit({ type: delta.type, chars: delta.chars }); break;
+      case 'prompt_delta': emit({ type: delta.type, chars: delta.chars }); break;
+      case 'hint_delta': emit({ type: delta.type, chars: delta.chars }); break;
+      case 'option_added': emit({ type: delta.type, id: delta.id, label: delta.label }); break;
+      case 'sufficiency': emit({ type: delta.type, value: delta.value }); break;
+      case 'concluding': emit({ type: delta.type }); break;
+      default: break;
+    }
+  });
+}
 
 export type ReadingSetupPhase = 'interviewing' | 'strategy_review' | 'select_trial';
 
@@ -957,7 +1259,9 @@ export async function runReadingSetupAgent(options: {
   maxTurns?: number;
   timeoutMs?: number;
   onTrace?: AgentTraceHandler;
+  // Legacy interview-only callback. Kept until API consumers migrate to the epoch-aware stream.
   onStream?: (delta: InterviewStreamDelta) => void;
+  onReadingSetupStream?: (delta: ReadingSetupStreamDelta) => void;
   onMetrics?: (metrics: ReadingSetupCallMetrics) => void;
 }): Promise<ReadingSetupOutcome> {
   let outcome: ReadingSetupOutcome | undefined;
@@ -1123,10 +1427,22 @@ export async function runReadingSetupAgent(options: {
       reportMetrics();
     }
   });
-  // Token-level interview streaming (§4): translate the model's streamed tool-call
-  // arguments into semantic deltas. Only the interviewing phase presents questions.
-  if (options.onStream && options.phase === 'interviewing') {
-    const parser = createInterviewStreamParser(options.onStream);
+  // Translate streamed tool-call arguments into semantic deltas. The legacy callback receives
+  // only interview events; the additive callback receives every phase plus speculative epochs.
+  if (options.onReadingSetupStream || (options.onStream && options.phase === 'interviewing')) {
+    const parser = createReadingSetupStreamParser((delta) => {
+      options.onReadingSetupStream?.(delta);
+      if (!options.onStream || options.phase !== 'interviewing') return;
+      switch (delta.type) {
+        case 'ack_delta': options.onStream({ type: delta.type, chars: delta.chars }); break;
+        case 'prompt_delta': options.onStream({ type: delta.type, chars: delta.chars }); break;
+        case 'hint_delta': options.onStream({ type: delta.type, chars: delta.chars }); break;
+        case 'option_added': options.onStream({ type: delta.type, id: delta.id, label: delta.label }); break;
+        case 'sufficiency': options.onStream({ type: delta.type, value: delta.value }); break;
+        case 'concluding': options.onStream({ type: delta.type }); break;
+        default: break;
+      }
+    });
     agent.subscribe((event) => {
       if (event.type === 'message_update') {
         const streamed = event.assistantMessageEvent;

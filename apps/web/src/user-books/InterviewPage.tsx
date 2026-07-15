@@ -10,6 +10,7 @@ import {
 } from './api';
 import type { InterviewOption, InterviewQuestion } from './api';
 import { WorkflowFallback, WorkflowMessage, WorkflowPage } from './components';
+import { userBookQueryKeys } from './queryKeys';
 import { useWorkflowGate } from './useWorkflowGate';
 
 // Live state accumulated from the SSE turn (§4.3): the acknowledgment and prompt arrive one
@@ -66,12 +67,12 @@ export function InterviewPage() {
   const start = useMutation({
     mutationFn: () => startInterview(id),
     onSuccess: (snapshot) => {
-      queryClient.setQueryData(['user-book', id, 'interview'], snapshot);
-      void queryClient.invalidateQueries({ queryKey: ['user-book', id] });
+      queryClient.setQueryData(userBookQueryKeys.interview(id), snapshot);
+      void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
     },
   });
   const interview = useQuery({
-    queryKey: ['user-book', id, 'interview'],
+    queryKey: userBookQueryKeys.interview(id),
     queryFn: () => getInterview(id),
     enabled: gate.active && !shouldStart,
     refetchInterval: (current) => ['generating', 'completing'].includes(current.state.data?.status ?? '') ? 1800 : false,
@@ -97,9 +98,9 @@ export function InterviewPage() {
   const resume = useMutation({
     mutationFn: () => resumeInterview(id),
     onSuccess: (snapshot) => {
-      queryClient.setQueryData(['user-book', id, 'interview'], snapshot);
+      queryClient.setQueryData(userBookQueryKeys.interview(id), snapshot);
       if (snapshot.status === 'completing') {
-        void queryClient.invalidateQueries({ queryKey: ['user-book', id] });
+        void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
       }
     },
     onError: (error) => {
@@ -128,7 +129,7 @@ export function InterviewPage() {
       onQuestionFinal: (next) => {
         setActiveQuestion(next);
         setStream(IDLE_STREAM);
-        void queryClient.invalidateQueries({ queryKey: ['user-book', id, 'interview'] });
+        void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.interview(id) });
       },
       onDone: (workflowStatus) => {
         setStream(IDLE_STREAM);
@@ -136,7 +137,7 @@ export function InterviewPage() {
           void interview.refetch();
         } else {
           // Interview finished — let the workflow gate navigate to the next step.
-          void queryClient.invalidateQueries({ queryKey: ['user-book', id] });
+          void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
         }
       },
       onError: (message) => {
