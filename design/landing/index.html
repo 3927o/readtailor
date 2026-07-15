@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>裁读 ReadTailor · AI 陪读，陪你真正读完一本书</title>
+<meta name="description" content="裁读（ReadTailor）是一个中文网页陪读产品。它不替你读，也不替你总结——先了解你，再为一本具体的书生成读前简报、锚定原文的裁读注和随手可问的 AI，在不改动原文的前提下，陪你把一本难读的书真正读完。" />
+<script>document.documentElement.className = 'js';</script>
+<style>
+  /* ═══════════════════════════════════════════════════════════════
+     字体：与设计系统 tokens/fonts.css 一致（ZeoSeven + Google Fonts CDN）
+     离线时回退到 Noto Serif/Sans SC。@import 必须置顶。
+     ═══════════════════════════════════════════════════════════════ */
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
+  @import url('https://fontsapi.zeoseven.com/419/main/result.css'); /* 上元明朝 LanternMingA */
+  @import url('https://fontsapi.zeoseven.com/537/main/result.css'); /* 未来荧黑 Glow Sans SC */
+
+  /* ═══════════════════════════════════════════════════════════════
+     设计 tokens：从 design/design-system/tokens/* 精选内联，保持单文件自包含。
+     ═══════════════════════════════════════════════════════════════ */
+  :root {
+    /* 纸 / 面 —— 暖白，绝不纯白 */
+    --rt-bg:#FAFAF6; --rt-bg-2:#F0EFE9; --rt-bg-card:#FFFFFF;
+    /* 墨 / 字 —— 暖近黑，绝不纯黑 */
+    --rt-ink:#0A0A09; --rt-ink-2:#4E4D49; --rt-ink-3:#8E8C85;
+    /* 品牌绿 —— 唯一的彩色，只点睛不铺面 */
+    --rt-green:#2F6A52; --rt-green-deep:#1F4D3A; --rt-green-soft:rgba(47,106,82,0.10);
+    /* 线 */
+    --rt-rule:rgba(10,10,9,0.12); --rt-rule-2:rgba(10,10,9,0.06);
+    /* 注释三色（阅读器 mark 图例：释义绿 / 推理补全蓝 / 脉络琥珀） */
+    --rt-mark-gloss:#2F6A52; --rt-mark-fillin:#5b73a8; --rt-mark-margin:#b08848;
+    /* 字体声部 */
+    --rt-serif:'LanternMingA','Noto Serif SC','Songti SC','Source Han Serif SC',Georgia,serif;
+    --rt-read:'Songti SC','STSong','Source Han Serif SC','Noto Serif SC',Georgia,serif;
+    --rt-sans:'Noto Sans SC','PingFang SC',system-ui,sans-serif;
+    --rt-demo:'Glow Sans SC','Noto Sans SC','PingFang SC',system-ui,sans-serif;
+    --rt-mono:'JetBrains Mono',ui-monospace,monospace;
+    /* 动效 */
+    --rt-ease:cubic-bezier(.2,.7,.2,1);
+    --rt-glass:saturate(150%) blur(10px);
+    /* 阴影（克制，不堆叠） */
+    --rt-shadow-card:0 6px 24px -16px rgba(20,40,30,0.25);
+    --rt-shadow-pop:0 14px 34px -12px rgba(25,40,30,0.34),0 2px 8px -4px rgba(0,0,0,0.12);
+    /* 半径签名：左方右圆 */
+    --rt-radius-card:0 4px 4px 0; --rt-radius-soft:8px; --rt-radius-pill:999px;
+  }
+
+  /* ── reset / base ── */
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; }
+  html { background:var(--rt-bg); scroll-behavior:smooth; }
+  body {
+    background:var(--rt-bg); color:var(--rt-ink); font-family:var(--rt-serif);
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+    overflow-x:hidden;
+  }
+  h1,h2,h3,p,ul,figure { margin:0; padding:0; }
+  ul { list-style:none; }
+  a { color:inherit; text-decoration:none; }
+  button { font:inherit; cursor:pointer; border:none; background:none; color:inherit; }
+  ::selection { background:var(--rt-green-soft); }
+  img,svg { max-width:100%; }
+
+  /* ── 顶部进度条 ── */
+  .progress { position:fixed; top:0; left:0; height:2px; width:0; background:var(--rt-green); z-index:120; transition:width 90ms linear; }
+
+  /* ── masthead（毛玻璃报头） ── */
+  .mast {
+    position:fixed; top:0; left:0; right:0; z-index:110;
+    display:flex; align-items:center; justify-content:space-between; gap:24px;
+    padding:15px clamp(20px,5vw,52px);
+    background:color-mix(in srgb, var(--rt-bg) 84%, transparent);
+    backdrop-filter:var(--rt-glass); -webkit-backdrop-filter:var(--rt-glass);
+    border-bottom:1px solid var(--rt-rule);
+  }
+  .mast .brand { display:flex; align-items:baseline; gap:10px; }
+  .mast .brand .zh { font-family:var(--rt-serif); font-size:19px; font-weight:700; letter-spacing:0.04em; }
+  .mast .brand .en { font-family:var(--rt-mono); font-size:9.5px; letter-spacing:0.28em; text-transform:uppercase; color:var(--rt-ink-3); }
+  .mast nav { display:flex; gap:26px; }
+  .mast nav a { font-family:var(--rt-mono); font-size:10px; letter-spacing:0.16em; text-transform:uppercase; color:var(--rt-ink-3); transition:color .16s var(--rt-ease); }
+  .mast nav a:hover { color:var(--rt-green); }
+  .mast .cta-mini {
+    font-family:var(--rt-demo); font-size:13px; font-weight:500; color:#fff;
+    background:var(--rt-green); padding:8px 18px; border-radius:var(--rt-radius-pill);
+    transition:background .16s var(--rt-ease);
+  }
+  .mast .cta-mini:hover { background:var(--rt-green-deep); }
+  @media (max-width:860px) { .mast nav { display:none; } }
+  @media (max-width:520px) { .mast .brand .en { display:none; } }
+
+  /* ── 通用 section 骨架 ── */
+  section { position:relative; padding:clamp(78px,11vh,132px) clamp(24px,7vw,110px); scroll-margin-top:70px; }
+  .wrap { width:100%; max-width:1080px; margin:0 auto; }
+  .center { text-align:center; }
+  .center .kicker { justify-content:center; }
+
+  /* ── kicker 小标签 ── */
+  .kicker { display:inline-flex; align-items:center; gap:12px; font-family:var(--rt-mono); font-size:10px; letter-spacing:0.2em; text-transform:uppercase; color:var(--rt-green); margin-bottom:22px; }
+  .kicker::before { content:""; width:28px; height:1px; background:var(--rt-green); }
+
+  /* ── 标题 / 叙述字 ── */
+  .headline { font-family:var(--rt-serif); font-size:clamp(26px,3.5vw,44px); font-weight:600; line-height:1.4; letter-spacing:-0.01em; color:var(--rt-ink); text-wrap:pretty; }
+  .headline em, .lead em, .vision em { font-style:italic; color:var(--rt-green-deep); font-weight:600; }
+  .lead { font-family:var(--rt-serif); font-size:clamp(16px,1.7vw,20px); line-height:1.75; color:var(--rt-ink-2); text-wrap:pretty; }
+  .sec-sub { margin-top:20px; max-width:52ch; }
+  .center .sec-sub { margin-left:auto; margin-right:auto; }
+
+  /* ── reveal on scroll ── */
+  .reveal { will-change:opacity, transform; }
+  html.js .reveal { opacity:0; transform:translateY(24px); transition:opacity .9s var(--rt-ease) calc(var(--i,0)*100ms), transform .9s var(--rt-ease) calc(var(--i,0)*100ms); }
+  html.js .in .reveal { opacity:1; transform:none; }
+
+  /* ═══════════════ HERO ═══════════════ */
+  .hero { min-height:calc(100vh - 8px); display:flex; flex-direction:column; justify-content:center; text-align:center; padding-top:clamp(120px,17vh,190px); }
+  .hero .logo { display:inline-flex; flex-direction:column; align-items:center; gap:10px; margin-bottom:40px; }
+  .hero .logo .zh { font-family:var(--rt-serif); font-size:clamp(30px,4.4vw,52px); font-weight:700; letter-spacing:0.16em; padding-left:0.16em; }
+  .hero .logo .en { font-family:var(--rt-mono); font-size:10px; letter-spacing:0.42em; text-transform:uppercase; color:var(--rt-green); display:flex; align-items:center; gap:12px; }
+  .hero .logo .en::before, .hero .logo .en::after { content:""; width:22px; height:1px; background:var(--rt-rule); }
+  .hero h1 { font-family:var(--rt-serif); font-size:clamp(29px,4.6vw,54px); font-weight:600; line-height:1.34; letter-spacing:-0.012em; text-wrap:balance; margin:0 auto; max-width:min(92vw, 17em); }
+  .hero h1 em { font-style:italic; color:var(--rt-green-deep); }
+  .hero .sub { margin:26px auto 0; max-width:40ch; font-family:var(--rt-serif); font-style:italic; font-size:clamp(15px,1.7vw,19px); line-height:1.7; color:var(--rt-ink-3); }
+  .hero .actions { display:flex; gap:14px; justify-content:center; flex-wrap:wrap; margin-top:44px; }
+  .scroll-hint { position:absolute; bottom:26px; left:50%; transform:translateX(-50%); font-family:var(--rt-mono); font-size:9px; letter-spacing:0.24em; text-transform:uppercase; color:var(--rt-ink-3); display:flex; flex-direction:column; align-items:center; gap:7px; }
+  .scroll-hint .ln { width:1px; height:28px; background:linear-gradient(var(--rt-rule),transparent); animation:drip 2.4s var(--rt-ease) infinite; }
+  @keyframes drip { 0%,100%{opacity:.3;transform:scaleY(.6);transform-origin:top;} 50%{opacity:1;transform:scaleY(1);} }
+
+  /* char-by-char reveal（招牌逐字浮出） */
+  html.js .ch { display:inline-block; opacity:0; transform:translateY(0.24em); filter:blur(2px); transition:opacity .7s var(--rt-ease), transform .7s var(--rt-ease), filter .7s var(--rt-ease); }
+  html.js .ch.lit { opacity:1; transform:none; filter:none; }
+
+  /* ── 按钮 ── */
+  .btn { display:inline-flex; align-items:center; gap:9px; font-family:var(--rt-demo); font-size:15px; font-weight:500; padding:13px 26px; border-radius:var(--rt-radius-pill); transition:background .16s var(--rt-ease), color .16s var(--rt-ease), border-color .16s var(--rt-ease); }
+  .btn-green { background:var(--rt-green); color:#fff; }
+  .btn-green:hover { background:var(--rt-green-deep); }
+  .btn-ghost { color:var(--rt-ink-2); border:1px solid var(--rt-rule); }
+  .btn-ghost:hover { border-color:var(--rt-ink-3); color:var(--rt-ink); }
+
+  /* ═══════════════ 问题 ═══════════════ */
+  .split { display:grid; grid-template-columns:1fr auto; gap:clamp(28px,6vw,72px); align-items:center; }
+  @media (max-width:840px) { .split { grid-template-columns:1fr; } }
+  .falls { margin-top:30px; }
+  .falls li { position:relative; padding-left:26px; font-family:var(--rt-serif); font-size:clamp(15px,1.6vw,18.5px); line-height:1.66; color:var(--rt-ink-2); margin-bottom:18px; text-wrap:pretty; }
+  .falls li::before { content:""; position:absolute; left:2px; top:0.78em; width:9px; height:1.5px; background:var(--rt-green); }
+  .falls li em { font-style:normal; color:var(--rt-ink); font-weight:600; }
+  .falls li .q { color:var(--rt-ink-3); font-style:italic; }
+  .figbox { width:min(74vw,340px); flex:none; }
+
+  /* SVG 线描图（品牌图形语言） */
+  .fig { display:block; width:100%; height:auto; overflow:visible; }
+  .fig .s { fill:none; stroke:var(--rt-rule); stroke-width:1.5; }
+  .fig .sd { fill:none; stroke:var(--rt-ink-3); stroke-width:1.5; stroke-dasharray:2 5; stroke-linecap:round; }
+  .fig .fg { fill:var(--rt-green); }
+  .fig text { font-family:var(--rt-serif); fill:var(--rt-ink); }
+  .fig .lbl { font-family:var(--rt-mono); font-size:8.5px; letter-spacing:0.08em; fill:var(--rt-ink-3); }
+  .fig .cn { font-family:var(--rt-serif); font-size:12px; fill:var(--rt-ink); }
+  .fig .cn.w { fill:#fff; }
+
+  /* ═══════════════ 三步 ═══════════════ */
+  .steps { display:grid; grid-template-columns:repeat(3,1fr); gap:clamp(14px,2vw,22px); margin:48px 0 34px; }
+  @media (max-width:840px) { .steps { grid-template-columns:1fr; max-width:420px; margin-inline:auto; } }
+  .step { padding:26px 26px 28px; border-radius:var(--rt-radius-card); background:var(--rt-bg-card); border:1px solid var(--rt-rule); border-left:2px solid var(--rt-green); box-shadow:0 18px 40px -34px rgba(0,0,0,0.4); text-align:left; }
+  .step .n { font-family:var(--rt-mono); font-size:10px; letter-spacing:0.2em; color:var(--rt-green); margin-bottom:14px; }
+  .step .ic { margin-bottom:14px; }
+  .step .t { font-family:var(--rt-serif); font-size:clamp(18px,1.9vw,22px); font-weight:600; }
+  .step .d { margin-top:11px; font-family:var(--rt-sans); font-size:13.5px; line-height:1.72; color:var(--rt-ink-2); }
+  .step .meta { margin-top:14px; font-family:var(--rt-mono); font-size:9.5px; letter-spacing:0.12em; text-transform:uppercase; color:var(--rt-ink-3); }
+  .coda-line { font-family:var(--rt-serif); font-style:italic; font-size:clamp(14px,1.5vw,17px); line-height:1.7; color:var(--rt-ink-3); }
+  .ic { width:40px; height:40px; display:block; }
+  .ic .sg { fill:none; stroke:var(--rt-green); stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  .ic .sg2 { fill:none; stroke:var(--rt-green); stroke-width:2; stroke-linecap:round; stroke-dasharray:3 4; }
+  .ic .fg { fill:var(--rt-green); }
+
+  /* ═══════════════ 产品样张（阅读器 mock） ═══════════════ */
+  .showcase { background:var(--rt-bg-2); }
+  .reader-stage { display:grid; grid-template-columns:1.15fr 0.85fr; gap:clamp(24px,4vw,56px); align-items:start; margin-top:52px; }
+  @media (max-width:900px) { .reader-stage { grid-template-columns:1fr; } }
+
+  /* 阅读器卡片 —— 产品声部：黑体 */
+  .reader { font-family:var(--rt-demo); background:var(--rt-bg-card); border:1px solid var(--rt-rule); border-radius:14px; box-shadow:var(--rt-shadow-card); overflow:hidden; position:relative; }
+  .reader .bar { display:flex; align-items:center; justify-content:space-between; padding:12px 18px; border-bottom:1px solid var(--rt-rule); background:color-mix(in srgb,var(--rt-bg) 70%, #fff); }
+  .reader .bar .l, .reader .bar .r { display:flex; align-items:center; gap:16px; color:var(--rt-ink-3); font-size:15px; }
+  .reader .bar .bk { font-family:var(--rt-serif); font-size:12.5px; color:var(--rt-ink-2); letter-spacing:0.02em; }
+  .reader .bar .spark { color:var(--rt-green); }
+  .reader .body { padding:22px clamp(18px,3vw,30px) 26px; }
+
+  /* 读前简报 brief 卡 */
+  .brief { background:var(--rt-green-soft); border-left:2px solid var(--rt-green); border-radius:var(--rt-radius-card); padding:15px 18px; margin-bottom:20px; }
+  .brief .lab { font-family:var(--rt-mono); font-size:9px; letter-spacing:0.18em; text-transform:uppercase; color:var(--rt-green); margin-bottom:8px; }
+  .brief .bt { font-family:var(--rt-serif); font-size:15px; font-weight:600; color:var(--rt-ink); margin-bottom:6px; }
+  .brief p { font-family:var(--rt-sans); font-size:12.5px; line-height:1.7; color:var(--rt-ink-2); }
+
+  /* 导读块 */
+  .lead-block { border:1px dashed var(--rt-rule); border-radius:8px; padding:13px 16px; margin-bottom:18px; }
+  .lead-block .lab { font-family:var(--rt-mono); font-size:9px; letter-spacing:0.18em; text-transform:uppercase; color:var(--rt-ink-3); margin-bottom:7px; }
+  .lead-block .lab b { color:var(--rt-green); font-weight:400; }
+  .lead-block p { font-family:var(--rt-sans); font-size:12.5px; line-height:1.72; color:var(--rt-ink-2); }
+
+  /* 原文（阅读声部：宋体） */
+  .prose { font-family:var(--rt-read); font-size:16px; line-height:1.95; color:var(--rt-ink); }
+  .prose p { text-indent:2em; margin-bottom:2px; }
+  .prose .mark { cursor:pointer; }
+  .prose .m-gloss  { text-decoration:underline dotted var(--rt-mark-gloss) 1.5px; text-underline-offset:4px; }
+  .prose .m-fillin { text-decoration:underline dashed var(--rt-mark-fillin) 1.5px; text-underline-offset:4px; }
+  .prose .m-margin { text-decoration:underline wavy var(--rt-mark-margin) 1px; text-underline-offset:4px; }
+  .prose .note-ref { font-family:var(--rt-sans); font-size:0.66em; vertical-align:super; color:var(--rt-ink-3); padding:0 1px; }
+
+  /* 锚定的裁读注卡 */
+  .anno { background:var(--rt-green-soft); border-left:2px solid var(--rt-mark-gloss); border-radius:var(--rt-radius-card); padding:13px 16px; margin:14px 0; }
+  .anno .tag { display:inline-flex; align-items:center; gap:7px; font-family:var(--rt-mono); font-size:9px; letter-spacing:0.14em; text-transform:uppercase; color:var(--rt-mark-gloss); margin-bottom:7px; }
+  .anno .tag .dot { width:5px; height:5px; border-radius:50%; background:var(--rt-mark-gloss); }
+  .anno p { font-family:var(--rt-sans); font-size:12.5px; line-height:1.72; color:var(--rt-ink-2); }
+  .anno.src-book { border-left-color:var(--rt-ink-3); }
+  .anno.src-book .tag { color:var(--rt-ink-3); } .anno.src-book .tag .dot { background:var(--rt-ink-3); }
+
+  /* 节后助读 */
+  .after-block { border-top:1px solid var(--rt-rule); margin-top:18px; padding-top:15px; }
+  .after-block .lab { font-family:var(--rt-mono); font-size:9px; letter-spacing:0.18em; text-transform:uppercase; color:var(--rt-ink-3); margin-bottom:7px; }
+  .after-block p { font-family:var(--rt-sans); font-size:12.5px; line-height:1.72; color:var(--rt-ink-2); }
+
+  /* AI popover 浮层 */
+  .ai-pop { position:absolute; right:16px; bottom:18px; width:min(78%,300px); background:var(--rt-ink); color:#fff; border-radius:12px; padding:14px 16px; box-shadow:var(--rt-shadow-pop); border-top:2px solid var(--rt-green); }
+  .ai-pop .ctx { font-family:var(--rt-sans); font-size:10.5px; color:rgba(255,255,255,0.5); border-left:2px solid rgba(255,255,255,0.28); padding-left:8px; margin-bottom:9px; line-height:1.55; }
+  .ai-pop .q { display:inline-flex; align-items:center; gap:6px; font-family:var(--rt-demo); font-size:11px; color:var(--rt-green); letter-spacing:0.05em; margin-bottom:8px; }
+  .ai-pop .a { font-family:var(--rt-sans); font-size:12.5px; line-height:1.68; color:rgba(255,255,255,0.92); }
+  .ai-pop .ask { margin-top:11px; display:flex; align-items:center; justify-content:space-between; font-family:var(--rt-sans); font-size:11px; color:rgba(255,255,255,0.45); border-top:1px solid rgba(255,255,255,0.14); padding-top:9px; }
+
+  /* 样张右侧解说 */
+  .callouts { display:flex; flex-direction:column; gap:22px; }
+  .callout { padding-left:20px; border-left:2px solid var(--rt-green); }
+  .callout .co-t { font-family:var(--rt-serif); font-size:clamp(17px,1.9vw,21px); font-weight:600; }
+  .callout .co-d { margin-top:8px; font-family:var(--rt-sans); font-size:13.5px; line-height:1.72; color:var(--rt-ink-2); }
+  .sample-note { margin-top:14px; font-family:var(--rt-mono); font-size:9px; letter-spacing:0.1em; text-transform:uppercase; color:var(--rt-ink-3); }
+
+  /* ═══════════════ 原则 ═══════════════ */
+  .principles { background:var(--rt-ink); color:var(--rt-bg); }
+  .principles .kicker { color:#8fc6ab; }
+  .principles .kicker::before { background:#8fc6ab; }
+  .principles .headline { color:var(--rt-bg); }
+  .pstack { display:flex; flex-direction:column; gap:26px; margin-top:46px; max-width:820px; }
+  .pblock { padding-left:22px; border-left:2px solid #7FB89F; }
+  .pblock .pl { font-family:var(--rt-mono); font-size:10px; letter-spacing:0.18em; text-transform:uppercase; color:#7FB89F; margin-bottom:10px; }
+  .pblock .pt { font-family:var(--rt-serif); font-size:clamp(18px,2.1vw,25px); line-height:1.5; font-weight:500; color:var(--rt-bg); }
+  .pblock .pt em { font-style:italic; color:#A3CFBB; }
+  .pblock .pd { margin-top:9px; font-family:var(--rt-sans); font-size:13.5px; line-height:1.74; color:rgba(233,231,223,0.66); max-width:60ch; }
+
+  /* ═══════════════ 适合谁 ═══════════════ */
+  .fors { display:grid; grid-template-columns:repeat(2,1fr); gap:16px; margin-top:44px; max-width:820px; margin-inline:auto; }
+  @media (max-width:640px) { .fors { grid-template-columns:1fr; } }
+  .for { display:flex; gap:14px; align-items:flex-start; padding:18px 20px; background:var(--rt-bg-card); border:1px solid var(--rt-rule); border-radius:var(--rt-radius-card); border-left:2px solid var(--rt-green); }
+  .for .fi { font-family:var(--rt-serif); font-size:15px; font-weight:600; color:var(--rt-green); flex:none; }
+  .for .fx .fh { font-family:var(--rt-serif); font-size:16.5px; font-weight:600; }
+  .for .fx .fd { margin-top:5px; font-family:var(--rt-sans); font-size:12.5px; line-height:1.66; color:var(--rt-ink-2); }
+
+  /* ── 诚实说明 ── */
+  .nowcard { margin-top:48px; max-width:640px; margin-inline:auto; text-align:center; padding:26px 30px; background:var(--rt-bg-2); border-radius:var(--rt-radius-soft); }
+  .nowcard .lab { font-family:var(--rt-mono); font-size:9.5px; letter-spacing:0.2em; text-transform:uppercase; color:var(--rt-ink-3); margin-bottom:12px; }
+  .nowcard p { font-family:var(--rt-serif); font-size:clamp(14px,1.5vw,17px); line-height:1.75; color:var(--rt-ink-2); text-wrap:pretty; }
+
+  /* ═══════════════ CODA ═══════════════ */
+  .coda { text-align:center; padding-top:clamp(90px,14vh,150px); padding-bottom:clamp(64px,9vh,110px); }
+  .vision { font-family:var(--rt-serif); font-weight:600; font-size:clamp(25px,4vw,48px); line-height:1.4; text-wrap:balance; max-width:min(92vw, 16em); margin:0 auto; }
+  .coda .actions { margin-top:44px; display:flex; justify-content:center; gap:14px; flex-wrap:wrap; }
+  .coda .signoff { margin-top:44px; font-family:var(--rt-mono); font-size:10px; letter-spacing:0.26em; text-transform:uppercase; color:var(--rt-ink-3); }
+
+  /* ── footer ── */
+  footer { border-top:1px solid var(--rt-rule); padding:38px clamp(24px,7vw,110px); display:flex; align-items:baseline; justify-content:space-between; gap:20px; flex-wrap:wrap; }
+  footer .fb { font-family:var(--rt-serif); font-size:16px; font-weight:700; letter-spacing:0.06em; }
+  footer .fb span { font-family:var(--rt-mono); font-size:9px; letter-spacing:0.24em; text-transform:uppercase; color:var(--rt-ink-3); margin-left:10px; }
+  footer .fn { font-family:var(--rt-mono); font-size:9.5px; letter-spacing:0.12em; text-transform:uppercase; color:var(--rt-ink-3); }
+
+  @media (prefers-reduced-motion:reduce) {
+    html { scroll-behavior:auto; }
+    html.js .reveal { opacity:1 !important; transform:none !important; transition:none !important; }
+    html.js .ch { opacity:1 !important; transform:none !important; filter:none !important; transition:none !important; }
+    .scroll-hint .ln { animation:none; }
+  }
+</style>
+</head>
+<body>
+  <div class="progress" id="progress"></div>
+
+  <header class="mast">
+    <span class="brand"><span class="zh">裁读</span><span class="en">ReadTailor</span></span>
+    <nav>
+      <a href="#problem">问题</a>
+      <a href="#how">怎么陪你读</a>
+      <a href="#product">产品</a>
+      <a href="#principles">原则</a>
+      <a href="#for">适合</a>
+    </nav>
+    <a class="cta-mini" href="#start">开始试读</a>
+  </header>
+
+  <main>
+    <!-- ═══════════ HERO ═══════════ -->
+    <section class="hero" id="top">
+      <div class="wrap">
+        <span class="logo reveal"><span class="zh">裁读</span><span class="en">ReadTailor</span></span>
+        <h1 data-reveal-chars>AI 陪读，陪你把一本难读的书，<em>真正读完</em>。</h1>
+        <p class="sub reveal" style="--i:5">不是替你读，也不是替你总结——先了解你，再为这一本书，把理解的阻力一点点铺平。</p>
+        <div class="actions reveal" style="--i:6">
+          <a class="btn btn-green" href="#start">挑一本书，开始试读</a>
+          <a class="btn btn-ghost" href="#how">看看它怎么陪你读 ↓</a>
+        </div>
+      </div>
+      <div class="scroll-hint reveal" style="--i:8"><span>Scroll</span><span class="ln"></span></div>
+    </section>
+
+    <!-- ═══════════ 问题 ═══════════ -->
+    <section id="problem">
+      <div class="wrap split">
+        <div>
+          <span class="kicker reveal">问题 · The Problem</span>
+          <h2 class="headline reveal" style="--i:1">越是想读的书，<br>往往越<em>读不完</em>。</h2>
+          <ul class="falls">
+            <li class="reveal" style="--i:2">每次拿起一本书，你都带着<em>目的</em>：搞懂一个领域、掌握一项技能，或者只是终于把它读完。</li>
+            <li class="reveal" style="--i:3">但书越重要，往往越难啃——陌生的概念、绕不过的前提、作者<em>默认你已经懂</em>的东西。</li>
+            <li class="reveal" style="--i:4">于是你停在某一章，合上，对自己说<span class="q">"以后再看"</span>——然后就再没翻开。</li>
+            <li class="reveal" style="--i:5">AI 总结能告诉你<span class="q">"这本书说了什么"</span>，但那是别人替你读的，不等于你自己读完、读懂。</li>
+          </ul>
+        </div>
+        <figure class="figbox reveal" style="--i:3">
+          <svg class="fig" viewBox="-10 0 310 300" role="img" aria-label="从买了的书到真正读懂，一路流失">
+            <path class="s" d="M20 26 L280 26 L172 284 L128 284 Z"/>
+            <line class="s" x1="50" y1="92" x2="250" y2="92"/>
+            <line class="s" x1="80" y1="158" x2="220" y2="158"/>
+            <line class="s" x1="108" y1="224" x2="192" y2="224"/>
+            <path class="fg" d="M108 224 L192 224 L172 284 L128 284 Z"/>
+            <text class="cn" x="150" y="63" text-anchor="middle">买了的书</text>
+            <text class="cn" x="150" y="129" text-anchor="middle">读到中段</text>
+            <text class="cn" x="150" y="196" text-anchor="middle">读完</text>
+            <text class="cn w" x="150" y="259" text-anchor="middle">真正读懂</text>
+            <line class="sd" x1="2" y1="42" x2="2" y2="258"/>
+            <text class="lbl" x="2" y="34" text-anchor="middle">流失</text>
+          </svg>
+        </figure>
+      </div>
+    </section>
+
+    <!-- ═══════════ 怎么陪你读（真实三步流程） ═══════════ -->
+    <section id="how" class="center">
+      <div class="wrap">
+        <span class="kicker reveal">怎么陪你读 · How It Works</span>
+        <h2 class="headline reveal" style="--i:1">先<em>了解你</em>，再为这本书量身裁，<em>陪你读到最后一页</em>。</h2>
+        <div class="steps">
+          <div class="step reveal" style="--i:2">
+            <div class="n">01</div>
+            <svg class="ic" viewBox="0 0 40 40" aria-hidden="true"><circle class="sg" cx="17" cy="17" r="9"/><line class="sg" x1="23.5" y1="23.5" x2="33" y2="33"/><circle class="fg" cx="17" cy="17" r="2"/></svg>
+            <div class="t">每本书，先聊几句</div>
+            <div class="d">一次不超过 7 问的访谈，弄清你为什么读、已经知道多少、最可能卡在哪。每本书都单独聊一次，不套模板、也不能跳过。</div>
+            <div class="meta">最多 7 问 · 每本书一次</div>
+          </div>
+          <div class="step reveal" style="--i:3">
+            <div class="n">02</div>
+            <svg class="ic" viewBox="0 0 40 40" aria-hidden="true"><line class="sg2" x1="6" y1="13" x2="31" y2="13"/><circle class="sg" cx="13" cy="29" r="4"/><circle class="sg" cx="22" cy="29" r="4"/><line class="sg" x1="16" y1="26" x2="32" y2="11"/><line class="sg" x1="19" y1="26" x2="32" y2="17"/></svg>
+            <div class="t">读前简报，说清怎么陪</div>
+            <div class="d">先给你一份为你写的读前简报，再用大白话讲清楚"我们会怎样陪你读这本书"。用三个试读片段确认，你点头才算数。</div>
+            <div class="meta">读前简报 · 三段试读</div>
+          </div>
+          <div class="step reveal" style="--i:4">
+            <div class="n">03</div>
+            <svg class="ic" viewBox="0 0 40 40" aria-hidden="true"><circle class="sg" cx="14" cy="14" r="3.2"/><circle class="sg" cx="22" cy="14" r="3.2"/><path class="sg" d="M8 27 q6 -8 12 -2"/><path class="sg" d="M16 27 q6 -8 12 -2"/><path class="sg" d="M33 9 V26"/><path class="sg" d="M33 10 L38 12.5 L33 15"/></svg>
+            <div class="t">进入阅读，一路有人陪</div>
+            <div class="d">原文一字不改：该铺垫处有导读，该解释处有裁读注，读完一节有节后助读。任何一句读不懂，划一下就能问 AI。</div>
+            <div class="meta">导读 · 裁读注 · 节后助读 · 问 AI</div>
+          </div>
+        </div>
+        <p class="coda-line reveal" style="--i:5">裁读不替你读，它清掉阻力，让你自己走到最后一页。</p>
+      </div>
+    </section>
+
+    <!-- ═══════════ 产品样张 ═══════════ -->
+    <section id="product" class="showcase">
+      <div class="wrap">
+        <span class="kicker reveal">产品 · Inside the Reader</span>
+        <h2 class="headline reveal" style="--i:1">原文<em>一字不改</em>，理解的阻力被<em>提前铺平</em>。</h2>
+        <p class="lead sec-sub reveal" style="--i:2">导读、裁读注、节后助读和问 AI，都是叠在原文之上的附加层。它们只在有帮助的地方出现——没帮助，就不出现。</p>
+
+        <div class="reader-stage">
+          <!-- 左：阅读器 mock（样张内容取自设计系统 reader UI kit：《查拉图斯特拉如是说》开篇，公版经典） -->
+          <div class="reader reveal" style="--i:2" aria-label="阅读器示意">
+            <div class="bar">
+              <div class="l"><span>≡</span><span class="bk">查拉图斯特拉如是说 · 第一节</span></div>
+              <div class="r"><span>Aa</span><span class="spark">✦</span></div>
+            </div>
+            <div class="body">
+              <div class="brief">
+                <div class="lab">读前简报 · 为第一次读尼采的你</div>
+                <div class="bt">读之前，你需要知道的</div>
+                <p>他的第一句便是那句撼动整个现代的——「上帝死了」。这不是无神论的宣告，而是说：两千年来替人间判定善恶的根基，已经动摇。</p>
+              </div>
+
+              <div class="lead-block">
+                <div class="lab"><b>导读</b> · Lead-in</div>
+                <p>这一节讲查拉图斯特拉在山里隐居十年后决定下山。主旨是：尼采反对只为自己、躲在孤独里玩智慧的哲学家，主张智慧应当像阳光一样流出去。</p>
+              </div>
+
+              <div class="prose">
+                <p>查拉图斯特拉三十岁时，离开他的家乡和他家乡的湖，<span class="mark m-gloss">到山里去</span>。他在那里<span class="mark m-gloss">安享他的智慧和孤独，十年不倦</span><span class="note-ref">1</span>。可是最后，他的心情变了。</p>
+              </div>
+
+              <div class="anno">
+                <div class="tag"><span class="dot"></span>裁读注 · 释义</div>
+                <p>「到山里去」不是字面意义的隐居度假，而是尼采常用的象征：远离人群与世俗观念，独自思考。山代表高处、孤独、自由。</p>
+              </div>
+
+              <div class="prose">
+                <p>「瞧！<span class="mark m-fillin">我对我的智慧感到厌腻，就像蜜蜂采集了过多的蜜</span>，我需要有人伸手来接取智慧。因此我必须下山，<span class="mark m-margin">走下到海的那边</span>。」</p>
+              </div>
+
+              <div class="after-block">
+                <div class="lab">节后助读 · After</div>
+                <p>如果这一节看得吃力，抓住一句就够：真正的智慧会「胀」，满了就想给出去——分享不是牺牲，是本能。</p>
+              </div>
+
+              <div class="ai-pop">
+                <div class="ctx">划选："蜜蜂采集了过多的蜜"</div>
+                <div class="q">✦ 裁读</div>
+                <div class="a">蜜采太多会腻，他的智慧也「满」到不舒服。这不是凡尔赛，而是说：智慧满了就必须给出去，不然自己难受。</div>
+                <div class="ask"><span>继续追问……</span><span>↑</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 右：解说 -->
+          <div class="callouts">
+            <div class="callout reveal" style="--i:3">
+              <div class="co-t">读前简报</div>
+              <div class="co-d">开读之前，为你说清这本书在做什么、大致怎么展开、需要临时补齐什么，以及对你而言哪里最值得关注。</div>
+            </div>
+            <div class="callout reveal" style="--i:4">
+              <div class="co-t">导读与节后助读</div>
+              <div class="co-d">一节原文之前有导读铺垫，之后有节后助读收束——都默认展开、可以收起，也可能整节都不出现。</div>
+            </div>
+            <div class="callout reveal" style="--i:5">
+              <div class="co-t">锚定原文的裁读注</div>
+              <div class="co-d">陌生处就地点开一条注释，精确锚定在原文那句话上。原书自带的脚注尾注完整保留，与 AI 的裁读注清楚区分。</div>
+            </div>
+            <div class="callout reveal" style="--i:6">
+              <div class="co-t">划一下，就能问</div>
+              <div class="co-d">划选一段问 AI，或直接就当前屏幕发问。每个问题独立成会话，还能替你翻遍全书——包括你还没读到的地方。</div>
+            </div>
+            <p class="sample-note reveal" style="--i:7">阅读器示意 · 样张原文取自公版《查拉图斯特拉如是说》</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ 原则 ═══════════ -->
+    <section id="principles" class="principles">
+      <div class="wrap">
+        <span class="kicker reveal">原则 · What We Hold To</span>
+        <h2 class="headline reveal" style="--i:1">有些事，裁读<em>坚持不做</em>。</h2>
+        <div class="pstack">
+          <div class="pblock reveal" style="--i:2">
+            <div class="pl">原文不可变</div>
+            <div class="pt">裁读生成的一切都是<em>附加层</em>，绝不改写、删减或替换原文。</div>
+            <div class="pd">就算所有 AI 内容都失效了，原文照样能读。原书永远是唯一的事实来源。</div>
+          </div>
+          <div class="pblock reveal" style="--i:3">
+            <div class="pl">先理解你，再动笔</div>
+            <div class="pt">每本书都要<em>单独聊一次</em>，不套用默认模板，也不能跳过。</div>
+            <div class="pd">长期画像不能代替这一本书的访谈——因为你为什么读这一本、卡在哪里，每次都不一样。</div>
+          </div>
+          <div class="pblock reveal" style="--i:4">
+            <div class="pl">没价值就留白</div>
+            <div class="pt">不为凑满而注释；帮不上忙的地方<em>就空着</em>。</div>
+            <div class="pd">页面不会为缺失的内容留一张"暂无内容"的空卡片。原文始终是阅读页的主体。</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ 适合谁 ═══════════ -->
+    <section id="for" class="center">
+      <div class="wrap">
+        <span class="kicker reveal">适合 · For</span>
+        <h2 class="headline reveal" style="--i:1">那些你一直想读、却总读不完的<em>中文书</em>。</h2>
+        <div class="fors" style="text-align:left">
+          <div class="for reveal" style="--i:2"><span class="fi">难</span><div class="fx"><div class="fh">难啃的专业书</div><div class="fd">哲学、社科、认知科学……概念密、前提多，一个人读容易卡住。</div></div></div>
+          <div class="for reveal" style="--i:3"><span class="fi">经</span><div class="fx"><div class="fh">绕不过前提的经典</div><div class="fd">作者默认你懂的时代背景与术语，裁读替你临时补齐。</div></div></div>
+          <div class="for reveal" style="--i:4"><span class="fi">新</span><div class="fx"><div class="fh">要系统学的新领域</div><div class="fd">带着明确目的进入一门陌生学科，需要有人铺一条路。</div></div></div>
+          <div class="for reveal" style="--i:5"><span class="fi">旧</span><div class="fx"><div class="fh">读过却没真懂的旧书</div><div class="fd">当年囫囵翻过、想重读一遍真正读进去的那几本。</div></div></div>
+        </div>
+
+        <div class="nowcard reveal" style="--i:3">
+          <div class="lab">关于现在的裁读</div>
+          <p>它才刚上线，还很稚嫩：目前只处理中文 EPUB，用 Google 登录，没有广告，也没有订阅和额度。很多地方都还在一点点打磨，远谈不上完善——但它已经能做那件最要紧的事：安静地，陪你读完一本书。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════ CODA ═══════════ -->
+    <section id="start" class="coda">
+      <div class="wrap">
+        <p class="vision reveal">那本你一直读不完的书，<em>这一次，读到最后一页</em>。</p>
+        <div class="actions reveal" style="--i:1">
+          <a class="btn btn-green" href="#top">挑一本书，开始试读</a>
+          <a class="btn btn-ghost" href="#how">再看看它怎么陪你读</a>
+        </div>
+        <p class="signoff reveal" style="--i:2">—— 裁读 · ReadTailor / 2026</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span class="fb">裁读<span>ReadTailor</span></span>
+    <span class="fn">AI 陪读 · 中文 EPUB · 陪你真正读完</span>
+  </footer>
+
+  <script>
+    (function () {
+      var reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      /* 顶部进度条 */
+      var progress = document.getElementById('progress');
+      addEventListener('scroll', function () {
+        var max = document.documentElement.scrollHeight - innerHeight;
+        progress.style.width = (max > 0 ? scrollY / max * 100 : 0) + '%';
+      }, { passive: true });
+
+      /* 招牌逐字浮出：拆分标题字符，保留 <em> */
+      var PUNCT = '，。；：、！？“”「」——…·';
+      function splitChars(el, state) {
+        var kids = [].slice.call(el.childNodes);
+        kids.forEach(function (node) {
+          if (node.nodeType === 3) {
+            var frag = document.createDocumentFragment();
+            node.nodeValue.split('').forEach(function (chr) {
+              if (chr.trim() === '') { frag.appendChild(document.createTextNode(chr)); return; }
+              var s = document.createElement('span');
+              s.className = 'ch'; s.textContent = chr;
+              s.style.transitionDelay = (state.i * 55 + state.pausePad) + 'ms';
+              state.i++;
+              if (PUNCT.indexOf(chr) >= 0) state.pausePad += 90;
+              frag.appendChild(s); state.spans.push(s);
+            });
+            el.replaceChild(frag, node);
+          } else if (node.nodeType === 1) {
+            splitChars(node, state);
+          }
+        });
+      }
+      var heroTitle = document.querySelector('[data-reveal-chars]');
+      if (heroTitle && !reduce) {
+        var state = { i: 0, pausePad: 0, spans: [] };
+        splitChars(heroTitle, state);
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () { state.spans.forEach(function (s) { s.classList.add('lit'); }); });
+        });
+      }
+
+      /* 滚动揭示 */
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+      }, { threshold: 0.16, rootMargin: '0px 0px -8% 0px' });
+      document.querySelectorAll('section').forEach(function (s) { io.observe(s); });
+    })();
+  </script>
+</body>
+</html>
