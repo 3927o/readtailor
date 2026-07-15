@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import type { ReadingSetupOutcome, TrialFragmentSelection } from '@readtailor/agent-kit';
 import {
@@ -499,6 +499,104 @@ describePostgres(`user book workflow PostgreSQL integration${skipReason}`, () =>
       expect(operation?.completedAt).toBeInstanceOf(Date);
     },
   );
+
+  it('commits adoption before enqueue and replays pending generations by state', async () => {
+    const { db } = getTestDatabase();
+    const graph = await trialReviewGraph(db);
+    const failedEnqueueIds: string[] = [];
+    const failingGenerations: ContentGenerationEnqueuer = {
+      async enqueue(input) {
+        failedEnqueueIds.push(input.generationId);
+        throw new Error('queue unavailable');
+      },
+    };
+    const setupEngine: ReadingSetupEngine = {
+      async runTurn() {
+        throw new Error('reading setup agent is not used during adoption');
+      },
+    };
+    const input = {
+      trialRevisionId: graph.trialRevisionId,
+      strategyDraftVersionId: graph.strategyDraftVersionId,
+    };
+    expect(input).not.toHaveProperty('idempotencyKey');
+
+    const failingService = createService(setupEngine, failingGenerations).forUser(graph.userId);
+    await expect(failingService.adoptTrial(graph.userBookId, input)).rejects.toMatchObject({
+      statusCode: 503,
+    });
+
+    const committedStrategies = await db
+      .select()
+      .from(strategyVersions)
+      .where(eq(strategyVersions.userBookId, graph.userBookId));
+    const committedGenerations = await db
+      .select()
+      .from(nodeGenerations)
+      .where(and(
+        eq(nodeGenerations.userBookId, graph.userBookId),
+        eq(nodeGenerations.generationScope, 'formal'),
+      ));
+    const [committedDraft] = await db
+      .select()
+      .from(strategyDraftVersions)
+      .where(eq(strategyDraftVersions.id, graph.strategyDraftVersionId));
+    const [committedRevision] = await db
+      .select()
+      .from(trialRevisions)
+      .where(eq(trialRevisions.id, graph.trialRevisionId));
+    const [committedBook] = await db
+      .select()
+      .from(userBooks)
+      .where(eq(userBooks.id, graph.userBookId));
+
+    expect(committedStrategies).toHaveLength(1);
+    expect(committedGenerations).toHaveLength(4);
+    expect(new Set(committedGenerations.map((generation) => (
+      `${generation.sectionId}:${generation.segment}`
+    ))).size).toBe(4);
+    expect(committedGenerations.every(({ status }) => status === 'queued')).toBe(true);
+    expect(new Set(failedEnqueueIds)).toEqual(
+      new Set(committedGenerations.map(({ id }) => id)),
+    );
+    expect(committedDraft).toMatchObject({ status: 'confirmed' });
+    expect(committedRevision).toMatchObject({ status: 'adopted' });
+    expect(committedBook).toMatchObject({
+      workflowStatus: 'active_reading',
+      currentStrategyVersionId: committedStrategies[0]?.id,
+    });
+
+    const replayEnqueueIds: string[] = [];
+    const replayService = createService(setupEngine, {
+      async enqueue(enqueueInput) {
+        replayEnqueueIds.push(enqueueInput.generationId);
+      },
+    }).forUser(graph.userId);
+    const replay = await replayService.adoptTrial(graph.userBookId, input);
+
+    const replayedStrategies = await db
+      .select()
+      .from(strategyVersions)
+      .where(eq(strategyVersions.userBookId, graph.userBookId));
+    const replayedGenerations = await db
+      .select()
+      .from(nodeGenerations)
+      .where(and(
+        eq(nodeGenerations.userBookId, graph.userBookId),
+        eq(nodeGenerations.generationScope, 'formal'),
+      ));
+
+    expect(replay.strategyVersionId).toBe(committedStrategies[0]?.id);
+    expect(replayedStrategies.map(({ id }) => id)).toEqual(
+      committedStrategies.map(({ id }) => id),
+    );
+    expect(new Set(replayedGenerations.map(({ id }) => id))).toEqual(
+      new Set(committedGenerations.map(({ id }) => id)),
+    );
+    expect(new Set(replayEnqueueIds)).toEqual(
+      new Set(committedGenerations.map(({ id }) => id)),
+    );
+  });
 
   it('adopts a published trial idempotently under concurrent requests', async () => {
     const { db } = getTestDatabase();
