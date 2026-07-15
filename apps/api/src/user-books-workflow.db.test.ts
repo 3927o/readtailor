@@ -1,15 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
-import type { ReadingSetupOutcome } from '@readtailor/agent-kit';
+import type { ReadingSetupOutcome, TrialFragmentSelection } from '@readtailor/agent-kit';
 import {
   bookReaderProfileVersions,
   interviewAnswers,
   interviewSessions,
   nodeGenerations,
+  readingSetupOperations,
   strategyDraftVersions,
   strategyVersions,
   trialRevisions,
+  trialSegments,
   userBooks,
 } from '@readtailor/database';
 import type { AskAiEngine } from './ask-ai-engine';
@@ -20,6 +22,7 @@ import {
   getTestDatabase,
   hasTestDatabase,
   interviewingGraph,
+  strategyReviewGraph,
   trialReviewGraph,
 } from './test/database';
 
@@ -147,6 +150,78 @@ async function collect<T>(stream: AsyncGenerator<T>): Promise<T[]> {
   return events;
 }
 
+type TrialNodeContent = {
+  section_id: string;
+  segment: number;
+  blocks: Array<{ block_index: number; text: string }>;
+};
+
+function validTrialFragments(
+  input: Parameters<ReadingSetupEngine['runTurn']>[0],
+): TrialFragmentSelection[] {
+  const nodes = input.context.trialNodeContents as TrialNodeContent[];
+  const tags = ['threshold', 'typical', 'hardest'] as const;
+  return nodes.map((node, index) => {
+    const firstBlock = node.blocks[0];
+    const lastBlock = node.blocks.at(-1);
+    if (!firstBlock || !lastBlock || !tags[index]) {
+      throw new Error('trial selection test context is incomplete');
+    }
+    return {
+      section_id: node.section_id,
+      segment: node.segment,
+      tag: tags[index],
+      range: {
+        start: { block_index: firstBlock.block_index },
+        end: { block_index: lastBlock.block_index },
+      },
+      reason: `验证 ${tags[index]} 试读片段`,
+    };
+  });
+}
+
+const invalidTrialFragmentCases: Array<{
+  name: string;
+  mutate: (fragments: TrialFragmentSelection[]) => TrialFragmentSelection[];
+}> = [
+  {
+    name: 'a position outside the candidate pool',
+    mutate: (fragments) => fragments.map((fragment, index) => (
+      index === 0 ? { ...fragment, section_id: 'section-4' } : fragment
+    )),
+  },
+  {
+    name: 'a duplicate semantic tag',
+    mutate: (fragments) => fragments.map((fragment, index) => (
+      index === 1 ? { ...fragment, tag: 'threshold' } : fragment
+    )),
+  },
+  {
+    name: 'an out-of-bounds block range',
+    mutate: (fragments) => fragments.map((fragment, index) => (
+      index === 0
+        ? {
+            ...fragment,
+            range: { start: { block_index: 999 }, end: { block_index: 999 } },
+          }
+        : fragment
+    )),
+  },
+  {
+    name: 'an overlapping selection from the same node',
+    mutate: (fragments) => fragments.map((fragment, index) => (
+      index === 1
+        ? {
+            ...fragment,
+            section_id: fragments[0]!.section_id,
+            segment: fragments[0]!.segment,
+            range: fragments[0]!.range,
+          }
+        : fragment
+    )),
+  },
+];
+
 const describePostgres = hasTestDatabase ? describe : describe.skip;
 const skipReason = hasTestDatabase ? '' : ' (skipped: TEST_DATABASE_URL is not set)';
 
@@ -267,6 +342,163 @@ describePostgres(`user book workflow PostgreSQL integration${skipReason}`, () =>
     expect(runTurn).toHaveBeenCalledTimes(2);
     expect(recoveredBook?.workflowStatus).toBe('strategy_review');
   });
+
+  it('atomically approves a draft and creates one complete trial generation graph', async () => {
+    const { db } = getTestDatabase();
+    const graph = await strategyReviewGraph(db);
+    const runTurn = vi.fn<ReadingSetupEngine['runTurn']>(async (input) => ({
+      type: 'fragments',
+      fragments: validTrialFragments(input),
+    }));
+    const enqueue = vi.fn<ContentGenerationEnqueuer['enqueue']>(async () => {});
+    const service = createService({ runTurn }, { enqueue }).forUser(graph.userId);
+    const idempotencyKey = randomUUID();
+
+    const events = await collect(service.streamApproveStrategy(graph.userBookId, {
+      strategyDraftVersionId: graph.strategyDraftVersionId,
+      idempotencyKey,
+    }));
+
+    const revisions = await db
+      .select()
+      .from(trialRevisions)
+      .where(eq(trialRevisions.userBookId, graph.userBookId));
+    const segments = revisions[0]
+      ? await db
+          .select()
+          .from(trialSegments)
+          .where(eq(trialSegments.trialRevisionId, revisions[0].id))
+      : [];
+    const generations = await db
+      .select()
+      .from(nodeGenerations)
+      .where(eq(nodeGenerations.userBookId, graph.userBookId));
+    const [draft] = await db
+      .select()
+      .from(strategyDraftVersions)
+      .where(eq(strategyDraftVersions.id, graph.strategyDraftVersionId));
+    const [book] = await db
+      .select()
+      .from(userBooks)
+      .where(eq(userBooks.id, graph.userBookId));
+    const [operation] = await db
+      .select()
+      .from(readingSetupOperations)
+      .where(eq(readingSetupOperations.idempotencyKey, idempotencyKey));
+
+    expect(runTurn).toHaveBeenCalledOnce();
+    expect(runTurn.mock.calls[0]?.[0]).toMatchObject({ phase: 'select_trial' });
+    expect(events.at(-1)).toMatchObject({ type: 'trial_created' });
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0]).toMatchObject({
+      revision: 1,
+      status: 'generating',
+      strategyDraftVersionId: graph.strategyDraftVersionId,
+    });
+    expect(segments).toHaveLength(3);
+    expect(segments.map(({ ordinal }) => ordinal).sort()).toEqual([1, 2, 3]);
+    expect(new Set(segments.map(({ ordinal }) => ordinal)).size).toBe(3);
+    expect(segments.every(({ status }) => status === 'pending')).toBe(true);
+    expect(generations).toHaveLength(3);
+    expect(generations.every((generation) => (
+      generation.generationScope === 'trial'
+      && generation.strategyDraftVersionId === graph.strategyDraftVersionId
+      && generation.status === 'queued'
+    ))).toBe(true);
+    expect(new Set(generations.map(({ trialSegmentId }) => trialSegmentId))).toEqual(
+      new Set(segments.map(({ id }) => id)),
+    );
+    expect(new Set(enqueue.mock.calls.map(([input]) => input.generationId))).toEqual(
+      new Set(generations.map(({ id }) => id)),
+    );
+    expect(draft).toMatchObject({ status: 'approved_for_trial' });
+    expect(draft?.approvedForTrialAt).toBeInstanceOf(Date);
+    expect(book).toMatchObject({
+      workflowStatus: 'trial_generating',
+      currentStrategyDraftVersionId: graph.strategyDraftVersionId,
+      currentTrialRevisionId: revisions[0]?.id,
+    });
+    expect(operation).toMatchObject({
+      kind: 'trial_selection',
+      source: 'strategy_approve',
+      baseStrategyDraftVersionId: graph.strategyDraftVersionId,
+      status: 'completed',
+      attemptCount: 1,
+      resultTrialRevisionId: revisions[0]?.id,
+      leaseId: null,
+      errorSummary: null,
+    });
+    expect(operation?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it.each(invalidTrialFragmentCases)(
+    'rejects $name without creating partial trial state',
+    async ({ mutate }) => {
+      const { db } = getTestDatabase();
+      const graph = await strategyReviewGraph(db);
+      const runTurn = vi.fn<ReadingSetupEngine['runTurn']>(async (input) => ({
+        type: 'fragments',
+        fragments: mutate(validTrialFragments(input)),
+      }));
+      const enqueue = vi.fn<ContentGenerationEnqueuer['enqueue']>(async () => {});
+      const service = createService({ runTurn }, { enqueue }).forUser(graph.userId);
+      const idempotencyKey = randomUUID();
+
+      const events = await collect(service.streamApproveStrategy(graph.userBookId, {
+        strategyDraftVersionId: graph.strategyDraftVersionId,
+        idempotencyKey,
+      }));
+
+      const revisions = await db
+        .select()
+        .from(trialRevisions)
+        .where(eq(trialRevisions.userBookId, graph.userBookId));
+      const segments = await db.select().from(trialSegments);
+      const generations = await db
+        .select()
+        .from(nodeGenerations)
+        .where(eq(nodeGenerations.userBookId, graph.userBookId));
+      const [draft] = await db
+        .select()
+        .from(strategyDraftVersions)
+        .where(eq(strategyDraftVersions.id, graph.strategyDraftVersionId));
+      const [book] = await db
+        .select()
+        .from(userBooks)
+        .where(eq(userBooks.id, graph.userBookId));
+      const [operation] = await db
+        .select()
+        .from(readingSetupOperations)
+        .where(eq(readingSetupOperations.idempotencyKey, idempotencyKey));
+
+      expect(runTurn).toHaveBeenCalledOnce();
+      expect(events.at(-1)).toMatchObject({ type: 'error', code: 'validation_failed' });
+      expect(revisions).toHaveLength(0);
+      expect(segments).toHaveLength(0);
+      expect(generations).toHaveLength(0);
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(draft).toMatchObject({
+        status: 'draft',
+        approvedForTrialAt: null,
+      });
+      expect(book).toMatchObject({
+        workflowStatus: 'strategy_review',
+        currentStrategyDraftVersionId: graph.strategyDraftVersionId,
+        currentTrialRevisionId: null,
+      });
+      expect(operation).toMatchObject({
+        kind: 'trial_selection',
+        source: 'strategy_approve',
+        baseStrategyDraftVersionId: graph.strategyDraftVersionId,
+        status: 'failed',
+        attemptCount: 1,
+        resultTrialRevisionId: null,
+        leaseId: null,
+      });
+      expect(operation?.errorSummary).toBeTruthy();
+      expect(operation?.completedAt).toBeInstanceOf(Date);
+    },
+  );
 
   it('adopts a published trial idempotently under concurrent requests', async () => {
     const { db } = getTestDatabase();
