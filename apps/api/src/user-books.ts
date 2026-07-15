@@ -2861,7 +2861,7 @@ function createUserBookServiceForUser(
               readingSessions.clientIntervalId,
             ],
             set: {
-              endedAt: sql`greatest(coalesce(${readingSessions.endedAt}, ${endedAt}), ${endedAt})`,
+              endedAt: sql`greatest(coalesce(${readingSessions.endedAt}, excluded.ended_at), excluded.ended_at)`,
               effectiveSeconds: sql`greatest(${readingSessions.effectiveSeconds}, ${input.effectiveSeconds})`,
               forwardSeconds: sql`greatest(${readingSessions.forwardSeconds}, ${input.forwardSeconds})`,
               forwardChars: sql`greatest(${readingSessions.forwardChars}, ${input.forwardChars})`,
@@ -2896,6 +2896,7 @@ function createUserBookServiceForUser(
       }
       const now = new Date();
       const validated = validateReadingActivitySlice(input, now);
+      const endedAtSql = sql`${validated.endedAt.toISOString()}::timestamptz`;
       const meta = await getManifestMeta(options.books, owned.sharedBook.id);
       const classified = classifyReadingActivitySlice(meta, input, validated.effectiveSeconds);
       const buckets = splitActivitySliceByLocalDay(validated.startedAt, validated.endedAt, input.timezone);
@@ -2924,8 +2925,8 @@ function createUserBookServiceForUser(
               readingSessions.clientIntervalId,
             ],
             set: {
-              startedAt: sql`least(${readingSessions.startedAt}, ${validated.startedAt})`,
-              endedAt: sql`greatest(coalesce(${readingSessions.endedAt}, ${validated.endedAt}), ${validated.endedAt})`,
+              startedAt: sql`least(${readingSessions.startedAt}, excluded.started_at)`,
+              endedAt: sql`greatest(coalesce(${readingSessions.endedAt}, excluded.ended_at), excluded.ended_at)`,
               updatedAt: now,
             },
           })
@@ -2973,7 +2974,7 @@ function createUserBookServiceForUser(
         await tx
           .update(readingSessions)
           .set({
-            endedAt: sql`greatest(coalesce(${readingSessions.endedAt}, ${validated.endedAt}), ${validated.endedAt})`,
+            endedAt: sql`greatest(coalesce(${readingSessions.endedAt}, ${endedAtSql}), ${endedAtSql})`,
             effectiveSeconds: sql`${readingSessions.effectiveSeconds} + ${validated.effectiveSeconds}`,
             forwardSeconds: sql`${readingSessions.forwardSeconds} + ${classified.forwardSeconds}`,
             forwardChars: sql`${readingSessions.forwardChars} + ${classified.forwardChars}`,
@@ -3007,7 +3008,7 @@ function createUserBookServiceForUser(
                 effectiveSeconds: sql`${readingDailyBookStats.effectiveSeconds} + ${bucket.effectiveSeconds}`,
                 forwardSeconds: sql`${readingDailyBookStats.forwardSeconds} + ${forwardSeconds}`,
                 forwardChars: sql`${readingDailyBookStats.forwardChars} + ${forwardChars}`,
-                lastReadAt: sql`greatest(coalesce(${readingDailyBookStats.lastReadAt}, ${validated.endedAt}), ${validated.endedAt})`,
+                lastReadAt: sql`greatest(coalesce(${readingDailyBookStats.lastReadAt}, excluded.last_read_at), excluded.last_read_at)`,
                 updatedAt: now,
               },
             });
@@ -3046,7 +3047,7 @@ function createUserBookServiceForUser(
                 effectiveSeconds: sql`${bookReadingStats.effectiveSeconds} + ${validated.effectiveSeconds}`,
                 forwardSeconds: sql`${bookReadingStats.forwardSeconds} + ${classified.forwardSeconds}`,
                 forwardChars: sql`${bookReadingStats.forwardChars} + ${classified.forwardChars}`,
-                lastReadAt: sql`greatest(coalesce(${bookReadingStats.lastReadAt}, ${validated.endedAt}), ${validated.endedAt})`,
+                lastReadAt: sql`greatest(coalesce(${bookReadingStats.lastReadAt}, excluded.last_read_at), excluded.last_read_at)`,
                 updatedAt: now,
               },
             });
