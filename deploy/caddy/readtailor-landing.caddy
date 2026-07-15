@@ -1,0 +1,5 @@
+https://landing.readtailor.narcissus.life {
+	root * /var/www/readtailor-landing
+	encode zstd gzip
+	file_server
+}
