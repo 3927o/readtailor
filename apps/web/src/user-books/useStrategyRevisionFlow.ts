@@ -18,6 +18,7 @@ import {
   strategyRevisionStreamReducer,
   type StrategyRevisionSource,
 } from './strategyRevisionStreamState';
+import { applyTransition } from './transitions';
 
 interface RevisionCommand {
   source: StrategyRevisionSource;
@@ -72,15 +73,14 @@ export function useStrategyRevisionFlow(options: {
   const complete = async (strategy: StrategySnapshot) => {
     if (completedDrafts.current.has(strategy.draftId)) return;
     completedDrafts.current.add(strategy.draftId);
-    queryClient.setQueryData(
-      userBookQueryKeys.strategy(options.userBookId, strategy.draftId),
-      strategy,
-    );
     dispatch({ type: 'complete', strategy });
     commandRef.current = null;
     options.onCompleted?.(strategy);
+    await applyTransition(queryClient, options.userBookId, {
+      type: 'strategy_committed',
+      strategy,
+    });
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(options.userBookId) }),
       queryClient.invalidateQueries({ queryKey: userBookQueryKeys.readingSetupOperations(options.userBookId) }),
     ]);
   };

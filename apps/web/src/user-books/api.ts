@@ -631,7 +631,7 @@ export async function adoptTrial(
   userBookId: string,
   revisionId: string,
   draftId: string,
-): Promise<UserBookSummary> {
+): Promise<UserBookDetail> {
   await post(`${userBookRoot(userBookId)}/trial/adopt`, {
     trialRevisionId: revisionId,
     strategyDraftVersionId: draftId,

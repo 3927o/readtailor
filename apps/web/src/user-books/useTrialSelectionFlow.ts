@@ -10,7 +10,6 @@ import {
   streamApproveStrategyForTrial,
   type TrialSelectionClientEvent,
   type TrialSnapshot,
-  type UserBookDetail,
 } from './api';
 import { userBookQueryKeys } from './queryKeys';
 import {
@@ -19,6 +18,7 @@ import {
   type TrialOrdinal,
   type TrialSelectionStreamAction,
 } from './trialSelectionStreamState';
+import { applyTransition } from './transitions';
 
 interface TrialSelectionCommand {
   draftId: string;
@@ -73,28 +73,11 @@ export function useTrialSelectionFlow(options: {
   const complete = async (trial: TrialSnapshot) => {
     if (trial.draftId !== options.draftId || completedRevisions.current.has(trial.revisionId)) return;
     completedRevisions.current.add(trial.revisionId);
-    queryClient.setQueryData(
-      userBookQueryKeys.trial(options.userBookId, trial.revisionId),
-      trial,
-    );
-    queryClient.setQueryData<UserBookDetail>(
-      userBookQueryKeys.detail(options.userBookId),
-      (current) => current ? {
-        ...current,
-        workflowStatus: trial.status === 'failed'
-          ? 'trial_generation_failed'
-          : trial.status === 'ready'
-            ? 'trial_review'
-            : 'trial_generating',
-        currentStrategyDraftVersionId: trial.draftId,
-        currentTrialRevisionId: trial.revisionId,
-      } : current,
-    );
     dispatchTracked({ type: 'complete', trial });
     commandRef.current = null;
     options.onCompleted?.(trial);
+    await applyTransition(queryClient, options.userBookId, { type: 'trial_committed', trial });
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(options.userBookId) }),
       queryClient.invalidateQueries({ queryKey: userBookQueryKeys.readingSetupOperations(options.userBookId) }),
     ]);
   };

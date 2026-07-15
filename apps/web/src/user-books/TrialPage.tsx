@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate, useParams } from 'react-router';
+import { useParams } from 'react-router';
 import { bookAssetBaseUrl } from '../library/api';
 import { nearestReaderAnchor } from '../reader/content';
 import { NotePopover, popoverPlacement } from '../reader/NotePopover';
@@ -18,19 +18,19 @@ import {
   markTrialSampleViewed,
   retryTrial,
 } from './api';
-import type { TailoredContent, TrialSample, TrialSnapshot, UserBookDetail } from './api';
+import type { TailoredContent, TrialSample, TrialSnapshot } from './api';
 import {
   AdjustmentForm,
   BackToShelf,
-  WorkflowFallback,
   WorkflowMessage,
   WorkflowPage,
 } from './components';
 import { userBookQueryKeys } from './queryKeys';
 import { ProgressiveStrategyView } from './ProgressiveStrategyView';
 import { ProgressiveTrialView } from './ProgressiveTrialView';
+import { applyTransition } from './transitions';
+import { useReadingSetupWorkflow } from './useReadingSetupWorkflow';
 import { useStrategyRevisionFlow } from './useStrategyRevisionFlow';
-import { useWorkflowGate } from './useWorkflowGate';
 
 const TRIAL_READING_ANCHOR_TOP = 96;
 
@@ -79,14 +79,13 @@ function trialEnhancementVersion(sample: TrialSample | undefined): string {
 
 export function TrialPage() {
   const { id = '' } = useParams();
-  const navigate = useNavigate();
+  const { userBook } = useReadingSetupWorkflow();
   const queryClient = useQueryClient();
-  const gate = useWorkflowGate(id, ['trial_generating', 'trial_generation_failed', 'trial_review']);
-  const currentTrialRevisionId = gate.query.data?.currentTrialRevisionId ?? '';
+  const currentTrialRevisionId = userBook.currentTrialRevisionId ?? '';
   const trial = useQuery({
     queryKey: userBookQueryKeys.trial(id, currentTrialRevisionId),
     queryFn: () => getTrial(id, currentTrialRevisionId),
-    enabled: gate.active && Boolean(currentTrialRevisionId),
+    enabled: Boolean(currentTrialRevisionId),
     refetchInterval: (current) => current.state.data?.status === 'generating' ? 1000 : false,
   });
   const [sampleIndex, setSampleIndex] = useState(0);
@@ -109,14 +108,14 @@ export function TrialPage() {
   const baseStrategy = useQuery({
     queryKey: userBookQueryKeys.strategy(id, baseDraftId),
     queryFn: () => getStrategy(id, baseDraftId),
-    enabled: gate.active && Boolean(baseDraftId),
+    enabled: Boolean(baseDraftId),
   });
   const revision = useStrategyRevisionFlow({
     userBookId: id,
     source: 'trial_feedback',
     baseDraftId,
     baseTrialRevisionId: currentTrialRevisionId || null,
-    enabled: gate.active && Boolean(baseDraftId && currentTrialRevisionId),
+    enabled: Boolean(baseDraftId && currentTrialRevisionId),
     onCompleted: () => setFeedback(''),
     onRecoverableFeedback: setFeedback,
   });
@@ -141,18 +140,7 @@ export function TrialPage() {
     mutationFn: () => retryTrial(id),
     onSuccess: async (snapshot) => {
       resetTrialView();
-      saveSnapshot(snapshot);
-      queryClient.setQueryData<UserBookDetail>(userBookQueryKeys.detail(id), (current) => current ? {
-        ...current,
-        workflowStatus: snapshot.status === 'failed'
-          ? 'trial_generation_failed'
-          : snapshot.status === 'ready'
-            ? 'trial_review'
-            : 'trial_generating',
-        currentStrategyDraftVersionId: snapshot.draftId,
-        currentTrialRevisionId: snapshot.revisionId,
-      } : current);
-      await queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
+      await applyTransition(queryClient, id, { type: 'trial_committed', trial: snapshot });
     },
     onError: resyncOnConflict,
   });
@@ -166,8 +154,7 @@ export function TrialPage() {
       return adoptTrial(id, trial.data.revisionId, trial.data.draftId);
     },
     onSuccess: (userBook) => {
-      queryClient.setQueryData(userBookQueryKeys.detail(id), userBook);
-      navigate(`/user-books/${encodeURIComponent(id)}/read`, { replace: true });
+      void applyTransition(queryClient, id, { type: 'reading_started', userBook });
     },
     onError: resyncOnConflict,
   });
@@ -238,9 +225,7 @@ export function TrialPage() {
     };
   }, [popover]);
 
-  if (gate.query.isPending || !gate.active) return <WorkflowFallback title="正在打开试读" detail="正在确认当前试读版本。" />;
-  if (gate.query.isError) return <WorkflowFallback title="试读暂时打不开" detail={gate.query.error.message} retry={() => void gate.query.refetch()} />;
-  const book = gate.query.data.sharedBook;
+  const book = userBook.sharedBook;
   if (trial.isPending) return <WorkflowPage book={book} kicker="TRIAL SAMPLES · 三个试读" title="先用三段原文试一试"><WorkflowMessage title="正在读取试读状态">当前 revision 正在从服务端恢复。</WorkflowMessage></WorkflowPage>;
   if (trial.isError) return <WorkflowPage book={book} kicker="TRIAL SAMPLES · 三个试读" title="先用三段原文试一试"><WorkflowMessage title="暂时读不到试读" action={<button className="button button-ghost" type="button" onClick={() => void trial.refetch()}>重新读取</button>}>{trial.error.message}</WorkflowMessage></WorkflowPage>;
   const snapshot = trial.data;

@@ -8,12 +8,13 @@ import {
   streamInterviewAnswer,
   streamResumeInterview,
 } from './api';
-import type { InterviewClientStreamEvent, InterviewQuestion, UserBookDetail } from './api';
+import type { InterviewClientStreamEvent, InterviewQuestion } from './api';
 import { WorkflowFallback, WorkflowMessage, WorkflowPage } from './components';
 import { ProgressiveStrategyView } from './ProgressiveStrategyView';
 import { IDLE_INTERVIEW_STREAM, interviewStreamReducer } from './interviewStreamState';
 import { userBookQueryKeys } from './queryKeys';
-import { useWorkflowGate } from './useWorkflowGate';
+import { applyTransition } from './transitions';
+import { useReadingSetupWorkflow } from './useReadingSetupWorkflow';
 
 // Live state accumulated from the SSE turn (§4.3): the acknowledgment and prompt arrive one
 // fragment at a time, options stagger in, and the agent reports its own information
@@ -51,20 +52,19 @@ function Typeset({ text }: { text: string }) {
 
 export function InterviewPage() {
   const { id = '' } = useParams();
-  const gate = useWorkflowGate(id, ['on_shelf', 'interviewing']);
+  const { userBook } = useReadingSetupWorkflow();
   const queryClient = useQueryClient();
-  const shouldStart = gate.active && gate.query.data?.workflowStatus === 'on_shelf';
+  const shouldStart = userBook.workflowStatus === 'on_shelf';
   const start = useMutation({
     mutationFn: () => startInterview(id),
     onSuccess: (snapshot) => {
-      queryClient.setQueryData(userBookQueryKeys.interview(id), snapshot);
-      void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
+      void applyTransition(queryClient, id, { type: 'interview_started', interview: snapshot });
     },
   });
   const interview = useQuery({
     queryKey: userBookQueryKeys.interview(id),
     queryFn: () => getInterview(id),
-    enabled: gate.active && !shouldStart,
+    enabled: !shouldStart,
     refetchInterval: (current) => current.state.data?.status === 'generating' ? 1800 : false,
   });
   const [text, setText] = useState('');
@@ -100,14 +100,7 @@ export function InterviewPage() {
       });
       void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.interview(id) });
     } else if (event.type === 'draft_final') {
-      const strategy = event.strategy;
-      queryClient.setQueryData(userBookQueryKeys.strategy(id, strategy.draftId), strategy);
-      queryClient.setQueryData<UserBookDetail>(userBookQueryKeys.detail(id), (current) => current ? {
-        ...current,
-        workflowStatus: 'strategy_review',
-        currentStrategyDraftVersionId: strategy.draftId,
-      } : current);
-      void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
+      void applyTransition(queryClient, id, { type: 'strategy_committed', strategy: event.strategy });
     } else if (event.type === 'done') {
       if (event.workflowStatus === 'interviewing') void interview.refetch();
       else void queryClient.invalidateQueries({ queryKey: userBookQueryKeys.detail(id) });
@@ -172,13 +165,7 @@ export function InterviewPage() {
     answer.mutate({ questionId: question.id, ...choice });
   };
 
-  if (gate.query.isPending || !gate.active) {
-    return <WorkflowFallback title="正在找到这本书" detail="正在恢复你上次离开的访谈位置。" />;
-  }
-  if (gate.query.isError) {
-    return <WorkflowFallback title="这本书暂时打不开" detail={gate.query.error.message} retry={() => void gate.query.refetch()} />;
-  }
-  const book = gate.query.data.sharedBook;
+  const book = userBook.sharedBook;
   if (shouldStart) {
     return start.isError
       ? <WorkflowPage book={book} kicker="A CONVERSATION · 本书访谈" title="先聊几句" hideHeader><WorkflowMessage title="访谈暂时没有开始" action={<button className="button button-ghost" type="button" onClick={() => start.mutate()}>重新开始</button>}>{start.error.message}</WorkflowMessage></WorkflowPage>

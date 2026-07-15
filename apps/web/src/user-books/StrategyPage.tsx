@@ -1,12 +1,11 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate, useParams } from 'react-router';
+import { useParams } from 'react-router';
 import { bookAssetBaseUrl } from '../library/api';
 import { getStrategy } from './api';
 import {
   AdjustmentForm,
   BackToShelf,
-  WorkflowFallback,
   WorkflowMessage,
   WorkflowPage,
 } from './components';
@@ -15,17 +14,16 @@ import { ProgressiveTrialView } from './ProgressiveTrialView';
 import { userBookQueryKeys } from './queryKeys';
 import { useStrategyRevisionFlow } from './useStrategyRevisionFlow';
 import { useTrialSelectionFlow } from './useTrialSelectionFlow';
-import { useWorkflowGate } from './useWorkflowGate';
+import { useReadingSetupWorkflow } from './useReadingSetupWorkflow';
 
 export function StrategyPage() {
   const { id = '' } = useParams();
-  const navigate = useNavigate();
-  const gate = useWorkflowGate(id, ['strategy_review']);
-  const currentDraftId = gate.query.data?.currentStrategyDraftVersionId ?? '';
+  const { userBook } = useReadingSetupWorkflow();
+  const currentDraftId = userBook.currentStrategyDraftVersionId ?? '';
   const strategy = useQuery({
     queryKey: userBookQueryKeys.strategy(id, currentDraftId),
     queryFn: () => getStrategy(id, currentDraftId),
-    enabled: gate.active && Boolean(currentDraftId),
+    enabled: Boolean(currentDraftId),
   });
   const [feedback, setFeedback] = useState('');
   const revision = useStrategyRevisionFlow({
@@ -33,17 +31,14 @@ export function StrategyPage() {
     source: 'strategy_feedback',
     baseDraftId: currentDraftId,
     baseTrialRevisionId: null,
-    enabled: gate.active && Boolean(currentDraftId),
+    enabled: Boolean(currentDraftId),
     onCompleted: () => setFeedback(''),
     onRecoverableFeedback: setFeedback,
   });
   const selection = useTrialSelectionFlow({
     userBookId: id,
     draftId: currentDraftId,
-    enabled: gate.active && Boolean(currentDraftId),
-    onCompleted: () => {
-      navigate(`/user-books/${encodeURIComponent(id)}/trial`, { replace: true });
-    },
+    enabled: Boolean(currentDraftId),
   });
   const submitFeedback = () => {
     revision.submit(feedback);
@@ -52,9 +47,7 @@ export function StrategyPage() {
     selection.submit();
   };
 
-  if (gate.query.isPending || !gate.active) return <WorkflowFallback title="正在打开处理方式" detail="正在确认当前草稿版本。" />;
-  if (gate.query.isError) return <WorkflowFallback title="处理方式暂时打不开" detail={gate.query.error.message} retry={() => void gate.query.refetch()} />;
-  const book = gate.query.data.sharedBook;
+  const book = userBook.sharedBook;
   if (strategy.isPending) return <WorkflowPage book={book} kicker="BEFORE YOU READ · 读前准备" title="读之前，先看地图"><WorkflowMessage title="正在展开读前简报">访谈结果和当前草稿正在读取。</WorkflowMessage></WorkflowPage>;
   if (strategy.isError) return <WorkflowPage book={book} kicker="BEFORE YOU READ · 读前准备" title="读之前，先看地图"><WorkflowMessage title="暂时读不到当前草稿" action={<button className="button button-ghost" type="button" onClick={() => void strategy.refetch()}>重新读取</button>}>{strategy.error.message}</WorkflowMessage></WorkflowPage>;
   const snapshot = strategy.data;
