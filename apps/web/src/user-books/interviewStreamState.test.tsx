@@ -111,22 +111,29 @@ describe('interview progressive stream reducer', () => {
 });
 
 describe('ProgressiveStrategyView', () => {
-  it('keeps four briefing slots stable and renders streaming summary as plain text', () => {
+  it('uses the committed briefing and Markdown UI while content is streaming', () => {
     const html = renderToStaticMarkup(<ProgressiveStrategyView model={{
       mode: 'streaming',
       source: 'interview',
       briefing: { bookIdentity: '一本系统书' },
-      strategySummary: '半截 **Markdown',
+      strategySummary: '正在形成 **处理方式**',
       nodes: [nodes[0]!],
     }} />);
     expect(html.match(/brief-section/g)).toHaveLength(4);
-    expect(html).toContain('半截 **Markdown');
-    expect(html).not.toContain('<strong>Markdown</strong>');
+    expect(html).toContain('BEFORE YOU READ · 读前简报');
+    expect(html).toContain('<strong>处理方式</strong>');
     expect(html).toContain('正在选择位置');
   });
 
-  it('uses authoritative Markdown and node previews in committed mode', () => {
-    const html = renderToStaticMarkup(<ProgressiveStrategyView model={{
+  it('keeps the completed UI structure stable when the authoritative result arrives', () => {
+    const streaming = renderToStaticMarkup(<ProgressiveStrategyView model={{
+      mode: 'streaming',
+      source: 'interview',
+      briefing: finalStrategy.readingBriefing,
+      strategySummary: finalStrategy.userFacingSummary,
+      nodes,
+    }} />);
+    const committed = renderToStaticMarkup(<ProgressiveStrategyView model={{
       mode: 'committed',
       source: 'interview',
       briefing: finalStrategy.readingBriefing,
@@ -134,7 +141,11 @@ describe('ProgressiveStrategyView', () => {
       nodes,
       draftVersion: 1,
     }} />);
-    expect(html).toContain('<strong>处理方式</strong>');
-    expect(html).toContain('章节 3');
+    expect(streaming.match(/brief-section/g)).toHaveLength(4);
+    expect(committed.match(/brief-section/g)).toHaveLength(4);
+    expect(streaming).toContain('class="rt-kicker"');
+    expect(committed).toContain('class="rt-kicker"');
+    expect(committed).toContain('<strong>处理方式</strong>');
+    expect(committed).toContain('章节 3');
   });
 });

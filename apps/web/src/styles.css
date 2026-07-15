@@ -3299,16 +3299,8 @@ h1 {
   margin: 0 auto;
 }
 
-.progressive-brief .strategy-version {
-  margin-bottom: 0;
-}
-
 .progressive-placeholder {
   color: var(--rt-ink-3);
-}
-
-.progressive-strategy-text {
-  white-space: pre-wrap;
 }
 
 .reading-node-selection ol {
