@@ -661,23 +661,6 @@ const STRATEGY_DRAFT_FIELDS = {
 export const StrategyDraftSchema = Type.Object(STRATEGY_DRAFT_FIELDS);
 export type StrategyDraft = Static<typeof StrategyDraftSchema>;
 
-export const StrategyReviewResponseSchema = Type.Object({
-  userBookId: Type.String(),
-  workflowStatus: UserBookWorkflowStatusSchema,
-  draft: StrategyDraftSchema,
-  trialCandidatePreviews: Type.Array(ReadingNodePreviewSchema, { minItems: 3, maxItems: 3 }),
-  adjustmentCount: Type.Integer({ minimum: 0, maximum: 5 }),
-  adjustmentLimit: Type.Integer({ minimum: 1 }),
-  canAdjust: Type.Boolean(),
-});
-export type StrategyReviewResponse = Static<typeof StrategyReviewResponseSchema>;
-
-// Exact-version reads intentionally retain the broad historical projection: an old draft can be
-// superseded while the book has already moved to a later workflow stage. Current reads and stream
-// terminal events use the discriminated schema below instead.
-export const StrategyReviewSnapshotSchema = StrategyReviewResponseSchema;
-export type StrategyReviewSnapshot = StrategyReviewResponse;
-
 function readingNodePreviewAtOrdinal<const Ordinal extends 1 | 2 | 3>(ordinal: Ordinal) {
   return Type.Object({
     ...READING_NODE_PREVIEW_FIELDS,
@@ -690,6 +673,23 @@ const ORDERED_READING_NODE_PREVIEWS_SCHEMA = Type.Tuple([
   readingNodePreviewAtOrdinal(2),
   readingNodePreviewAtOrdinal(3),
 ]);
+
+export const StrategyReviewResponseSchema = Type.Object({
+  userBookId: Type.String(),
+  workflowStatus: UserBookWorkflowStatusSchema,
+  draft: StrategyDraftSchema,
+  trialCandidatePreviews: Type.Unsafe<ReadingNodePreview[]>(ORDERED_READING_NODE_PREVIEWS_SCHEMA),
+  adjustmentCount: Type.Integer({ minimum: 0, maximum: 5 }),
+  adjustmentLimit: Type.Integer({ minimum: 1 }),
+  canAdjust: Type.Boolean(),
+});
+export type StrategyReviewResponse = Static<typeof StrategyReviewResponseSchema>;
+
+// Exact-version reads intentionally retain the broad historical projection: an old draft can be
+// superseded while the book has already moved to a later workflow stage. Current reads and stream
+// terminal events use the discriminated schema below instead.
+export const StrategyReviewSnapshotSchema = StrategyReviewResponseSchema;
+export type StrategyReviewSnapshot = StrategyReviewResponse;
 
 const CURRENT_STRATEGY_REVIEW_FIELDS = {
   userBookId: Type.String(),
@@ -899,6 +899,12 @@ function readyTrialSegmentAtOrdinal<const Ordinal extends 1 | 2 | 3>(ordinal: Or
   });
 }
 
+const ORDERED_TRIAL_SEGMENTS_SCHEMA = Type.Tuple([
+  trialSegmentAtOrdinal(1),
+  trialSegmentAtOrdinal(2),
+  trialSegmentAtOrdinal(3),
+]);
+
 export const TrialReviewResponseSchema = Type.Object({
   userBookId: Type.String(),
   workflowStatus: UserBookWorkflowStatusSchema,
@@ -906,7 +912,7 @@ export const TrialReviewResponseSchema = Type.Object({
   revision: Type.Integer({ minimum: 1 }),
   status: TrialRevisionStatusSchema,
   strategyDraftVersionId: Type.String(),
-  segments: Type.Array(TrialSegmentSchema, { minItems: 3, maxItems: 3 }),
+  segments: Type.Unsafe<TrialSegment[]>(ORDERED_TRIAL_SEGMENTS_SCHEMA),
   adjustmentCount: Type.Integer({ minimum: 0, maximum: 5 }),
   adjustmentLimit: Type.Integer({ minimum: 1 }),
   canAdjust: Type.Boolean(),
@@ -916,12 +922,6 @@ export type TrialReviewResponse = Static<typeof TrialReviewResponseSchema>;
 
 export const TrialReviewSnapshotSchema = TrialReviewResponseSchema;
 export type TrialReviewSnapshot = TrialReviewResponse;
-
-const ORDERED_TRIAL_SEGMENTS_SCHEMA = Type.Tuple([
-  trialSegmentAtOrdinal(1),
-  trialSegmentAtOrdinal(2),
-  trialSegmentAtOrdinal(3),
-]);
 
 const ORDERED_READY_TRIAL_SEGMENTS_SCHEMA = Type.Tuple([
   readyTrialSegmentAtOrdinal(1),

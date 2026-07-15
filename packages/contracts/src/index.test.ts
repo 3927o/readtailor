@@ -646,6 +646,10 @@ describe('progressive reading setup contracts', () => {
       canAdjust: false,
     };
     expect(Value.Check(StrategyReviewSnapshotSchema, historical)).toBe(true);
+    expect(Value.Check(StrategyReviewSnapshotSchema, {
+      ...historical,
+      trialCandidatePreviews: [previews[0], { ...previews[1], ordinal: 1 }, previews[2]],
+    })).toBe(false);
     expect(Value.Check(CurrentStrategyReviewResponseSchema, historical)).toBe(false);
   });
 
@@ -710,6 +714,12 @@ describe('progressive reading setup contracts', () => {
       workflowStatus: 'strategy_review',
       status: 'superseded',
     })).toBe(true);
+    expect(Value.Check(TrialReviewSnapshotSchema, {
+      ...adopted,
+      workflowStatus: 'strategy_review',
+      status: 'superseded',
+      segments: [readySegments[0], { ...readySegments[1], ordinal: 1 }, readySegments[2]],
+    })).toBe(false);
   });
 
   it('validates operation payloads, recovery responses, and UUID params', () => {
