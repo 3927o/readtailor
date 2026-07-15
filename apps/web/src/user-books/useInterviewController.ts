@@ -9,6 +9,7 @@ import {
   type InterviewClientStreamEvent,
   type InterviewQuestion,
 } from './api/interview';
+import type { StrategySnapshot } from './api/strategy';
 import { IDLE_INTERVIEW_STREAM, interviewStreamReducer } from './interviewStreamState';
 import { userBookQueryKeys } from './queryKeys';
 import { applyTransition } from './transitions';
@@ -58,6 +59,7 @@ export function useInterviewController(options: {
   const startRequested = useRef(false);
   const resumeRequested = useRef(false);
   const streamGeneration = useRef(0);
+  const pendingStrategy = useRef<{ generation: number; strategy: StrategySnapshot } | null>(null);
 
   const start = useMutation({
     mutationFn: () => startInterview(options.userBookId),
@@ -89,17 +91,28 @@ export function useInterviewController(options: {
     if (generation !== streamGeneration.current) return;
     dispatchStream({ type: 'event', event });
     if (event.type === 'question_final') {
+      pendingStrategy.current = null;
       setActiveQuestion(eventQuestion(event));
       void queryClient.invalidateQueries({
         queryKey: userBookQueryKeys.interview(options.userBookId),
       });
     } else if (event.type === 'draft_final') {
-      void applyTransition(queryClient, options.userBookId, {
-        type: 'strategy_committed',
-        strategy: event.strategy,
-      });
+      pendingStrategy.current = { generation, strategy: event.strategy };
+      queryClient.setQueryData(
+        userBookQueryKeys.strategy(options.userBookId, event.strategy.draftId),
+        event.strategy,
+      );
     } else if (event.type === 'done') {
-      if (event.workflowStatus === 'interviewing') {
+      const completedStrategy = pendingStrategy.current?.generation === generation
+        ? pendingStrategy.current.strategy
+        : null;
+      pendingStrategy.current = null;
+      if (event.workflowStatus === 'strategy_review' && completedStrategy) {
+        void applyTransition(queryClient, options.userBookId, {
+          type: 'strategy_committed',
+          strategy: completedStrategy,
+        });
+      } else if (event.workflowStatus === 'interviewing') {
         void interview.refetch();
       } else {
         void queryClient.invalidateQueries({
@@ -107,6 +120,7 @@ export function useInterviewController(options: {
         });
       }
     } else if (event.type === 'error') {
+      pendingStrategy.current = null;
       void interview.refetch();
     }
   }, [interview, options.userBookId, queryClient]);
@@ -120,9 +134,16 @@ export function useInterviewController(options: {
     },
     onError: (error, { generation }) => {
       if (generation !== streamGeneration.current) return;
+      const shouldReconcileWorkflow = pendingStrategy.current?.generation === generation;
+      pendingStrategy.current = null;
       const message = error instanceof ApiError ? error.message : '恢复访谈失败，请稍后重试。';
       setStreamError(message);
       dispatchStream({ type: 'transport_error', message });
+      if (shouldReconcileWorkflow) {
+        void queryClient.invalidateQueries({
+          queryKey: userBookQueryKeys.detail(options.userBookId),
+        });
+      }
     },
   });
 
@@ -135,6 +156,7 @@ export function useInterviewController(options: {
     resumeRequested.current = true;
     const generation = streamGeneration.current + 1;
     streamGeneration.current = generation;
+    pendingStrategy.current = null;
     resume.mutate({ generation });
   }, [interview.data?.canResume, resume]);
 
@@ -161,10 +183,17 @@ export function useInterviewController(options: {
     }),
     onError: (error, { generation }) => {
       if (generation !== streamGeneration.current) return;
+      const shouldReconcileWorkflow = pendingStrategy.current?.generation === generation;
+      pendingStrategy.current = null;
       const message = error instanceof ApiError ? error.message : '提交失败，请稍后再试。';
       setStreamError(message);
       dispatchStream({ type: 'transport_error', message });
       void interview.refetch();
+      if (shouldReconcileWorkflow) {
+        void queryClient.invalidateQueries({
+          queryKey: userBookQueryKeys.detail(options.userBookId),
+        });
+      }
     },
   });
 
@@ -185,6 +214,7 @@ export function useInterviewController(options: {
     dispatchStream({ type: 'begin', sufficiency: question.sufficiency });
     const generation = streamGeneration.current + 1;
     streamGeneration.current = generation;
+    pendingStrategy.current = null;
     answer.mutate({
       generation,
       input: { questionId: question.id, ...choice },

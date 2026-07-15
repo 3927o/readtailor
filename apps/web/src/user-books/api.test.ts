@@ -143,6 +143,32 @@ describe('interview progressive stream', () => {
       expect.objectContaining({ method: 'POST', body: '{}' }),
     );
   });
+
+  it('requires done after draft_final before treating interview completion as terminal', async () => {
+    const streamId = '10000000-0000-0000-0000-000000000002';
+    const frame = `data: ${JSON.stringify({
+      userBookId: '10000000-0000-0000-0000-000000000001',
+      streamId,
+      sequence: 1,
+      type: 'draft_final',
+      strategy: strategyResponse('draft-2'),
+    })}\n\n`;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(frame));
+        controller.close();
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, {
+      headers: { 'content-type': 'text/event-stream' },
+    })));
+    const events: string[] = [];
+
+    await expect(streamResumeInterview('book/1', {
+      onEvent: (event) => events.push(event.type),
+    })).rejects.toThrow('连接中断，正在恢复访谈。');
+    expect(events).toEqual(['draft_final']);
+  });
 });
 
 function strategyResponse(draftId = 'draft-1') {

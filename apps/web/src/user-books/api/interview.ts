@@ -164,7 +164,6 @@ async function postInterviewStream(
     onEvent: (event) => dispatchInterviewEvent(event, handlers),
     isTerminal: (event) => (
       event.type === 'question_final'
-      || event.type === 'draft_final'
       || event.type === 'done'
       || event.type === 'error'
     ),

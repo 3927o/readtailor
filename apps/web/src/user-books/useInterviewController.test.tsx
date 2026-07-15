@@ -6,6 +6,7 @@ import { MemoryRouter, Outlet, Route, Routes } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UserBookDetail } from './api/http';
 import type { InterviewSnapshot } from './api/interview';
+import type { StrategySnapshot } from './api/strategy';
 import { ApiError } from './apiError';
 import { InterviewPage } from './InterviewPage';
 import { userBookQueryKeys } from './queryKeys';
@@ -30,6 +31,10 @@ vi.mock('./api/interview', async (importOriginal) => {
 });
 
 vi.mock('./components', () => ({
+  AssistanceContent: ({ content }: { content: string }) => <div>{content}</div>,
+  BriefCard: ({ briefing }: { briefing: Record<string, string> }) => (
+    <section>{Object.values(briefing).join(' ')}</section>
+  ),
   WorkflowPage: ({ children }: { children: ReactNode }) => <main>{children}</main>,
   WorkflowMessage: ({
     title,
@@ -87,6 +92,24 @@ function pendingSnapshot(): InterviewSnapshot {
   };
 }
 
+function finalStrategy(draftId = 'draft-final'): StrategySnapshot {
+  return {
+    draftId,
+    draftVersion: 1,
+    readingBriefing: {
+      bookIdentity: '定位',
+      arc: '脉络',
+      assumedKnowledge: '前提',
+      readingAdvice: '建议',
+    },
+    userFacingSummary: '策略',
+    trialCandidatePreviews: [],
+    adjustmentCount: 0,
+    adjustmentLimit: 5,
+    canAdjust: true,
+  };
+}
+
 async function waitFor(assertion: () => void | Promise<void>) {
   await act(async () => {
     await vi.waitFor(assertion);
@@ -134,6 +157,68 @@ describe('useInterviewController', () => {
       question: '问题 1',
       answer: '选项 1',
     });
+  });
+
+  it('does not advance the canonical workflow when draft_final is followed by done(interviewing)', async () => {
+    apiMocks.getInterview.mockResolvedValue(snapshot(1));
+    apiMocks.streamAnswer.mockImplementation(async (_id, _input, handlers) => {
+      handlers.onEvent({
+        userBookId: 'book-1',
+        streamId: 'stream-1',
+        sequence: 1,
+        type: 'draft_final',
+        strategy: finalStrategy(),
+      });
+      handlers.onEvent({
+        userBookId: 'book-1',
+        streamId: 'stream-1',
+        sequence: 2,
+        type: 'done',
+        workflowStatus: 'interviewing',
+      });
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(userBookQueryKeys.detail('book-1'), {
+      id: 'book-1',
+      workflowStatus: 'interviewing',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+      sharedBook: {
+        id: 'shared-1',
+        status: 'ready',
+        title: 'Book',
+        authors: [],
+        coverPath: null,
+        errorSummary: null,
+      },
+      readingProgress: null,
+      currentStrategyDraftVersionId: null,
+      currentStrategyVersionId: null,
+      currentTrialRevisionId: null,
+    } satisfies UserBookDetail);
+    let controller: ReturnType<typeof useInterviewController> | null = null;
+    const value = () => controller!;
+
+    function Harness() {
+      controller = useInterviewController({ userBookId: 'book-1', shouldStart: false });
+      return null;
+    }
+
+    const root = createRoot(document.createElement('div'));
+    roots.push(root);
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><Harness /></QueryClientProvider>);
+    });
+    await waitFor(() => expect(value().question?.id).toBe('question-1'));
+
+    act(() => {
+      expect(value().submit({ optionId: 'option-1' })).toBe(true);
+    });
+
+    await waitFor(() => expect(apiMocks.streamAnswer).toHaveBeenCalledOnce());
+    expect(queryClient.getQueryData(userBookQueryKeys.strategy('book-1', 'draft-final')))
+      .toMatchObject({ draftId: 'draft-final' });
+    expect(queryClient.getQueryData<UserBookDetail>(userBookQueryKeys.detail('book-1')))
+      .toMatchObject({ workflowStatus: 'interviewing', currentStrategyDraftVersionId: null });
   });
 
   it('drops late events and errors from an older resume stream after a new answer starts', async () => {
