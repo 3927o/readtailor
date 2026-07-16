@@ -239,11 +239,7 @@ export function useInterviewController(options: {
     snapshot?.status === 'active'
     && (
       stream.mode === 'draft_streaming'
-      || (!question && (
-        stream.mode === 'recovering'
-        || snapshot.turnInProgress
-        || snapshot.canResume
-      ))
+      || (!question && snapshot.completionStarted)
     ),
   );
   const failedView = Boolean(snapshot?.status === 'cancelled' || stream.mode === 'error');

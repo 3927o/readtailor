@@ -31,6 +31,7 @@ export interface InterviewHistoryItem {
 export interface InterviewSnapshot {
   status: 'active' | 'completed' | 'cancelled';
   turnInProgress: boolean;
+  completionStarted: boolean;
   canResume: boolean;
   history: InterviewHistoryItem[];
   currentQuestion: InterviewQuestion | null;
@@ -40,6 +41,7 @@ export interface InterviewSnapshot {
 interface RawInterviewSnapshot {
   status: 'active' | 'completed' | 'cancelled';
   turnInProgress: boolean;
+  completionStarted: boolean;
   questionCount: number;
   maxQuestions: 7;
   currentQuestion: {
@@ -66,6 +68,7 @@ function mapInterview(raw: RawInterviewSnapshot): InterviewSnapshot {
   return {
     status: raw.status,
     turnInProgress: raw.turnInProgress,
+    completionStarted: raw.completionStarted,
     canResume: raw.status === 'active' && !raw.currentQuestion && !raw.turnInProgress,
     history: raw.answers.map((answer, index) => ({
       questionId: answer.questionId,
