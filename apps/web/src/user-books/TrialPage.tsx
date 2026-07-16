@@ -15,7 +15,6 @@ import {
   WorkflowMessage,
   WorkflowPage,
 } from './components';
-import { ProgressiveStrategyView } from './ProgressiveStrategyView';
 import { ProgressiveTrialView } from './ProgressiveTrialView';
 import { useReadingSetupWorkflow } from './useReadingSetupWorkflow';
 import { useTrialReviewController } from './useTrialReviewController';
@@ -153,10 +152,13 @@ export function TrialPage() {
 
   return (
     <WorkflowPage book={book} kicker="TRIAL SAMPLES · 三个试读" title="先用三段原文试一试">
-      {controller.revisionActive ? (
-        <ProgressiveStrategyView model={controller.revisionModel} />
-      ) : samples.length > 0 ? (
+      {samples.length > 0 ? (
         <section className={snapshot.status === 'ready' ? 'trial-review' : 'trial-generating'}>
+          {controller.revisionActive ? (
+            <div className="workflow-callout" role="status">
+              正在根据反馈重新起草处理方式，当前样章仍可查看。
+            </div>
+          ) : null}
           <ProgressiveTrialView
             model={controller.trialModel!}
             onSelectOrdinal={(ordinal) => setSampleIndex(ordinal - 1)}
@@ -200,6 +202,8 @@ export function TrialPage() {
                   onChange={setFeedback}
                   onSubmit={() => controller.submitFeedback(feedback)}
                   pending={controller.feedbackPending}
+                  disabled={controller.revisionActive}
+                  {...(controller.revisionFailed ? { submitLabel: '重新提交反馈' } : {})}
                   label={`试读不对味？反馈会回到处理方式 · 还可调整 ${Math.max(0, snapshot.adjustmentLimit - snapshot.adjustmentCount)} 次`}
                   placeholder="比如：导读再短一点；术语解释不要太浅；注释只留真正影响理解的地方。"
                 />
@@ -209,7 +213,7 @@ export function TrialPage() {
                 <button
                   className="button button-primary"
                   type="button"
-                  disabled={controller.adoptPending || !snapshot.canAdopt}
+                  disabled={controller.revisionActive || controller.adoptPending || !snapshot.canAdopt}
                   onClick={controller.adopt}
                 >
                   {controller.adoptPending ? '正在采用…' : '采用这个处理方式并开始阅读'}
