@@ -1,16 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import type { Strategy, StrategyReviewResponse } from '@readtailor/contracts';
 import type { ReadingSetupOutcome, ReadingStrategy } from '@readtailor/agent-kit';
 import {
   interviewMessages,
+  interviewSessions,
   nodeGenerations,
   readingSetupOperations,
   sharedBooks,
   strategyDraftVersions,
   trialRevisions,
   userBooks,
+  type Database,
 } from '@readtailor/database';
 import type { BookService } from '../../books';
 import type { ReadingSetupEngine } from '../../reading-setup-engine';
@@ -23,7 +25,10 @@ import {
 import type { OwnedUserBook } from '../context/setup-context';
 import { UserBookError } from '../errors';
 import { createSetupOperationStore } from '../operations/setup-operation-store';
-import { createStrategyRevisionService } from './revision-service';
+import {
+  createStrategyRevisionService,
+  type StrategyRevisionServiceOptions,
+} from './revision-service';
 
 const describePostgres = hasTestDatabase ? describe : describe.skip;
 const skipReason = hasTestDatabase ? '' : ' (skipped: TEST_DATABASE_URL is not set)';
@@ -76,7 +81,10 @@ function fakeBooks(): BookService {
   };
 }
 
-function createHarness(setupEngine: ReadingSetupEngine) {
+function createHarness(
+  setupEngine: ReadingSetupEngine,
+  onUnexpectedFinalizationError?: StrategyRevisionServiceOptions['onUnexpectedFinalizationError'],
+) {
   const { db } = getTestDatabase();
   const getOwnedBook = async (userBookId: string): Promise<OwnedUserBook> => {
     const [owned] = await db
@@ -148,6 +156,7 @@ function createHarness(setupEngine: ReadingSetupEngine) {
         canAdjust: true,
       } as StrategyReviewResponse;
     },
+    ...(onUnexpectedFinalizationError ? { onUnexpectedFinalizationError } : {}),
   });
   return { db, operationStore, service };
 }
@@ -168,6 +177,54 @@ const failingEngine: ReadingSetupEngine = {
     throw new Error('model unavailable');
   },
 };
+
+async function insertCompletionCheckpoints(
+  db: Database,
+  interviewSessionId: string,
+) {
+  const completionId = randomUUID();
+  const checkpoints = [
+    {
+      type: 'completion_started',
+      completionId,
+      baseConversationVersion: 2,
+    },
+    {
+      type: 'briefing_submitted',
+      completionId,
+      briefing: { spoilerBoundary: '测试边界' },
+    },
+    {
+      type: 'strategy_submitted',
+      completionId,
+      publicStrategy: '测试策略',
+      strategy: { goals: ['测试目标'] },
+    },
+    {
+      type: 'trial_candidates_submitted',
+      completionId,
+      candidates: [1, 2, 3].map((ordinal) => ({
+        section_id: `section-${ordinal}`,
+        segment: 1,
+        reason: `候选 ${ordinal}`,
+      })),
+    },
+    {
+      type: 'interview_profile_submitted',
+      completionId,
+      bookReaderProfile: { readingPurpose: '测试目的' },
+    },
+  ];
+  await db.insert(interviewMessages).values(checkpoints.map((payload, index) => ({
+    interviewSessionId,
+    sequence: index + 3,
+    role: 'assistant' as const,
+    kind: 'summary' as const,
+    content: payload.type,
+    payload,
+  })));
+  return checkpoints;
+}
 
 describePostgres(`strategy revision service${skipReason}`, () => {
   it('keeps strategy business state unchanged when the model fails', async () => {
@@ -195,6 +252,61 @@ describePostgres(`strategy revision service${skipReason}`, () => {
     expect(drafts).toHaveLength(1);
     expect(drafts[0]?.status).toBe('draft');
     expect(observed?.operation).toMatchObject({ status: 'failed', resultStrategyDraftVersionId: null });
+  });
+
+  it('logs the original finalization error and exposes a safe retry message', async () => {
+    const graph = await strategyReviewGraph(getTestDatabase().db);
+    const onUnexpectedFinalizationError = vi.fn();
+    const { db, operationStore, service } = createHarness(
+      successEngine(),
+      onUnexpectedFinalizationError,
+    );
+    const idempotencyKey = 'strategy-finalization-write-failure';
+    const operation = await service.resolveStrategyFeedback(graph.userBookId, {
+      strategyDraftVersionId: graph.strategyDraftVersionId,
+      feedback: '触发最终事务写入失败',
+      idempotencyKey,
+    });
+    await db.insert(interviewMessages).values({
+      interviewSessionId: graph.interviewSessionId,
+      sequence: 1,
+      role: 'user',
+      kind: 'feedback',
+      content: '已经存在的反馈',
+      payload: {},
+      idempotencyKey,
+    });
+
+    const events = [];
+    for await (const event of service.streamOperation(operation)) events.push(event);
+    const [book] = await db.select().from(userBooks).where(eq(userBooks.id, graph.userBookId));
+    const drafts = await db
+      .select()
+      .from(strategyDraftVersions)
+      .where(eq(strategyDraftVersions.userBookId, graph.userBookId));
+    const observed = await operationStore.observeById(graph.userBookId, operation.id);
+
+    expect(onUnexpectedFinalizationError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cause: expect.objectContaining({ code: '23505' }),
+      }),
+      'strategy_feedback',
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: 'error',
+      code: 'agent_failed',
+      message: '处理方式保存失败，请重试',
+    });
+    expect(book).toMatchObject({
+      workflowStatus: 'strategy_review',
+      currentStrategyDraftVersionId: graph.strategyDraftVersionId,
+      adjustmentCount: 0,
+    });
+    expect(drafts).toHaveLength(1);
+    expect(observed?.operation).toMatchObject({
+      status: 'failed',
+      errorSummary: '处理方式保存失败，请重试',
+    });
   });
 
   it('rolls back every domain write when the operation claim becomes stale', async () => {
@@ -239,6 +351,7 @@ describePostgres(`strategy revision service${skipReason}`, () => {
   it('atomically supersedes the draft, creates its successor and completes the operation', async () => {
     const graph = await strategyReviewGraph(getTestDatabase().db);
     const { db, operationStore, service } = createHarness(successEngine());
+    const checkpoints = await insertCompletionCheckpoints(db, graph.interviewSessionId);
     const operation = await service.resolveStrategyFeedback(graph.userBookId, {
       strategyDraftVersionId: graph.strategyDraftVersionId,
       feedback: '请调整说明',
@@ -257,6 +370,18 @@ describePostgres(`strategy revision service${skipReason}`, () => {
       .select()
       .from(interviewMessages)
       .where(eq(interviewMessages.idempotencyKey, 'strategy-success'));
+    const storedCheckpoints = await db
+      .select({ sequence: interviewMessages.sequence, payload: interviewMessages.payload })
+      .from(interviewMessages)
+      .where(and(
+        eq(interviewMessages.interviewSessionId, graph.interviewSessionId),
+        eq(interviewMessages.kind, 'summary'),
+      ))
+      .orderBy(asc(interviewMessages.sequence));
+    const [session] = await db
+      .select()
+      .from(interviewSessions)
+      .where(eq(interviewSessions.id, graph.interviewSessionId));
 
     expect(drafts).toHaveLength(2);
     expect(drafts[0]?.status).toBe('superseded');
@@ -273,6 +398,12 @@ describePostgres(`strategy revision service${skipReason}`, () => {
       leaseId: null,
     });
     expect(feedback).toHaveLength(1);
+    expect(feedback[0]?.sequence).toBe(8);
+    expect(session?.conversationVersion).toBe(3);
+    expect(storedCheckpoints).toEqual(checkpoints.map((payload, index) => ({
+      sequence: index + 3,
+      payload,
+    })));
   });
 
   it('replays a completed operation by result pointer without calling the agent again', async () => {
@@ -312,6 +443,7 @@ describePostgres(`strategy revision service${skipReason}`, () => {
     const graph = await trialReviewGraph(getTestDatabase().db);
     const runTurn = vi.fn<ReadingSetupEngine['runTurn']>(async () => revisedOutcome);
     const { db, operationStore, service } = createHarness({ runTurn });
+    const checkpoints = await insertCompletionCheckpoints(db, graph.interviewSessionId);
     const operation = await service.resolveTrialFeedback(graph.userBookId, {
       trialRevisionId: graph.trialRevisionId,
       feedback: '根据试读重新调整策略',
@@ -335,6 +467,22 @@ describePostgres(`strategy revision service${skipReason}`, () => {
       .from(nodeGenerations)
       .where(eq(nodeGenerations.userBookId, graph.userBookId));
     const observed = await operationStore.observeById(graph.userBookId, operation.id);
+    const feedback = await db
+      .select()
+      .from(interviewMessages)
+      .where(eq(interviewMessages.idempotencyKey, 'trial-feedback-success'));
+    const storedCheckpoints = await db
+      .select({ sequence: interviewMessages.sequence, payload: interviewMessages.payload })
+      .from(interviewMessages)
+      .where(and(
+        eq(interviewMessages.interviewSessionId, graph.interviewSessionId),
+        eq(interviewMessages.kind, 'summary'),
+      ))
+      .orderBy(asc(interviewMessages.sequence));
+    const [session] = await db
+      .select()
+      .from(interviewSessions)
+      .where(eq(interviewSessions.id, graph.interviewSessionId));
 
     expect(runTurn).toHaveBeenCalledOnce();
     expect(trial?.status).toBe('superseded');
@@ -365,6 +513,13 @@ describePostgres(`strategy revision service${skipReason}`, () => {
       resultStrategyDraftVersionId: drafts[1]!.id,
       leaseId: null,
     });
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0]?.sequence).toBe(8);
+    expect(session?.conversationVersion).toBe(3);
+    expect(storedCheckpoints).toEqual(checkpoints.map((payload, index) => ({
+      sequence: index + 3,
+      payload,
+    })));
   });
 
   it('keeps a published trial adoptable when trial feedback generation fails', async () => {

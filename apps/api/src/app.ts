@@ -1202,7 +1202,12 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       const events = deps.userBooks
-        .forUser(request.authUser!.id, { requestId: request.id })
+        .forUser(request.authUser!.id, {
+          requestId: request.id,
+          onUnexpectedStrategyRevisionFinalizationError: (error, source) => {
+            request.log.error({ err: error, source }, 'strategy revision finalization failed');
+          },
+        })
         .streamStrategyFeedback(request.params.id, request.body);
       return sendStrategyRevisionStream(
         events,
@@ -1327,7 +1332,12 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
     async (request, reply) => {
       if (!deps.userBooks) return reply.code(503).send({ error: 'user book workflow is not configured' });
       const events = deps.userBooks
-        .forUser(request.authUser!.id, { requestId: request.id })
+        .forUser(request.authUser!.id, {
+          requestId: request.id,
+          onUnexpectedStrategyRevisionFinalizationError: (error, source) => {
+            request.log.error({ err: error, source }, 'strategy revision finalization failed');
+          },
+        })
         .streamTrialFeedback(request.params.id, request.body);
       return sendStrategyRevisionStream(
         events,
