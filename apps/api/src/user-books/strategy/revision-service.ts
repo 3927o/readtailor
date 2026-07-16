@@ -81,6 +81,10 @@ export type StrategyRevisionServiceOptions = {
   ) => ReadingNodePreview;
   mapStrategy(value: ReadingStrategy): Strategy;
   loadStrategyState(userBookId: string, draftId: string): Promise<StrategyReviewResponse>;
+  onUnexpectedFinalizationError?(
+    error: unknown,
+    source: 'strategy_feedback' | 'trial_feedback',
+  ): void;
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -127,6 +131,7 @@ export function createStrategyRevisionService(options: StrategyRevisionServiceOp
     createReadingNodeProjector,
     mapStrategy,
     loadStrategyState,
+    onUnexpectedFinalizationError,
   } = options;
 
   const reviseFromFeedback = async (
@@ -271,11 +276,18 @@ export function createStrategyRevisionService(options: StrategyRevisionServiceOp
           .select()
           .from(interviewSessions)
           .where(eq(interviewSessions.id, sessionId))
-          .limit(1);
+          .limit(1)
+          .for('update');
         if (session) {
+          const [messageSequence] = await tx
+            .select({
+              max: sql<number>`coalesce(max(${interviewMessages.sequence}), 0)`,
+            })
+            .from(interviewMessages)
+            .where(eq(interviewMessages.interviewSessionId, sessionId));
           await tx.insert(interviewMessages).values({
             interviewSessionId: sessionId,
-            sequence: session.conversationVersion + 1,
+            sequence: Number(messageSequence?.max ?? 0) + 1,
             role: 'user',
             kind: 'feedback',
             content: params.feedback.trim(),
@@ -346,6 +358,19 @@ export function createStrategyRevisionService(options: StrategyRevisionServiceOp
         .returning({ id: readingSetupOperations.id });
       if (completed.length !== 1) throw new ReadingSetupLeaseLostError();
       return draft.id;
+    }).catch((error: unknown) => {
+      if (error instanceof UserBookError || error instanceof ReadingSetupLeaseLostError) {
+        throw error;
+      }
+      try {
+        onUnexpectedFinalizationError?.(
+          error,
+          params.trialRevisionId ? 'trial_feedback' : 'strategy_feedback',
+        );
+      } catch {
+        // Logging must not replace the original finalization failure with a logger failure.
+      }
+      throw new UserBookError('处理方式保存失败，请重试', 503);
     });
   };
 

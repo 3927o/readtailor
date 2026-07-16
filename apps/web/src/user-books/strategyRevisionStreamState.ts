@@ -161,6 +161,8 @@ export function strategyRevisionStreamReducer(
         error: null,
       };
     case 'error':
-      return { ...next, mode: 'recovering', error: event.message };
+      return event.code === 'agent_failed' || event.code === 'validation_failed'
+        ? { ...clearProvisional(next), mode: 'failed', error: event.message }
+        : { ...next, mode: 'recovering', error: event.message };
   }
 }

@@ -3,7 +3,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { bookAssetBaseUrl } from '../library/api';
 import { ApiError } from './apiError';
 import type { UserBookDetail } from './api/http';
-import { getStrategy } from './api/strategy';
 import {
   adoptTrial,
   getTrial,
@@ -12,7 +11,6 @@ import {
   type TrialSample,
   type TrialSnapshot,
 } from './api/trial';
-import type { ProgressiveStrategyModel } from './ProgressiveStrategyView';
 import type { ProgressiveTrialModel } from './ProgressiveTrialView';
 import { userBookQueryKeys } from './queryKeys';
 import { applyTransition } from './transitions';
@@ -37,11 +35,6 @@ export function useTrialReviewController(options: {
     refetchInterval: (current) => current.state.data?.status === 'generating' ? 1000 : false,
   });
   const baseDraftId = trial.data?.draftId ?? '';
-  const baseStrategy = useQuery({
-    queryKey: userBookQueryKeys.strategy(options.userBookId, baseDraftId),
-    queryFn: () => getStrategy(options.userBookId, baseDraftId),
-    enabled: Boolean(baseDraftId),
-  });
   const revision = useStrategyRevisionFlow({
     userBookId: options.userBookId,
     source: 'trial_feedback',
@@ -132,22 +125,6 @@ export function useTrialReviewController(options: {
       ? { error: snapshot.errorSummary }
       : {}),
   } : null;
-  const revisionModel: ProgressiveStrategyModel = {
-    mode: revision.state.mode === 'completed'
-      ? 'committed'
-      : revision.state.mode === 'recovering'
-        ? 'recovering'
-        : 'streaming',
-    source: 'trial_feedback',
-    briefing: baseStrategy.data?.readingBriefing ?? {},
-    strategySummary: revision.state.strategySummary,
-    nodes: revision.state.nodes,
-    ...(revision.state.finalStrategy
-      ? { draftVersion: revision.state.finalStrategy.draftVersion }
-      : {}),
-    ...(revision.state.error ? { error: revision.state.error } : {}),
-  };
-
   return {
     loading: trial.isPending,
     loadError: trial.error,
@@ -156,10 +133,10 @@ export function useTrialReviewController(options: {
     samples,
     current,
     trialModel,
-    revisionModel,
     revisionActive: revision.active,
+    revisionFailed: revision.state.mode === 'failed',
     submitFeedback: revision.submit,
-    feedbackPending: revision.pending || baseStrategy.isPending,
+    feedbackPending: revision.pending,
     viewedError: viewed.isError && Boolean(current && !current.viewedAt),
     retryViewed,
     retryPending: retry.isPending,
@@ -169,7 +146,6 @@ export function useTrialReviewController(options: {
     adopt: () => adopt.mutate(),
     mutationError: retry.error?.message
       ?? revision.error
-      ?? baseStrategy.error?.message
       ?? adopt.error?.message
       ?? null,
   };

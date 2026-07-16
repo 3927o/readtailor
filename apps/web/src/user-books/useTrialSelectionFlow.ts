@@ -67,11 +67,12 @@ export function useTrialSelectionFlow(options: {
     },
     commandKey: () => options.draftId,
     createCommand: (_input, idempotencyKey) => ({ draftId: options.draftId, idempotencyKey }),
-    stream: (command, onEvent) => streamApproveStrategyForTrial(
+    stream: (command, onEvent, signal) => streamApproveStrategyForTrial(
       options.userBookId,
       command.draftId,
       command.idempotencyKey,
       { onEvent },
+      signal,
     ),
     matchesOperation: (operation) => operation.kind === 'trial_selection'
       && operation.source === 'strategy_approve'

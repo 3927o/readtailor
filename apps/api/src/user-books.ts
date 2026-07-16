@@ -939,6 +939,10 @@ type UserBookServiceOptions = {
 
 type RequestContext = {
   requestId?: string;
+  onUnexpectedStrategyRevisionFinalizationError?(
+    error: unknown,
+    source: 'strategy_feedback' | 'trial_feedback',
+  ): void;
 };
 
 export function createUserBookService(options: UserBookServiceOptions) {
@@ -1110,6 +1114,10 @@ function createUserBookServiceForUser(
     ),
     mapStrategy,
     loadStrategyState: strategyStateByDraftId,
+    ...(requestContext.onUnexpectedStrategyRevisionFinalizationError ? {
+      onUnexpectedFinalizationError:
+        requestContext.onUnexpectedStrategyRevisionFinalizationError,
+    } : {}),
     ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
   });
 
