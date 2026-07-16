@@ -27,6 +27,7 @@ function interviewResponse(turnInProgress: boolean): Response {
     sessionId: 'session-1',
     status: 'active',
     turnInProgress,
+    completionStarted: false,
     questionCount: 1,
     maxQuestions: 7,
     currentQuestion: null,
@@ -46,6 +47,7 @@ describe('interview lifecycle commands', () => {
     await expect(request('book/1')).resolves.toMatchObject({
       status: 'active',
       turnInProgress: true,
+      completionStarted: false,
       canResume: false,
     });
     expect(fetchMock).toHaveBeenCalledWith(
@@ -64,6 +66,7 @@ describe('interview lifecycle commands', () => {
     await expect(resumeInterview('book-1')).resolves.toMatchObject({
       status: 'active',
       turnInProgress: false,
+      completionStarted: false,
       canResume: true,
     });
   });
@@ -73,6 +76,7 @@ describe('interview lifecycle commands', () => {
       sessionId: 'session-1',
       status: 'completed',
       turnInProgress: false,
+      completionStarted: true,
       questionCount: 3,
       maxQuestions: 7,
       currentQuestion: null,
@@ -83,6 +87,7 @@ describe('interview lifecycle commands', () => {
     await expect(getInterview('book-1')).resolves.toMatchObject({
       status: 'completed',
       turnInProgress: false,
+      completionStarted: true,
       canResume: false,
     });
   });

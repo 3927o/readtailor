@@ -75,6 +75,7 @@ function snapshot(questionOrdinal = 1): InterviewSnapshot {
   return {
     status: 'active',
     turnInProgress: false,
+    completionStarted: false,
     canResume: false,
     history: [],
     currentQuestion: {
@@ -90,10 +91,11 @@ function snapshot(questionOrdinal = 1): InterviewSnapshot {
   };
 }
 
-function pendingSnapshot(): InterviewSnapshot {
+function pendingSnapshot(completionStarted = true): InterviewSnapshot {
   return {
     status: 'active',
     turnInProgress: false,
+    completionStarted,
     canResume: true,
     history: [],
     currentQuestion: null,
@@ -105,6 +107,7 @@ function completedSnapshot(): InterviewSnapshot {
   return {
     status: 'completed',
     turnInProgress: false,
+    completionStarted: true,
     canResume: false,
     history: [],
     currentQuestion: null,
@@ -382,6 +385,57 @@ describe('useInterviewController', () => {
 });
 
 describe('InterviewPage recovery', () => {
+  it.each([
+    ['the next-question turn still owns a lease', {
+      ...pendingSnapshot(false),
+      turnInProgress: true,
+      canResume: false,
+    }],
+    ['the next-question turn needs to be resumed', pendingSnapshot(false)],
+  ] as const)('keeps the interview UI while %s', async (_label, interviewSnapshot) => {
+    apiMocks.getInterview.mockResolvedValue(interviewSnapshot);
+    apiMocks.streamResume.mockImplementation(() => new Promise<void>(() => {}));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const userBook: UserBookDetail = {
+      id: 'book-1',
+      workflowStatus: 'interviewing',
+      updatedAt: '2026-07-16T00:00:00.000Z',
+      sharedBook: {
+        id: 'shared-1',
+        status: 'ready',
+        title: 'Book',
+        authors: [],
+        coverPath: null,
+        errorSummary: null,
+      },
+      readingProgress: null,
+      currentStrategyDraftVersionId: null,
+      currentStrategyVersionId: null,
+      currentTrialRevisionId: null,
+    };
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    roots.push(root);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/user-books/book-1/interview']}>
+            <Routes>
+              <Route path="/user-books/:id" element={<Outlet context={{ userBook }} />}>
+                <Route path="interview" element={<InterviewPage />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitFor(() => expect(host.textContent).toContain('认识你 · A Conversation'));
+    expect(host.textContent).not.toContain('读之前，先看地图');
+    expect(host.textContent).not.toContain('正在完成策略…');
+  });
+
   it('does not render a completed interview as a recovering generation', async () => {
     apiMocks.getInterview.mockResolvedValue(completedSnapshot());
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

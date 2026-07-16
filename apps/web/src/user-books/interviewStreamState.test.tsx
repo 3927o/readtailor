@@ -90,6 +90,7 @@ describe('interview progressive stream reducer', () => {
       snapshot: {
         status: 'active',
         turnInProgress: false,
+        completionStarted: false,
         canResume: false,
         history: [],
         currentQuestion: {
@@ -115,6 +116,7 @@ describe('interview progressive stream reducer', () => {
       snapshot: {
         status: 'active',
         turnInProgress: true,
+        completionStarted: false,
         canResume: false,
         history: [],
         currentQuestion: null,
