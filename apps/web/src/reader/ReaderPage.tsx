@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
 import type { Briefing } from '@readtailor/contracts';
@@ -41,6 +42,7 @@ import { activeChapterUnit, buildChapterUnits } from './chapter';
 import { ReadingSessionTracker, type ReadingActivityArea, type ReadingActivityPosition } from './session';
 import {
   domBoundaryForOffset,
+  domRangeForReaderRange,
   getFragmentTargetId,
   getOutlineDepth,
   nearestReaderAnchor,
@@ -81,6 +83,7 @@ interface SelectionDraft {
   range: NodeRange;
   text: string;
   placement: PopoverPlacement;
+  backward: boolean;
 }
 
 // The highlight note editor: composing a note for a brand-new highlight, or viewing/editing an
@@ -149,6 +152,24 @@ function readCachedSettings(): ReaderSettings | null {
 function contentRootOf(node: Node): HTMLElement | null {
   const element = node instanceof Element ? node : node.parentElement;
   return element?.closest<HTMLElement>('.reader-original') ?? null;
+}
+
+function sameTextRange(left: NodeRange, right: NodeRange): boolean {
+  return left.start.blockIndex === right.start.blockIndex
+    && left.start.offset === right.start.offset
+    && left.end.blockIndex === right.end.blockIndex
+    && left.end.offset === right.end.offset;
+}
+
+function samePopoverPlacement(left: PopoverPlacement, right: PopoverPlacement): boolean {
+  return left.placement === right.placement
+    && Math.abs(left.left - right.left) < 1
+    && Math.abs(left.edge - right.edge) < 1
+    && Math.abs(left.caretLeft - right.caretLeft) < 1;
+}
+
+function isBackwardSelection(selection: Selection, range: Range): boolean {
+  return selection.anchorNode === range.endContainer && selection.anchorOffset === range.endOffset;
 }
 
 // Fold a DOM point (from the caret APIs) back to a block-relative UTF-16 offset. Returns
@@ -698,8 +719,10 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     setChapterProgress(computeChapterProgress(currentOrderRef.current));
   }, [computeChapterProgress, prepared.nodes]);
 
-  // Opening the action menu causes a React render. Rebuild the browser selection from the stable
-  // block offsets after that commit so the selected text remains visibly highlighted under the menu.
+  // Keep the browser selection visible while the action menu is open. Do not rebuild a still-valid
+  // native selection: removeAllRanges/addRange causes a visible flash and turns a backward mobile
+  // selection into a forward one, which can move the active handle and scroll the page. Rebuild only
+  // after the original DOM was actually replaced, preserving the user's selection direction.
   useLayoutEffect(() => {
     if (!selectionDraft || highlightEditor) return;
     const root = scrollRoot.current;
@@ -709,20 +732,29 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     );
     const contentRoot = node?.querySelector<HTMLElement>('.reader-original');
     if (!contentRoot) return;
-    const blocks = readingBlocks(contentRoot);
-    const startBlock = blocks[selectionDraft.range.start.blockIndex - 1];
-    const endBlock = blocks[selectionDraft.range.end.blockIndex - 1];
-    if (!startBlock || !endBlock) return;
-    const start = domBoundaryForOffset(startBlock, selectionDraft.range.start.offset);
-    const end = domBoundaryForOffset(endBlock, selectionDraft.range.end.offset);
-    if (!start || !end) return;
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
+      const liveRange = selection.getRangeAt(0);
+      if (contentRootOf(liveRange.startContainer) === contentRoot
+        && contentRootOf(liveRange.endContainer) === contentRoot) {
+        const liveTextRange = rangeFromSelection(contentRoot, liveRange);
+        if (liveTextRange && sameTextRange(liveTextRange, selectionDraft.range)) return;
+      }
+    }
+    const domRange = domRangeForReaderRange(contentRoot, selectionDraft.range);
+    if (!selection || !domRange) return;
     try {
-      const range = window.document.createRange();
-      range.setStart(start.container, start.offset);
-      range.setEnd(end.container, end.offset);
-      const selection = window.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
+      selection.removeAllRanges();
+      if (selectionDraft.backward && typeof selection.setBaseAndExtent === 'function') {
+        selection.setBaseAndExtent(
+          domRange.endContainer,
+          domRange.endOffset,
+          domRange.startContainer,
+          domRange.startOffset,
+        );
+      } else {
+        selection.addRange(domRange);
+      }
     } catch {
       // The content may have changed between selection and commit; the action menu still remains usable.
     }
@@ -893,10 +925,12 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   // §11.7 selection → highlight toolbar. When the reader finishes a text selection inside ONE reading
   // node, fold it to a block range (rangeFromSelection) and float the action toolbar over it. A
   // collapsed selection, or one that leaves the node (cross-node highlights aren't allowed), clears
-  // the toolbar. Runs on mouseup / touchend (deferred a tick so the selection is finalized).
+  // the toolbar. Mouse selection is final by mouseup, so capture synchronously; touch selection gets
+  // one animation frame for Safari/native handles to finalize without an arbitrary timer delay.
   useEffect(() => {
     const root = scrollRoot.current;
     if (!root) return;
+    let touchFrame: number | null = null;
     const evaluate = () => {
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
@@ -918,23 +952,38 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
         setSelectionDraft(null);
         return;
       }
-      setSelectionDraft({
+      const draft: SelectionDraft = {
         nodeOrder,
         sectionId,
         segment,
         range: textRange,
         text: quoteForReaderRange(startRoot, textRange).slice(0, 12000),
         placement: popoverPlacement(range.getBoundingClientRect()),
+        backward: isBackwardSelection(selection, range),
+      };
+      // This listener is attached directly to the scroll container rather than through React's
+      // event system. Commit before the browser's next paint so the toolbar appears with the final
+      // selection instead of one scheduler turn later.
+      flushSync(() => {
+        setSelectionDraft(draft);
       });
     };
-    const onFinish = () => window.setTimeout(evaluate, 0);
-    root.addEventListener('mouseup', onFinish);
-    root.addEventListener('touchend', onFinish);
-    return () => {
-      root.removeEventListener('mouseup', onFinish);
-      root.removeEventListener('touchend', onFinish);
+    const onMouseUp = () => evaluate();
+    const onTouchEnd = () => {
+      if (touchFrame !== null) window.cancelAnimationFrame(touchFrame);
+      touchFrame = window.requestAnimationFrame(() => {
+        touchFrame = null;
+        evaluate();
+      });
     };
-  }, [prepared]);
+    root.addEventListener('mouseup', onMouseUp);
+    root.addEventListener('touchend', onTouchEnd);
+    return () => {
+      if (touchFrame !== null) window.cancelAnimationFrame(touchFrame);
+      root.removeEventListener('mouseup', onMouseUp);
+      root.removeEventListener('touchend', onTouchEnd);
+    };
+  }, []);
 
   const handleScroll = () => {
     const root = scrollRoot.current;
@@ -952,6 +1001,23 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     } else if ((delta < -4 || root.scrollTop < 120) && chromeHidden) {
       setChromeHidden(false);
     }
+    // Touch selection can produce a small inertial scroll after the finger is released. Keep the
+    // frozen logical selection and move its toolbar with the live DOM instead of treating that
+    // passive scroll as a dismissal.
+    if (selectionDraft) {
+      const node = [...root.querySelectorAll<HTMLElement>('[data-node-order]')].find(
+        (item) => item.dataset.sectionId === selectionDraft.sectionId
+          && Number(item.dataset.segment) === selectionDraft.segment,
+      );
+      const contentRoot = node?.querySelector<HTMLElement>('.reader-original');
+      const domRange = contentRoot ? domRangeForReaderRange(contentRoot, selectionDraft.range) : null;
+      if (domRange) {
+        const placement = popoverPlacement(domRange.getBoundingClientRect());
+        setSelectionDraft((current) => current && !samePopoverPlacement(current.placement, placement)
+          ? { ...current, placement }
+          : current);
+      }
+    }
     // §11.8/§11.10 activity: a downward scroll is forward reading (keeps forward-time eligible); an
     // upward scroll is still activity but not forward. The programmatic restore scroll (§2.4) is not
     // user activity, so it must not open an interval or accrue time.
@@ -959,8 +1025,8 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       sessionRef.current?.recordActivity(Date.now(), delta > 0);
     }
     setPopover(null);
-    // Anchored overlays (§11.7) misalign once the page scrolls, so dismiss them like the note popover.
-    setSelectionDraft(null);
+    // Editors and note popovers dismiss on scroll; a fresh selection stays open and was repositioned
+    // above so touch momentum cannot erase it immediately after release.
     setHighlightEditor(null);
     // Debounced position report (§11.5): saves intra-node scroll position and grows the window
     // when the settled node changes.
@@ -1576,7 +1642,7 @@ function ReaderAction({ glyph, label, onClick, tint, compact }: {
   );
 }
 
-function ReadingNode({ node, bookTitle, enhancement, chapterEstimate }: {
+const ReadingNode = memo(function ReadingNode({ node, bookTitle, enhancement, chapterEstimate }: {
   node: RenderedNode;
   bookTitle: string;
   enhancement: ReaderNodeEnhancement | undefined;
@@ -1623,7 +1689,7 @@ function ReadingNode({ node, bookTitle, enhancement, chapterEstimate }: {
       ) : null}
     </section>
   );
-}
+});
 
 function OutlineHeading({ heading }: { heading: RenderedHeading }) {
   const props = {
@@ -1853,7 +1919,7 @@ function SelectionToolbar({ placement, onAsk, onHighlight, onHighlightWithNote, 
   onDismiss: () => void;
 }) {
   return (
-    <div className="note-dialog-wrap" role="presentation" onClick={onDismiss}>
+    <div className="note-dialog-wrap" data-selection-toolbar="true" role="presentation" onClick={onDismiss}>
       <div
         className="reader-selection-toolbar"
         role="toolbar"

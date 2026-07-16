@@ -2293,6 +2293,15 @@ h1 {
   background: rgba(10, 10, 9, 0.2);
 }
 
+/* The fresh-selection toolbar needs an outside-click layer, not a modal scrim. In particular, the
+   mobile dialog backdrop blur makes the selected text look faded or displaced immediately after
+   releasing the selection handles. */
+.note-dialog-wrap[data-selection-toolbar='true'] {
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .note-dialog {
   position: fixed;
   width: min(392px, calc(100vw - 32px));

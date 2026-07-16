@@ -10,6 +10,7 @@ import type { Highlight } from './api';
 import type { TailoredAnnotation } from '../user-books/api';
 import {
   applyReaderMarks,
+  domRangeForReaderRange,
   quoteForReaderRange,
   rangeFromSelection,
   readerBlockText,
@@ -120,6 +121,21 @@ describe('rangeFromSelection', () => {
     // Round-trip: the folded range re-marks exactly the selected characters.
     const html = applyReaderMarks('<p>甲乙丙丁戊</p>', [], [highlight(nodeRange!, { id: 'rt' })]);
     expect(fragment(html).querySelector('[data-highlight-id="rt"]')?.textContent).toBe('乙丙丁');
+    root.remove();
+  });
+
+  it('rebuilds a selection across inline seams without changing its logical range', () => {
+    const root = contentRoot('<p>甲<strong>关键</strong>乙</p>');
+    const strongText = root.querySelector('strong')!.firstChild as Text;
+    const original = document.createRange();
+    original.setStart(strongText, 0);
+    original.setEnd(strongText, strongText.length);
+    const logical = rangeFromSelection(root, original)!;
+
+    const rebuilt = domRangeForReaderRange(root, logical);
+
+    expect(rebuilt?.toString()).toBe('关键');
+    expect(rebuilt && rangeFromSelection(root, rebuilt)).toEqual(logical);
     root.remove();
   });
 

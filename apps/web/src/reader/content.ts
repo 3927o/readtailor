@@ -424,6 +424,28 @@ export function domBoundaryForOffset(block: HTMLElement, offset: number): { cont
   return boundaryAt(block, offset, 'start');
 }
 
+// Rebuild a live DOM Range from the persisted reader range. The end boundary deliberately uses the
+// `end` bias: at an inline/text-node seam, start bias binds to the following run while end bias binds
+// to the preceding run. Using start bias for both endpoints can visibly move a native selection when
+// React has to restore it after an enhancement/highlight commit.
+export function domRangeForReaderRange(contentRoot: HTMLElement, range: TextRange): Range | null {
+  const blocks = readingBlocks(contentRoot);
+  const startBlock = blocks[range.start.blockIndex - 1];
+  const endBlock = blocks[range.end.blockIndex - 1];
+  if (!startBlock || !endBlock) return null;
+  const start = boundaryAt(startBlock, range.start.offset, 'start');
+  const end = boundaryAt(endBlock, range.end.offset, 'end');
+  if (!start || !end) return null;
+  try {
+    const domRange = window.document.createRange();
+    domRange.setStart(start.container, start.offset);
+    domRange.setEnd(end.container, end.offset);
+    return domRange.collapsed ? null : domRange;
+  } catch {
+    return null;
+  }
+}
+
 // Fold a DOM selection Range within one reading-node content root into a block-relative [start,end)
 // range (reading_contract §2.5, §11.7) — the inverse of applyReaderMarks' forward map and the same
 // coordinate system as saved positions and annotation anchors. Both endpoints must resolve to a block
