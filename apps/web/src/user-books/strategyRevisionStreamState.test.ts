@@ -99,4 +99,32 @@ describe('strategy revision stream reducer', () => {
     expect(state.mode).toBe('failed');
     expect(state.strategySummary).toBe('');
   });
+
+  it.each(['agent_failed', 'validation_failed'] as const)(
+    'treats %s as a terminal retryable failure',
+    (code) => {
+      let state = begin();
+      state = strategyRevisionStreamReducer(state, { type: 'event', event: event(1, { type: 'revision_started', source: 'strategy_feedback', baseDraftId: draftId, baseTrialRevisionId: null, speculativeEpoch: 1 }) });
+      state = strategyRevisionStreamReducer(state, { type: 'event', event: event(2, { type: 'strategy_delta', chars: '临时方式', speculativeEpoch: 1 }) });
+      state = strategyRevisionStreamReducer(state, { type: 'event', event: event(3, { type: 'error', code, message: '可以重试' }) });
+
+      expect(state.mode).toBe('failed');
+      expect(state.strategySummary).toBe('');
+      expect(state.error).toBe('可以重试');
+    },
+  );
+
+  it.each(['lease_lost', 'internal_error'] as const)(
+    'keeps provisional content while recovering from %s',
+    (code) => {
+      let state = begin();
+      state = strategyRevisionStreamReducer(state, { type: 'event', event: event(1, { type: 'revision_started', source: 'strategy_feedback', baseDraftId: draftId, baseTrialRevisionId: null, speculativeEpoch: 1 }) });
+      state = strategyRevisionStreamReducer(state, { type: 'event', event: event(2, { type: 'strategy_delta', chars: '临时方式', speculativeEpoch: 1 }) });
+      state = strategyRevisionStreamReducer(state, { type: 'event', event: event(3, { type: 'error', code, message: '正在恢复' }) });
+
+      expect(state.mode).toBe('recovering');
+      expect(state.strategySummary).toBe('临时方式');
+      expect(state.error).toBe('正在恢复');
+    },
+  );
 });

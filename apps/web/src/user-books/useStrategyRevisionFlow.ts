@@ -85,13 +85,14 @@ export function useStrategyRevisionFlow(options: {
       baseTrialRevisionId: options.baseTrialRevisionId,
       idempotencyKey,
     }),
-    stream: (command, onEvent) => command.source === 'strategy_feedback'
+    stream: (command, onEvent, signal) => command.source === 'strategy_feedback'
       ? streamStrategyFeedback(
           options.userBookId,
           command.baseDraftId,
           command.feedback,
           command.idempotencyKey,
           { onEvent },
+          signal,
         )
       : streamTrialFeedback(
           options.userBookId,
@@ -99,6 +100,7 @@ export function useStrategyRevisionFlow(options: {
           command.feedback,
           command.idempotencyKey,
           { onEvent },
+          signal,
         ),
     matchesOperation: (operation) => operation.kind === 'strategy_revision'
       && operation.source === options.source

@@ -247,7 +247,7 @@ describe('useReadingSetupOperation', () => {
     expect(fixture.applyCompleted).toHaveBeenCalledWith({ id: 'direct' });
   });
 
-  it('reuses the command idempotency key after a transport failure', async () => {
+  it('settles a transport failure without a matching operation and uses a new idempotency key', async () => {
     const commands: TestCommand[] = [];
     const fixture = createAdapter();
     fixture.stream
@@ -262,12 +262,12 @@ describe('useReadingSetupOperation', () => {
     const hook = renderOperation(fixture.adapter);
     await hook.render();
     act(() => hook.value().submit({ value: 'same input' }));
-    await waitFor(() => expect(hook.value().state.mode).toBe('recovering'));
+    await waitFor(() => expect(hook.value().state.mode).toBe('failed'));
 
     act(() => hook.value().submit({ value: 'same input' }));
     await waitFor(() => expect(hook.value().state.mode).toBe('completed'));
 
-    expect(commands[0]?.idempotencyKey).toBe(commands[1]?.idempotencyKey);
+    expect(commands[0]?.idempotencyKey).not.toBe(commands[1]?.idempotencyKey);
   });
 
   it('resumes a disconnected operation once and loads its completed result', async () => {
@@ -334,9 +334,11 @@ describe('useReadingSetupOperation', () => {
 
   it('resets active state when the base key changes', async () => {
     let lateEvent: ((event: TestEvent) => void) | null = null;
+    let streamWasAborted = () => false;
     const fixture = createAdapter({
-      stream: vi.fn((_command, onEvent) => {
+      stream: vi.fn((_command, onEvent, signal) => {
         lateEvent = onEvent;
+        streamWasAborted = () => signal.aborted;
         return new Promise<void>(() => {});
       }),
     });
@@ -348,6 +350,7 @@ describe('useReadingSetupOperation', () => {
     await hook.render('base-2');
 
     await waitFor(() => expect(hook.value().state.mode).toBe('idle'));
+    expect(streamWasAborted()).toBe(true);
     act(() => {
       lateEvent!({
         operationId: 'operation-1',
@@ -416,7 +419,7 @@ describe('useReadingSetupOperation', () => {
     expect(fixture.applyCompleted).not.toHaveBeenCalled();
   });
 
-  it('uses the adapter conflict message and invalidates canonical caches after 409', async () => {
+  it('settles a pre-stream 409 when no matching current operation exists', async () => {
     const fixture = createAdapter({ stream: vi.fn().mockRejectedValue(new ApiError('stale', 409)) });
     const hook = renderOperation(fixture.adapter);
     hook.queryClient.setQueryData(['user-book', 'book-1'], { id: 'book-1' });
@@ -425,9 +428,54 @@ describe('useReadingSetupOperation', () => {
 
     act(() => hook.value().submit({ value: 'conflict' }));
 
-    await waitFor(() => expect(hook.value().state).toMatchObject({ mode: 'recovering', error: 'conflict' }));
+    await waitFor(() => expect(hook.value().state).toMatchObject({ mode: 'failed', error: 'conflict' }));
     expect(hook.queryClient.getQueryState(['user-book', 'book-1'])?.isInvalidated).toBe(true);
     expect(hook.queryClient.getQueryState(['user-book', 'book-1', 'strategy', 'draft-1'])?.isInvalidated).toBe(true);
+  });
+
+  it('keeps recovering after a pre-stream 503 when a matching operation exists', async () => {
+    apiMocks.getCurrent
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue(operation('running', { canResume: false }));
+    const fixture = createAdapter({ stream: vi.fn().mockRejectedValue(new ApiError('服务暂时不可用', 503)) });
+    const hook = renderOperation(fixture.adapter);
+    await hook.render();
+
+    act(() => hook.value().submit({ value: 'recoverable' }));
+
+    await waitFor(() => expect(hook.value().operation).toMatchObject({ status: 'running' }));
+    expect(hook.value().state).toMatchObject({ mode: 'recovering', error: '服务暂时不可用' });
+  });
+
+  it('aborts the stream and fences late events after unmount', async () => {
+    let lateEvent: ((event: TestEvent) => void) | null = null;
+    let streamWasAborted = () => false;
+    const fixture = createAdapter({
+      stream: vi.fn((_command, onEvent, signal) => {
+        lateEvent = onEvent;
+        streamWasAborted = () => signal.aborted;
+        return new Promise<void>(() => {});
+      }),
+    });
+    const hook = renderOperation(fixture.adapter);
+    await hook.render();
+    act(() => hook.value().submit({ value: 'active' }));
+    await waitFor(() => expect(hook.value().state.mode).toBe('streaming'));
+
+    const root = roots.pop()!;
+    act(() => root.unmount());
+    expect(streamWasAborted()).toBe(true);
+    act(() => {
+      lateEvent!({
+        operationId: 'operation-1',
+        operationAttempt: 1,
+        sequence: 1,
+        type: 'final',
+        result: { id: 'late-unmounted-result' },
+      });
+    });
+
+    expect(fixture.applyCompleted).not.toHaveBeenCalled();
   });
 
   it('resumes at most once per attempt under StrictMode', async () => {

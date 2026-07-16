@@ -27,6 +27,7 @@ interface OperationAsyncContext {
 interface OperationStreamRequest<Command> {
   command: Command;
   context: OperationAsyncContext;
+  controller: AbortController;
 }
 
 interface OperationResumeRequest {
@@ -61,7 +62,7 @@ export interface ReadingSetupOperationAdapter<
   machine: ReadingSetupOperationMachine<State, Action, Command, Event, Result>;
   commandKey(input: Input): string;
   createCommand(input: Input, idempotencyKey: string): Command;
-  stream(command: Command, onEvent: (event: Event) => void): Promise<void>;
+  stream(command: Command, onEvent: (event: Event) => void, signal: AbortSignal): Promise<void>;
   matchesOperation(operation: ReadingSetupOperationResponse): boolean;
   resultFromEvent(event: Event, state: State): Result | null;
   isErrorEvent(event: Event): boolean;
@@ -104,6 +105,12 @@ export function useReadingSetupOperation<
   const eventFence = useRef(EMPTY_READING_SETUP_EVENT_FENCE);
   const asyncGeneration = useRef(0);
   const activeOperationIdentity = useRef<{ operationId: string; operationAttempt: number } | null>(null);
+  const activeStreamController = useRef<AbortController | null>(null);
+  const pendingPreStreamRecovery = useRef<{
+    context: OperationAsyncContext;
+    message: string;
+    afterUpdatedAt: number;
+  } | null>(null);
 
   const captureContext = useCallback((operation?: ReadingSetupOperationResponse): OperationAsyncContext => ({
     generation: asyncGeneration.current,
@@ -200,35 +207,12 @@ export function useReadingSetupOperation<
         operationAttempt: event.operationAttempt,
       });
     } else if (current.adapter.isErrorEvent(event)) {
+      if (current.adapter.machine.mode(nextState) === 'failed') commandRef.current = null;
       void queryClient.invalidateQueries({
         queryKey: userBookQueryKeys.readingSetupOperations(current.userBookId),
       });
     }
   }, [complete, dispatchTracked, isContextCurrent, queryClient]);
-
-  const stream = useMutation<void, Error, OperationStreamRequest<Command>>({
-    mutationFn: ({ command, context }) => optionsRef.current.adapter.stream(
-      command,
-      (event) => handleEvent(context, event),
-    ),
-    onMutate: ({ command, context }) => {
-      if (!isContextCurrent(context)) return;
-      activeScopeKey.current = `${context.userBookId}:${context.baseKey}`;
-      activeOperationIdentity.current = null;
-      eventFence.current = EMPTY_READING_SETUP_EVENT_FENCE;
-      dispatchTracked(optionsRef.current.adapter.machine.begin(command));
-    },
-    onError: (error, { context }) => {
-      if (!isContextCurrent(context)) return;
-      const current = optionsRef.current;
-      dispatchTracked(current.adapter.machine.recover(
-        error instanceof ApiError && error.status === 409
-          ? current.adapter.conflictMessage
-          : error.message,
-      ));
-      void resync();
-    },
-  });
 
   const mode = options.adapter.machine.mode(state);
   const operationId = options.adapter.machine.operationId(state);
@@ -250,6 +234,75 @@ export function useReadingSetupOperation<
       : false,
   });
   const observedOperation = operationId ? operationDetail.data : currentOperation.data;
+
+  const settlePreStreamRecovery = useCallback((
+    context: OperationAsyncContext,
+    message: string,
+    operation: ReadingSetupOperationResponse | null | undefined,
+  ) => {
+    if (!isContextCurrent(context)) return;
+    pendingPreStreamRecovery.current = null;
+    const current = optionsRef.current;
+    if (!operation || !current.adapter.matchesOperation(operation)) {
+      commandRef.current = null;
+      activeOperationIdentity.current = null;
+      dispatchTracked(current.adapter.machine.failed(message));
+      return;
+    }
+    activeOperationIdentity.current = {
+      operationId: operation.operationId,
+      operationAttempt: operation.operationAttempt,
+    };
+    deliverRecoverableInput(operation);
+  }, [deliverRecoverableInput, dispatchTracked, isContextCurrent]);
+
+  const stream = useMutation<void, Error, OperationStreamRequest<Command>>({
+    mutationFn: async ({ command, context, controller }) => {
+      try {
+        await optionsRef.current.adapter.stream(
+          command,
+          (event) => handleEvent(context, event),
+          controller.signal,
+        );
+      } finally {
+        if (activeStreamController.current === controller) activeStreamController.current = null;
+      }
+    },
+    onMutate: ({ command, context, controller }) => {
+      if (!isContextCurrent(context)) {
+        controller.abort();
+        return;
+      }
+      activeScopeKey.current = `${context.userBookId}:${context.baseKey}`;
+      activeOperationIdentity.current = null;
+      eventFence.current = EMPTY_READING_SETUP_EVENT_FENCE;
+      dispatchTracked(optionsRef.current.adapter.machine.begin(command));
+    },
+    onError: (error, { context }) => {
+      if (!isContextCurrent(context)) return;
+      const current = optionsRef.current;
+      const message = error instanceof ApiError && error.status === 409
+        ? current.adapter.conflictMessage
+        : error.message;
+      dispatchTracked(current.adapter.machine.recover(message));
+      void resync();
+
+      if (activeOperationIdentity.current) return;
+      pendingPreStreamRecovery.current = {
+        context,
+        message,
+        afterUpdatedAt: currentOperation.dataUpdatedAt,
+      };
+
+      void currentOperation.refetch()
+        .then(({ data: operation }) => {
+          settlePreStreamRecovery(context, message, operation);
+        })
+        .catch(() => {
+          // The polling query remains enabled while recovering and will retry discovery.
+        });
+    },
+  });
 
   const resume = useMutation({
     mutationFn: ({ operationId: targetOperationId, context }: OperationResumeRequest) => resumeReadingSetupOperation(
@@ -282,10 +335,39 @@ export function useReadingSetupOperation<
     commandRef.current = null;
     activeScopeKey.current = null;
     asyncGeneration.current += 1;
+    activeStreamController.current?.abort();
+    activeStreamController.current = null;
+    pendingPreStreamRecovery.current = null;
     activeOperationIdentity.current = null;
     eventFence.current = EMPTY_READING_SETUP_EVENT_FENCE;
     dispatchTracked(optionsRef.current.adapter.machine.reset());
   }, [dispatchTracked, mode, options.baseKey, options.userBookId]);
+
+  useEffect(() => () => {
+    asyncGeneration.current += 1;
+    activeStreamController.current?.abort();
+    activeStreamController.current = null;
+    pendingPreStreamRecovery.current = null;
+    activeOperationIdentity.current = null;
+    eventFence.current = EMPTY_READING_SETUP_EVENT_FENCE;
+  }, []);
+
+  useEffect(() => {
+    const pending = pendingPreStreamRecovery.current;
+    if (
+      !pending
+      || mode !== 'recovering'
+      || !currentOperation.isSuccess
+      || currentOperation.dataUpdatedAt <= pending.afterUpdatedAt
+    ) return;
+    settlePreStreamRecovery(pending.context, pending.message, currentOperation.data);
+  }, [
+    currentOperation.data,
+    currentOperation.dataUpdatedAt,
+    currentOperation.isSuccess,
+    mode,
+    settlePreStreamRecovery,
+  ]);
 
   useEffect(() => {
     const operation = currentOperation.data;
@@ -370,7 +452,11 @@ export function useReadingSetupOperation<
       : current.adapter.createCommand(input, crypto.randomUUID());
     commandRef.current = { key, command };
     asyncGeneration.current += 1;
-    stream.mutate({ command, context: captureContext() });
+    activeStreamController.current?.abort();
+    pendingPreStreamRecovery.current = null;
+    const controller = new AbortController();
+    activeStreamController.current = controller;
+    stream.mutate({ command, context: captureContext(), controller });
   };
 
   return {
