@@ -6,6 +6,7 @@
 ## Communication
 
 - Be concise and lead with the result. Avoid filler, repetition, and unnecessary process narration.
+- Ask the project owner promptly whenever requirements, constraints, or expected behavior are unclear and could materially affect the implementation; do not proceed based on unsupported assumptions.
 
 ## Sub-Agent Usage
 
@@ -20,6 +21,10 @@
 ## Commits
 
 - Organize commits by requirement. Each commit should contain one cohesive requirement and exclude unrelated changes.
+
+## Engineering Quality
+
+- Do not satisfy a requirement through architecturally unsound shortcuts, fragile workarounds, duplicated or accumulating technical debt, or by merely shifting the problem elsewhere; implement a solution that fits the existing design and addresses the root cause.
 
 ## UI And Interaction Acceptance
 
