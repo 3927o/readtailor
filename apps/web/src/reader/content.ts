@@ -1,5 +1,11 @@
 import type { Highlight, ReaderNode, ReaderOutlineItem } from './api';
 import type { TailoredAnnotation, TextRange } from '../user-books/api';
+import {
+  quoteFromBlocks,
+  validateCanonicalBlocks,
+  validateCanonicalBlocksAgainstManifestNode,
+  type CanonicalReadingBlock,
+} from '@readtailor/reader-core';
 
 const headingNames = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
 const mediaNames = new Set(['AUDIO', 'CANVAS', 'FIGURE', 'IMG', 'MATH', 'SVG', 'TABLE', 'VIDEO']);
@@ -139,10 +145,10 @@ function parentChain(
   byId: Map<string, ReaderOutlineItem>,
 ): ReaderOutlineItem[] {
   const parents: ReaderOutlineItem[] = [];
-  let parent = item.parent_section_id ? byId.get(item.parent_section_id) : undefined;
+  let parent = item.parentSectionId ? byId.get(item.parentSectionId) : undefined;
   while (parent && parents.length < 8) {
     parents.push(parent);
-    parent = parent.parent_section_id ? byId.get(parent.parent_section_id) : undefined;
+    parent = parent.parentSectionId ? byId.get(parent.parentSectionId) : undefined;
   }
   return parents;
 }
@@ -151,9 +157,9 @@ function headingVisualLevel(
   item: ReaderOutlineItem,
   byId: Map<string, ReaderOutlineItem>,
 ): RenderedHeading['visualLevel'] {
-  if (item.data_type === 'part') return 'part';
+  if (item.dataType === 'part') return 'part';
   const levels: RenderedHeading['visualLevel'][] = ['chapter', 'section', 'subsection', 'deep'];
-  const depth = parentChain(item, byId).filter((parent) => parent.data_type !== 'part').length;
+  const depth = parentChain(item, byId).filter((parent) => parent.dataType !== 'part').length;
   return levels[Math.min(depth, levels.length - 1)] ?? 'deep';
 }
 
@@ -317,20 +323,29 @@ export function readerBlockLength(root: HTMLElement): number {
   return readerBlockText(root).length;
 }
 
-export function quoteForReaderRange(root: HTMLElement, range: TextRange): string {
-  const blocks = readingBlocks(root);
-  const startIndex = range.start.blockIndex - 1;
-  const endIndex = range.end.blockIndex - 1;
-  if (startIndex < 0 || endIndex < startIndex || endIndex >= blocks.length) return '';
+export function extractCanonicalBlocksFromDom(root: HTMLElement): CanonicalReadingBlock[] {
+  const blocks = readingBlocks(root).map((element, index) => {
+    const text = readerBlockText(element);
+    const kind = element.tagName === 'DIV'
+      ? `div:${element.dataset.role ?? 'unknown'}`
+      : element.tagName.toLowerCase();
+    return {
+      blockIndex: index + 1,
+      kind,
+      text,
+      utf16Length: text.length,
+    };
+  });
+  validateCanonicalBlocks(blocks);
+  return blocks;
+}
 
-  const pieces: string[] = [];
-  for (let index = startIndex; index <= endIndex; index += 1) {
-    const text = readerBlockText(blocks[index]!);
-    const start = index === startIndex ? Math.min(Math.max(range.start.offset, 0), text.length) : 0;
-    const end = index === endIndex ? Math.min(Math.max(range.end.offset, 0), text.length) : text.length;
-    pieces.push(text.slice(start, Math.max(start, end)));
+export function quoteForReaderRange(root: HTMLElement, range: TextRange): string {
+  try {
+    return quoteFromBlocks(extractCanonicalBlocksFromDom(root), range);
+  } catch {
+    return '';
   }
-  return pieces.join('\n');
 }
 
 // The ordered block elements of a live reading-node content root, using the same v1 enumeration
@@ -703,20 +718,20 @@ function outlineHeadings(
   outline: ReaderOutlineItem[],
   assetBaseUrl: string,
 ): Map<number, RenderedHeading[]> {
-  const byId = new Map(outline.map((item) => [item.section_id, item]));
+  const byId = new Map(outline.map((item) => [item.sectionId, item]));
   const depth = (item: ReaderOutlineItem): number => {
     let value = 0;
-    let parent = item.parent_section_id ? byId.get(item.parent_section_id) : undefined;
+    let parent = item.parentSectionId ? byId.get(item.parentSectionId) : undefined;
     while (parent && value < 8) {
       value += 1;
-      parent = parent.parent_section_id ? byId.get(parent.parent_section_id) : undefined;
+      parent = parent.parentSectionId ? byId.get(parent.parentSectionId) : undefined;
     }
     return value;
   };
   const result = new Map<number, RenderedHeading[]>();
   for (const item of outline) {
-    const current = result.get(item.first_node_order) ?? [];
-    const owner = documentRoot.getElementById(item.section_id);
+    const current = result.get(item.firstNodeOrder) ?? [];
+    const owner = documentRoot.getElementById(item.sectionId);
     const sourceHeading = owner instanceof HTMLElement
       ? [...owner.children].find((child) => headingNames.has(child.tagName))
       : undefined;
@@ -728,7 +743,7 @@ function outlineHeadings(
         : prepareFragment([documentRoot.createTextNode(item.title)], assetBaseUrl),
     });
     current.sort((left, right) => depth(left) - depth(right));
-    result.set(item.first_node_order, current);
+    result.set(item.firstNodeOrder, current);
   }
   return result;
 }
@@ -745,16 +760,22 @@ export function prepareBookContent(
   markNoteTopology(documentRoot);
   const headings = outlineHeadings(documentRoot, outline, assetBaseUrl);
   const nodes = manifestNodes.map((node) => {
-    const owner = documentRoot.getElementById(node.section_id);
+    const owner = documentRoot.getElementById(node.sectionId);
     if (!(owner instanceof HTMLElement)) {
-      throw new Error(`正文中找不到阅读节点 ${node.section_id}`);
+      throw new Error(`正文中找不到阅读节点 ${node.sectionId}`);
     }
     const segments = ownerSegments(owner);
     const segment = segments[node.segment - 1];
     if (!segment) {
-      throw new Error(`阅读节点 ${node.section_id}#${node.segment} 无法重建`);
+      throw new Error(`阅读节点 ${node.sectionId}#${node.segment} 无法重建`);
     }
-    const key = `${node.section_id}:${node.segment}`;
+    const key = `${node.sectionId}:${node.segment}`;
+    const validationRoot = documentRoot.createElement('div');
+    for (const child of segment) validationRoot.append(child.cloneNode(true));
+    validateCanonicalBlocksAgainstManifestNode(
+      extractCanonicalBlocksFromDom(validationRoot),
+      node,
+    );
     return {
       ...node,
       html: applyReaderMarks(
@@ -777,12 +798,12 @@ export function prepareBookContent(
 }
 
 export function getOutlineDepth(item: ReaderOutlineItem, outline: ReaderOutlineItem[]): number {
-  const byId = new Map(outline.map((entry) => [entry.section_id, entry]));
+  const byId = new Map(outline.map((entry) => [entry.sectionId, entry]));
   let depth = 0;
-  let parent = item.parent_section_id ? byId.get(item.parent_section_id) : undefined;
+  let parent = item.parentSectionId ? byId.get(item.parentSectionId) : undefined;
   while (parent && depth < 8) {
     depth += 1;
-    parent = parent.parent_section_id ? byId.get(parent.parent_section_id) : undefined;
+    parent = parent.parentSectionId ? byId.get(parent.parentSectionId) : undefined;
   }
   return depth;
 }

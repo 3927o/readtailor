@@ -21,27 +21,17 @@ import {
   trialGenerationFailedGraph,
   trialReviewGraph,
 } from '../../test/database';
+import { createReadingManifestFixture } from '../../test/reading-manifest';
 
 const describePostgres = hasTestDatabase ? describe : describe.skip;
 const skipReason = hasTestDatabase ? '' : ' (skipped: TEST_DATABASE_URL is not set)';
 
 const contents = ['第一节点正文abcdefghij', '第二节点正文abcdefghij', '第三节点正文abcdefghij'];
-const manifest = {
-  nodes: contents.map((content, index) => ({
-    section_id: `section-${index + 1}`,
-    segment: 1,
-    order: index + 1,
-    title: `第 ${index + 1} 节`,
-    parent_section_id: null,
-    tailoring_eligible: true,
-    blocks: [{ block_index: 1, block_utf16_length: content.length }],
-  })),
-  outline: contents.map((_content, index) => ({
-    section_id: `section-${index + 1}`,
-    title: `第 ${index + 1} 节`,
-    parent_section_id: null,
-  })),
-};
+const manifest = createReadingManifestFixture(contents.map((text, index) => ({
+  sectionId: `section-${index + 1}`,
+  text,
+  title: `第 ${index + 1} 节`,
+})));
 const html = `<!doctype html><html><body><main id="book" data-type="book">${contents
   .map((content, index) => `<section id="section-${index + 1}" data-type="section"><p>${content}</p></section>`)
   .join('')}</main></body></html>`;
@@ -54,7 +44,7 @@ const books: BookService = {
   async getProfile() {
     return {
       trial_candidates: manifest.nodes.map((node) => ({
-        section_id: node.section_id,
+        section_id: node.sectionId,
         segment: node.segment,
       })),
     };

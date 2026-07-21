@@ -18,7 +18,13 @@ import {
   publishImmutablePackage,
   readBookMetadata,
   validateNormalizedCandidate,
+  validateReadingManifestForPublication,
 } from '@readtailor/normalized-book';
+import {
+  createManifestIndex,
+  type ManifestIndex,
+  type ReadingManifestNode,
+} from '@readtailor/reader-core';
 import {
   createObjectStorage,
   ObjectNotFoundError,
@@ -26,23 +32,9 @@ import {
 } from '@readtailor/storage';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const PACKAGE_VERSION = 'nb-1.0-v3';
+const PACKAGE_VERSION = 'nb-1.0-v3-reader-core-v1';
 const CONTRACT_VERSION = 'nb-1.0';
 const MANIFEST_VERSION = 'reading-nodes-1.0';
-
-type ManifestNode = {
-  section_id: string;
-  segment: number;
-  order: number;
-  title: string;
-  tailoring_eligible: boolean;
-};
-
-type ReadingManifest = {
-  version: string;
-  nodes: ManifestNode[];
-  [key: string]: unknown;
-};
 
 function sha256(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -104,8 +96,8 @@ async function listFiles(root: string): Promise<string[]> {
   return files.sort();
 }
 
-function selectTrialCandidates(nodes: ManifestNode[]) {
-  const eligible = nodes.filter((node) => node.tailoring_eligible);
+function selectTrialCandidates(nodes: ReadingManifestNode[]) {
+  const eligible = nodes.filter((node) => node.tailoringEligible);
   if (eligible.length < 9) {
     throw new Error(`book profile requires at least 9 eligible nodes, found ${eligible.length}`);
   }
@@ -119,7 +111,7 @@ function selectTrialCandidates(nodes: ManifestNode[]) {
     return node;
   });
   return selected.map((node, index) => ({
-    section_id: node.section_id,
+    section_id: node.sectionId,
     segment: node.segment,
     features: [
       index < 3 ? 'entry' : index >= count - 3 ? 'high_difficulty' : 'typical',
@@ -129,7 +121,7 @@ function selectTrialCandidates(nodes: ManifestNode[]) {
   }));
 }
 
-function createBookProfile(manifest: ReadingManifest) {
+function createBookProfile(manifestIndex: ManifestIndex) {
   return {
     version: 'book-profile-1.0',
     summary:
@@ -152,7 +144,7 @@ function createBookProfile(manifest: ReadingManifest) {
       '区分人物话语、叙述者语气和反讽对象，不急于把句子归纳为教条。',
       '遇到密集典故时优先保持正文推进，只在影响理解时展开原书注。',
     ],
-    trial_candidates: selectTrialCandidates(manifest.nodes),
+    trial_candidates: selectTrialCandidates(manifestIndex.manifest.nodes),
   };
 }
 
@@ -422,6 +414,10 @@ async function main(): Promise<void> {
     if (sha256(manifestBytes) !== sha256(rebuiltManifestBytes)) {
       throw new Error('reading manifest is not deterministic for the immutable normalized HTML');
     }
+    const manifest = validateReadingManifestForPublication(
+      manifestBytes.toString('utf8'),
+      MANIFEST_VERSION,
+    );
     const hostValidation = await validateNormalizedCandidate({
       repoRoot: REPO_ROOT,
       sourceEpubPath: sourcePath,
@@ -439,11 +435,7 @@ async function main(): Promise<void> {
     );
 
     const metadata = await readBookMetadata(packageDir);
-    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as ReadingManifest;
-    if (manifest.version !== MANIFEST_VERSION) {
-      throw new Error(`unexpected manifest version: ${manifest.version}`);
-    }
-    const bookProfile = createBookProfile(manifest);
+    const bookProfile = createBookProfile(createManifestIndex(manifest));
     await writeFile(
       join(packageDir, 'book_profile.json'),
       `${JSON.stringify(bookProfile, null, 2)}\n`,

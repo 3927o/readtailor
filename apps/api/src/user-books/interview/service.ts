@@ -29,6 +29,7 @@ import {
   type Database,
 } from '@readtailor/database';
 import type { BookService } from '../../books';
+import type { ReadingManifest } from '@readtailor/reader-core';
 import type { ReadingSetupEngine } from '../../reading-setup-engine';
 import type { OwnedUserBook } from '../context/setup-context';
 import { UserBookError } from '../errors';
@@ -77,7 +78,7 @@ export type InterviewServiceOptions = {
   getOwnedBook(userBookId: string): Promise<OwnedUserBook>;
   getSetupContext(userBookId: string): Promise<SetupContext>;
   createReadingNodeProjector(
-    manifestValue: unknown,
+    manifestValue: ReadingManifest,
     bookProfile: unknown,
   ): (
     candidate: { ordinal: number; sectionId: string; segment: number; reason: string },

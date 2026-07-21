@@ -76,7 +76,24 @@ import type {
   AskAiOutcome,
   AskAiToolbox,
 } from '@readtailor/agent-kit';
-import { extractNodeSourceFromHtml, extractNodeTexts, sliceNodeSource } from '@readtailor/tailoring';
+import {
+  extractNodeSourceFromHtml,
+  extractNodeTexts,
+  sliceNodeSource,
+  TAILORING_PROMPT_VERSION,
+} from '@readtailor/tailoring';
+import {
+  compareBlockPoints,
+  createManifestIndex,
+  findNode,
+  quoteFromBlocks as quoteFromCanonicalBlocks,
+  validateRangeAgainstBlocks,
+  type ManifestIndex,
+  type ReadingManifest,
+  type ReadingManifestBlock,
+  type ReadingManifestNode,
+  type ReadingManifestOutlineItem,
+} from '@readtailor/reader-core';
 import type { AskAiEngine } from './ask-ai-engine';
 import type { BookService } from './books';
 import type { ReadingSetupEngine } from './reading-setup-engine';
@@ -236,13 +253,10 @@ function positionAbsoluteChar(
   if (node.blocks.length === 0) {
     return node.nodeStart + Math.min(Math.max(0, position.offset), node.charCount);
   }
-  const block = node.blocks.find((item) => item.block_index === position.blockIndex);
+  const block = node.blocks.find((item) => item.blockIndex === position.blockIndex);
   if (!block) return null;
-  const beforeBlock = node.blocks
-    .filter((item) => item.block_index < position.blockIndex)
-    .reduce((sum, item) => sum + Math.max(0, item.block_utf16_length), 0);
-  const inBlock = Math.min(Math.max(0, position.offset), Math.max(0, block.block_utf16_length));
-  return node.nodeStart + Math.min(node.charCount, beforeBlock + inBlock);
+  const inBlock = Math.min(Math.max(0, position.offset), block.blockUtf16Length);
+  return block.blockAbsoluteStart + inBlock;
 }
 
 export function classifyReadingActivitySlice(
@@ -390,36 +404,6 @@ export function computeStreakDays(activeDays: Set<string>, today: string): numbe
   return streak;
 }
 
-type ManifestBlock = {
-  block_index: number;
-  block_utf16_length: number;
-};
-
-type ManifestNode = {
-  section_id: string;
-  segment: number;
-  order: number;
-  region?: string;
-  data_type?: string;
-  title?: string;
-  parent_section_id?: string | null;
-  tailoring_eligible: boolean;
-  blocks: ManifestBlock[];
-  node_absolute_start?: number;
-};
-
-type ManifestOutline = {
-  section_id: string;
-  title: string;
-  parent_section_id: string | null;
-};
-
-type ReadingManifest = {
-  version?: string;
-  nodes: ManifestNode[];
-  outline: ManifestOutline[];
-};
-
 export interface ContentGenerationEnqueuer {
   // `priority` maps to BullMQ job priority (lower = more urgent; omitted → background).
   // Re-enqueuing an id that is still waiting bumps its priority (§6.2 jump提权).
@@ -495,14 +479,6 @@ export function applyReaderProfilePatch(
   };
 }
 
-function asManifest(value: unknown): ReadingManifest {
-  const manifest = value as Partial<ReadingManifest>;
-  if (!Array.isArray(manifest.nodes) || !Array.isArray(manifest.outline)) {
-    throw new UserBookError('书籍阅读索引不可用', 409);
-  }
-  return manifest as ReadingManifest;
-}
-
 interface ManifestMetaNode {
   sectionId: string;
   segment: number;
@@ -510,7 +486,7 @@ interface ManifestMetaNode {
   dataType: string | null;
   nodeStart: number;
   charCount: number;
-  blocks: ManifestBlock[];
+  blocks: ReadingManifestBlock[];
 }
 
 // The manifest is immutable per (immutable) book package, so memoize its position-relevant metadata
@@ -556,59 +532,27 @@ async function getManifestMeta(books: BookService, sharedBookId: string): Promis
   });
   let meta: ManifestMeta = empty();
   try {
-    const raw = (await books.getManifest(sharedBookId)) as {
-      version?: unknown;
-      book_total_characters?: unknown;
-      document?: { language?: unknown };
-      nodes?: unknown;
-    } | null;
+    const manifest = await books.getManifest(sharedBookId);
+    if (!manifest) return empty();
+    const manifestIndex = createManifestIndex(manifest);
     const nodesByOrder = new Map<number, ManifestMetaNode>();
     const charCountByOrder = new Map<number, number>();
-    let sumChars = 0;
-    let sawChars = false;
-    if (Array.isArray(raw?.nodes)) {
-      for (const node of raw.nodes as Array<ManifestNode & { character_count?: unknown }>) {
-        if (typeof node?.order === 'number' && typeof node?.section_id === 'string' && typeof node?.segment === 'number') {
-          const charCount = typeof node.character_count === 'number' && Number.isFinite(node.character_count)
-            ? Math.max(0, node.character_count)
-            : 0;
-          const blocks = Array.isArray(node.blocks)
-            ? node.blocks.filter((block) => (
-                typeof block?.block_index === 'number'
-                && typeof block?.block_utf16_length === 'number'
-                && Number.isFinite(block.block_utf16_length)
-              ))
-            : [];
-          const nodeStart = typeof node.node_absolute_start === 'number'
-            && Number.isFinite(node.node_absolute_start)
-            ? Math.max(0, node.node_absolute_start)
-            : sumChars;
-          nodesByOrder.set(node.order, {
-            sectionId: node.section_id,
-            segment: node.segment,
-            region: typeof node.region === 'string' ? node.region : null,
-            dataType: typeof node.data_type === 'string' ? node.data_type : null,
-            nodeStart,
-            charCount,
-            blocks,
-          });
-          if (typeof node.character_count === 'number' && Number.isFinite(node.character_count)) {
-            charCountByOrder.set(node.order, charCount);
-            sumChars += charCount;
-            sawChars = true;
-          }
-        }
-      }
+    for (const [order, node] of manifestIndex.nodeByOrder) {
+      nodesByOrder.set(order, {
+        sectionId: node.sectionId,
+        segment: node.segment,
+        region: node.region,
+        dataType: node.dataType,
+        nodeStart: node.nodeAbsoluteStart,
+        charCount: node.characterCount,
+        blocks: node.blocks,
+      });
+      charCountByOrder.set(order, node.characterCount);
     }
-    // Prefer the manifest's own book_total_characters; fall back to the sum of per-node counts so the
-    // ratio stays self-consistent with charCountByOrder when the top-level total is absent.
-    const bookTotalChars = typeof raw?.book_total_characters === 'number' && Number.isFinite(raw.book_total_characters)
-      ? raw.book_total_characters
-      : sawChars ? sumChars : null;
     meta = {
-      version: typeof raw?.version === 'string' ? raw.version : null,
-      language: typeof raw?.document?.language === 'string' ? raw.document.language : null,
-      bookTotalChars,
+      version: manifest.version,
+      language: manifest.document.language,
+      bookTotalChars: manifest.bookTotalCharacters,
       charCountByOrder,
       nodesByOrder,
     };
@@ -694,12 +638,6 @@ function changedStrategyFields(current: Strategy, proposed: ProposedStrategy): s
 
 type QaContextPrecision = 'exact' | 'approximate' | 'node';
 
-function compareTextPositions(left: TextPosition, right: TextPosition): number {
-  return left.blockIndex === right.blockIndex
-    ? left.offset - right.offset
-    : left.blockIndex - right.blockIndex;
-}
-
 function qaRangeText(
   html: string,
   sectionId: string,
@@ -707,10 +645,7 @@ function qaRangeText(
   range: TextRange,
 ): string {
   const source = extractNodeSourceFromHtml(html, sectionId, segment);
-  const sliced = sliceNodeSource(source, {
-    start: { block_index: range.start.blockIndex, offset: range.start.offset },
-    end: { block_index: range.end.blockIndex, offset: range.end.offset },
-  });
+  const sliced = sliceNodeSource(source, range);
   return sliced.blocks.map((block) => block.text).join('\n\n').trim();
 }
 
@@ -723,15 +658,14 @@ function normalizeQaQuestionContext(
   const value = raw as Record<string, unknown>;
   let sectionId = typeof value.sectionId === 'string' ? value.sectionId : '';
   let segment = typeof value.segment === 'number' ? value.segment : 0;
-  let node = manifest.nodes.find(
-    (candidate) => candidate.section_id === sectionId && candidate.segment === segment,
-  );
+  const manifestIndex = createManifestIndex(manifest);
+  let node = findNode(manifestIndex, sectionId, segment);
   if (!node && !strict) {
     const requestedOrder = typeof value.nodeOrder === 'number' ? value.nodeOrder : 1;
     node = [...manifest.nodes]
       .sort((left, right) => Math.abs(left.order - requestedOrder) - Math.abs(right.order - requestedOrder))[0];
     if (node) {
-      sectionId = node.section_id;
+      sectionId = node.sectionId;
       segment = node.segment;
     }
   }
@@ -740,7 +674,7 @@ function normalizeQaQuestionContext(
   if (source.blocks.length === 0) throw new UserBookError('提问上下文没有可读原文', 409);
   const first = source.blocks[0]!;
   const last = source.blocks[source.blocks.length - 1]!;
-  const blockByIndex = new Map(source.blocks.map((block) => [block.block_index, block]));
+  const blockByIndex = new Map(source.blocks.map((block) => [block.blockIndex, block]));
   const manifestVersion = manifest.version;
   const submittedVersion = typeof value.manifestVersion === 'string' ? value.manifestVersion : undefined;
   if (strict && submittedVersion && manifestVersion && submittedVersion !== manifestVersion) {
@@ -767,7 +701,7 @@ function normalizeQaQuestionContext(
     const range = candidate as Record<string, unknown>;
     const start = normalizePoint(range.start, exact);
     const end = normalizePoint(range.end, exact);
-    if (!start || !end || compareTextPositions(start, end) >= 0) return undefined;
+    if (!start || !end || compareBlockPoints(start, end) >= 0) return undefined;
     return { start, end };
   };
 
@@ -793,17 +727,17 @@ function normalizeQaQuestionContext(
 
   if (value.anchor === 'screen' && value.precision === 'approximate') {
     const focus = normalizePoint(value.focus, false) ?? {
-      blockIndex: first.block_index,
+      blockIndex: first.blockIndex,
       offset: 0,
     };
     let range = normalizeRange(value.range, false);
     if (!range) {
-      const focusAt = source.blocks.findIndex((block) => block.block_index === focus.blockIndex);
+      const focusAt = source.blocks.findIndex((block) => block.blockIndex === focus.blockIndex);
       const startBlock = source.blocks[Math.max(0, focusAt - 1)] ?? first;
       const endBlock = source.blocks[Math.min(source.blocks.length - 1, focusAt + 1)] ?? last;
       range = {
-        start: { blockIndex: startBlock.block_index, offset: 0 },
-        end: { blockIndex: endBlock.block_index, offset: endBlock.text.length },
+        start: { blockIndex: startBlock.blockIndex, offset: 0 },
+        end: { blockIndex: endBlock.blockIndex, offset: endBlock.text.length },
       };
     }
     return {
@@ -823,8 +757,8 @@ function normalizeQaQuestionContext(
   }
 
   const fullRange: TextRange = {
-    start: { blockIndex: first.block_index, offset: 0 },
-    end: { blockIndex: last.block_index, offset: last.text.length },
+    start: { blockIndex: first.blockIndex, offset: 0 },
+    end: { blockIndex: last.blockIndex, offset: last.text.length },
   };
   return {
     context: {
@@ -842,56 +776,40 @@ function normalizeQaQuestionContext(
   };
 }
 
-function chapterPath(node: ManifestNode, outline: ManifestOutline[]): string[] {
-  const byId = new Map(outline.map((item) => [item.section_id, item]));
+function chapterPath(
+  node: ReadingManifestNode,
+  outline: ReadingManifestOutlineItem[],
+): string[] {
+  const byId = new Map(outline.map((item) => [item.sectionId, item]));
   const path: string[] = [];
-  let current = byId.get(node.section_id);
+  let current = byId.get(node.sectionId);
   while (current) {
     if (current.title.trim()) path.unshift(current.title.trim());
-    current = current.parent_section_id ? byId.get(current.parent_section_id) : undefined;
+    current = current.parentSectionId ? byId.get(current.parentSectionId) : undefined;
   }
-  return path.length > 0 ? path : [node.title?.trim() || '未命名章节'];
+  return path.length > 0 ? path : [node.title.trim() || '未命名章节'];
 }
 
 // non-empty. `label` names the caller so the rejection reads sensibly ('试读片段' / '划线').
 function assertRangeWithinBlocks(
-  blocks: Array<{ block_index: number; text: string }>,
+  blocks: Array<{ blockIndex: number; kind: string; text: string; utf16Length: number }>,
   range: TextRange,
   label = '试读片段',
 ) {
-  const byIndex = new Map(blocks.map((block) => [block.block_index, block]));
-  const startBlock = byIndex.get(range.start.blockIndex);
-  const endBlock = byIndex.get(range.end.blockIndex);
-  if (!startBlock || !endBlock || range.start.blockIndex > range.end.blockIndex) {
-    throw new UserBookError(`${label}范围超出节点`, 409);
-  }
-  if (range.start.offset < 0 || range.start.offset > startBlock.text.length) {
-    throw new UserBookError(`${label}起点越界`, 409);
-  }
-  if (range.end.offset < 0 || range.end.offset > endBlock.text.length) {
-    throw new UserBookError(`${label}终点越界`, 409);
-  }
-  if (range.start.blockIndex === range.end.blockIndex && range.start.offset >= range.end.offset) {
-    throw new UserBookError(`${label}范围为空`, 409);
+  try {
+    validateRangeAgainstBlocks(range, blocks);
+  } catch {
+    throw new UserBookError(`${label}范围无效或超出节点`, 409);
   }
 }
 
 // the row; the snapshot is only for list display and drift fallback, not an authority.
 const HIGHLIGHT_QUOTE_MAX = 2000;
 function quoteFromBlocks(
-  blocks: Array<{ block_index: number; text: string }>,
+  blocks: Array<{ blockIndex: number; text: string }>,
   range: TextRange,
 ): string {
-  const byIndex = new Map(blocks.map((block) => [block.block_index, block]));
-  const parts: string[] = [];
-  for (let index = range.start.blockIndex; index <= range.end.blockIndex; index += 1) {
-    const block = byIndex.get(index);
-    if (!block) continue;
-    const from = index === range.start.blockIndex ? range.start.offset : 0;
-    const to = index === range.end.blockIndex ? range.end.offset : block.text.length;
-    parts.push(block.text.slice(from, to));
-  }
-  return parts.join('\n').slice(0, HIGHLIGHT_QUOTE_MAX);
+  return quoteFromCanonicalBlocks(blocks, range).slice(0, HIGHLIGHT_QUOTE_MAX);
 }
 
 // Bridges the agent's push-based `onStream` callback to a pull-based async generator so the
@@ -1003,6 +921,7 @@ function createUserBookServiceForUser(
     manifest: ReadingManifest,
     bookProfileValue: unknown,
   ) => {
+    const manifestIndex = createManifestIndex(manifest);
     const allowedCandidates = new Set(
       ((bookProfileValue as { trial_candidates?: Array<{ section_id: string; segment: number }> } | null)
         ?.trial_candidates ?? [])
@@ -1013,13 +932,11 @@ function createUserBookServiceForUser(
       seen: Set<string>,
     ): ReadingNodePreview => {
       const key = `${candidate.sectionId}:${candidate.segment}`;
-      const node = manifest.nodes.find(
-        (item) => item.section_id === candidate.sectionId && item.segment === candidate.segment,
-      );
+      const node = findNode(manifestIndex, candidate.sectionId, candidate.segment);
       if (
         candidate.ordinal < 1
         || candidate.ordinal > 3
-        || !node?.tailoring_eligible
+        || !node?.tailoringEligible
         || !allowedCandidates.has(key)
         || seen.has(key)
       ) {
@@ -1055,11 +972,10 @@ function createUserBookServiceForUser(
     ]);
     if (!draft) throw new UserBookError('处理方式版本不存在', 404);
     if (!manifestValue) throw new UserBookError('书籍阅读索引不存在', 409);
-    const manifest = asManifest(manifestValue);
+    const manifest = manifestValue;
+    const manifestIndex = createManifestIndex(manifest);
     const trialCandidatePreviews = draft.strategy.trialCandidates.map((candidate, index) => {
-      const node = manifest.nodes.find(
-        (item) => item.section_id === candidate.sectionId && item.segment === candidate.segment,
-      );
+      const node = findNode(manifestIndex, candidate.sectionId, candidate.segment);
       if (!node) throw new UserBookError('处理方式引用的试读候选不存在', 409);
       return {
         ordinal: index + 1,
@@ -1094,7 +1010,7 @@ function createUserBookServiceForUser(
     getOwnedBook,
     getSetupContext,
     createReadingNodeProjector: (manifestValue, bookProfile) => (
-      createReadingNodeProjector(asManifest(manifestValue), bookProfile)
+      createReadingNodeProjector(manifestValue, bookProfile)
     ),
     mapStrategy,
     applyReaderProfilePatch,
@@ -1110,7 +1026,7 @@ function createUserBookServiceForUser(
     getOwnedBook,
     getSetupContext,
     createReadingNodeProjector: (manifestValue, bookProfile) => (
-      createReadingNodeProjector(asManifest(manifestValue), bookProfile)
+      createReadingNodeProjector(manifestValue, bookProfile)
     ),
     mapStrategy,
     loadStrategyState: strategyStateByDraftId,
@@ -1131,7 +1047,6 @@ function createUserBookServiceForUser(
     modelConfigId: options.modelConfigId,
     getOwnedBook,
     getSetupContext,
-    parseManifest: asManifest,
     chapterPath,
     assertRangeWithinBlocks,
     loadStrategyState: strategyStateByDraftId,
@@ -1221,7 +1136,7 @@ function createUserBookServiceForUser(
   ) => {
     const { manifest } = await getManifestAndHtml(sharedBookId);
     const eligible = manifest.nodes
-      .filter((node) => node.tailoring_eligible)
+      .filter((node) => node.tailoringEligible)
       .sort((left, right) => left.order - right.order);
     if (eligible.length === 0) return;
     const anchor = Number.isFinite(focusOrder) ? focusOrder : eligible[0]!.order;
@@ -1235,11 +1150,11 @@ function createUserBookServiceForUser(
         userBookId,
         generationScope: 'formal' as const,
         strategyVersionId,
-        sectionId: node.section_id,
+        sectionId: node.sectionId,
         segment: node.segment,
         status: 'queued' as const,
         modelConfigId: options.modelConfigId,
-        promptVersion: 'tailoring-content-1.0',
+        promptVersion: TAILORING_PROMPT_VERSION,
         cacheKey: `pending:${randomUUID()}`,
       })))
       .onConflictDoNothing();
@@ -1255,12 +1170,12 @@ function createUserBookServiceForUser(
         eq(nodeGenerations.userBookId, userBookId),
         eq(nodeGenerations.generationScope, 'formal'),
         eq(nodeGenerations.strategyVersionId, strategyVersionId),
-        inArray(nodeGenerations.sectionId, [...new Set(window.map((node) => node.section_id))]),
+        inArray(nodeGenerations.sectionId, [...new Set(window.map((node) => node.sectionId))]),
       ));
     const byKey = new Map(rows.map((row) => [`${row.sectionId}:${row.segment}`, row]));
     const enqueues: Array<Promise<void>> = [];
     window.forEach((node, index) => {
-      const row = byKey.get(`${node.section_id}:${node.segment}`);
+      const row = byKey.get(`${node.sectionId}:${node.segment}`);
       if (!row || (row.status !== 'queued' && row.status !== 'retrying')) return;
       enqueues.push(options.generations.enqueue({
         generationId: row.id,
@@ -1288,7 +1203,7 @@ function createUserBookServiceForUser(
     loadManifest: async (sharedBookId) => {
       const manifestValue = await options.books.getManifest(sharedBookId);
       if (!manifestValue) throw new UserBookError('书籍阅读索引不存在', 409);
-      return asManifest(manifestValue);
+      return manifestValue;
     },
     ensureFormalWindow,
     enqueuePendingFormalGenerations,
@@ -1449,23 +1364,21 @@ function createUserBookServiceForUser(
     manifest: ReadingManifest,
     html: string,
   ): AskAiToolbox => {
-    const nodeByKey = new Map(
-      manifest.nodes.map((node) => [`${node.section_id}\0${node.segment}`, node] as const),
-    );
+    const manifestIndex = createManifestIndex(manifest);
     const nodeTitle = (sectionId: string, segment: number) =>
-      nodeByKey.get(`${sectionId}\0${segment}`)?.title ?? '';
-    const outlineNode = (node: ManifestNode) => ({
-      section_id: node.section_id,
+      findNode(manifestIndex, sectionId, segment)?.title ?? '';
+    const outlineNode = (node: ReadingManifestNode) => ({
+      section_id: node.sectionId,
       segment: node.segment,
       order: node.order,
-      title: node.title ?? '',
-      tailoring_eligible: node.tailoring_eligible,
+      title: node.title,
+      tailoring_eligible: node.tailoringEligible,
     });
     // Built once per request, lazily — only if search_book is actually called (one full parse).
     let searchIndex: Array<{ sectionId: string; segment: number; text: string }> | null = null;
     const ensureSearchIndex = () => {
       if (!searchIndex) {
-        const keys = new Set(nodeByKey.keys());
+        const keys = new Set(manifestIndex.nodeByKey.keys());
         searchIndex = extractNodeTexts(html).filter((node) =>
           keys.has(`${node.sectionId}\0${node.segment}`),
         );
@@ -2990,14 +2903,14 @@ function createUserBookServiceForUser(
           .limit(1);
         const currentNode = manifest.nodes.find((node) =>
           state
-            ? node.section_id === state.sectionId && node.segment === state.segment
-            : node.section_id === proposal.originSectionId && node.segment === proposal.originSegment,
+            ? node.sectionId === state.sectionId && node.segment === state.segment
+            : node.sectionId === proposal.originSectionId && node.segment === proposal.originSegment,
         ) ?? manifest.nodes.find((node) =>
-          node.section_id === proposal.originSectionId && node.segment === proposal.originSegment,
+          node.sectionId === proposal.originSectionId && node.segment === proposal.originSegment,
         ) ?? manifest.nodes[0];
         if (!currentNode) throw new UserBookError('书籍没有可阅读节点', 409);
         const eligible = manifest.nodes
-          .filter((node) => node.tailoring_eligible)
+          .filter((node) => node.tailoringEligible)
           .sort((left, right) => left.order - right.order);
         const ahead = eligible
           .filter((node) => node.order >= currentNode.order)
@@ -3022,7 +2935,7 @@ function createUserBookServiceForUser(
           .set({ strategyVersionId: strategy.id })
           .where(and(
             eq(readerReadNodes.userBookId, userBookId),
-            eq(readerReadNodes.sectionId, currentNode.section_id),
+            eq(readerReadNodes.sectionId, currentNode.sectionId),
             eq(readerReadNodes.segment, currentNode.segment),
           ));
         const readRows = await tx
@@ -3032,7 +2945,7 @@ function createUserBookServiceForUser(
         const preservedReadKeys = new Set(
           readRows
             .filter((row) =>
-              row.sectionId !== currentNode.section_id || row.segment !== currentNode.segment,
+              row.sectionId !== currentNode.sectionId || row.segment !== currentNode.segment,
             )
             .map((row) => `${row.sectionId}\0${row.segment}`),
         );
@@ -3069,11 +2982,11 @@ function createUserBookServiceForUser(
                 userBookId,
                 generationScope: 'formal' as const,
                 strategyVersionId: strategy.id,
-                sectionId: node.section_id,
+                sectionId: node.sectionId,
                 segment: node.segment,
                 status: 'queued' as const,
                 modelConfigId: options.modelConfigId,
-                promptVersion: 'tailoring-content-1.0',
+                promptVersion: TAILORING_PROMPT_VERSION,
                 cacheKey: `pending:${id}`,
               };
             }))
@@ -3095,7 +3008,7 @@ function createUserBookServiceForUser(
                 inArray(nodeGenerations.status, ['queued', 'retrying']),
               ));
         const priorityByKey = new Map(
-          window.map((node, index) => [`${node.section_id}\0${node.segment}`, index + 1]),
+          window.map((node, index) => [`${node.sectionId}\0${node.segment}`, index + 1]),
         );
         const response: ProposalActionResponse = {
           proposalId,

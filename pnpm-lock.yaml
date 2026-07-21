@@ -62,6 +62,9 @@ importers:
       '@readtailor/queue':
         specifier: workspace:*
         version: link:../../packages/queue
+      '@readtailor/reader-core':
+        specifier: workspace:*
+        version: link:../../packages/reader-core
       '@readtailor/storage':
         specifier: workspace:*
         version: link:../../packages/storage
@@ -102,6 +105,9 @@ importers:
       '@readtailor/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@readtailor/reader-core':
+        specifier: workspace:*
+        version: link:../../packages/reader-core
       '@tanstack/react-query':
         specifier: ^5.81.0
         version: 5.101.2(react@19.2.7)
@@ -163,6 +169,9 @@ importers:
       '@readtailor/queue':
         specifier: workspace:*
         version: link:../../packages/queue
+      '@readtailor/reader-core':
+        specifier: workspace:*
+        version: link:../../packages/reader-core
       '@readtailor/storage':
         specifier: workspace:*
         version: link:../../packages/storage
@@ -211,6 +220,9 @@ importers:
 
   packages/contracts:
     dependencies:
+      '@readtailor/reader-core':
+        specifier: workspace:*
+        version: link:../reader-core
       '@sinclair/typebox':
         specifier: ^0.34.0
         version: 0.34.52
@@ -235,6 +247,9 @@ importers:
 
   packages/normalized-book:
     dependencies:
+      '@readtailor/reader-core':
+        specifier: workspace:*
+        version: link:../reader-core
       '@readtailor/storage':
         specifier: workspace:*
         version: link:../storage
@@ -266,6 +281,12 @@ importers:
         specifier: ^9.7.0
         version: 9.14.0
 
+  packages/reader-core:
+    dependencies:
+      '@sinclair/typebox':
+        specifier: ^0.34.0
+        version: 0.34.52
+
   packages/storage:
     dependencies:
       '@aws-sdk/client-s3':
@@ -274,6 +295,9 @@ importers:
 
   packages/tailoring:
     dependencies:
+      '@readtailor/reader-core':
+        specifier: workspace:*
+        version: link:../reader-core
       cheerio:
         specifier: ^1.1.2
         version: 1.2.0

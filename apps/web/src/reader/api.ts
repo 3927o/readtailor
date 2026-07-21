@@ -7,7 +7,14 @@ import type {
   QaSessionListResponse,
   QaSessionResponse,
   QaStreamEvent,
+  ReaderPosition,
+  ReaderResumePosition,
 } from '@readtailor/contracts';
+import type {
+  ReadingManifest,
+  ReadingManifestNode,
+  ReadingManifestOutlineItem,
+} from '@readtailor/reader-core';
 export type {
   QaMessage,
   QaProposalRevisionSummary,
@@ -28,40 +35,9 @@ export interface ReaderBook {
   coverPath: string | null;
 }
 
-export interface ReaderOutlineItem {
-  section_id: string;
-  data_type: string;
-  title: string;
-  parent_section_id: string | null;
-  first_node_order: number;
-}
-
-export interface ReaderNode {
-  section_id: string;
-  segment: number;
-  order: number;
-  region: string;
-  data_type: string;
-  title: string;
-  parent_section_id: string | null;
-  character_count: number;
-  block_count: number;
-  node_absolute_start?: number;
-}
-
-export interface ReadingManifest {
-  version: string;
-  document: {
-    title: string;
-    language: string;
-  };
-  outline: ReaderOutlineItem[];
-  nodes: ReaderNode[];
-  book_total_characters?: number;
-  position_index?: {
-    book_total_characters?: number;
-  };
-}
+export type ReaderOutlineItem = ReadingManifestOutlineItem;
+export type ReaderNode = ReadingManifestNode;
+export type { ReadingManifest, ReaderPosition, ReaderResumePosition };
 
 export interface ReaderDocument {
   userBookId: string;
@@ -98,24 +74,11 @@ export interface ReadingSettings {
 // ISO time the anchor was read from the DOM (or the moment a TOC jump was clicked); the server merges
 // events last-observed-wins by this field so a stale event that arrives late can never overwrite a
 // newer position (reader_position_restore_fix §2.3).
-export interface ReaderPosition {
-  sectionId: string;
-  segment: number;
-  blockIndex: number;
-  offset: number;
-  clientObservedAt: string;
-}
-
 // The resume anchor delivered with bootstrap carries the server-side metadata needed for the restore
 // fallback chain (§3.3): `nodeOrder` locates the nearest still-valid manifest node when the exact
 // section/segment is gone, and `manifestVersion` guards against reinterpreting a stale block/offset
 // against a changed block algorithm. Kept distinct from the request ReaderPosition so DB metadata
 // never leaks into the anchor the client sends back.
-export interface ReaderResumePosition extends ReaderPosition {
-  nodeOrder: number;
-  manifestVersion: string | null;
-}
-
 // A single sampling of the reading-anchor line: the focus node `order` and the precise `position`
 // read from the SAME [data-node-order] element, so they can never be spliced from two nodes (§2.2).
 export interface ObservedReaderAnchor {

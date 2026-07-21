@@ -1,0 +1,141 @@
+{
+  "version": "reading-nodes-1.0",
+  "tailoringEligibilityVersion": "tailoring-eligibility-1.0",
+  "document": {
+    "title": "中文与 Emoji 示例",
+    "language": "zh-CN"
+  },
+  "outline": [
+    {
+      "sectionId": "preface",
+      "dataType": "preface",
+      "title": "前言",
+      "parentSectionId": null,
+      "firstNodeOrder": 1
+    },
+    {
+      "sectionId": "part-1",
+      "dataType": "part",
+      "title": "第一部",
+      "parentSectionId": null,
+      "firstNodeOrder": 2
+    },
+    {
+      "sectionId": "chapter-1",
+      "dataType": "chapter",
+      "title": "第一章",
+      "parentSectionId": "part-1",
+      "firstNodeOrder": 2
+    },
+    {
+      "sectionId": "section-1",
+      "dataType": "section",
+      "title": "第一节",
+      "parentSectionId": "chapter-1",
+      "firstNodeOrder": 3
+    },
+    {
+      "sectionId": "appendix",
+      "dataType": "appendix",
+      "title": "附录",
+      "parentSectionId": null,
+      "firstNodeOrder": 5
+    }
+  ],
+  "bookTotalCharacters": 13,
+  "nodeCount": 5,
+  "nodes": [
+    {
+      "sectionId": "preface",
+      "segment": 1,
+      "order": 1,
+      "region": "frontmatter",
+      "dataType": "preface",
+      "title": "前言",
+      "parentSectionId": null,
+      "characterCount": 1,
+      "blockCount": 1,
+      "tailoringEligible": false,
+      "exclusionReason": "non_bodymatter",
+      "nodeAbsoluteStart": 0,
+      "blocks": [
+        { "blockIndex": 1, "kind": "p", "blockAbsoluteStart": 0, "blockUtf16Length": 1 }
+      ]
+    },
+    {
+      "sectionId": "chapter-1",
+      "segment": 1,
+      "order": 2,
+      "region": "bodymatter",
+      "dataType": "chapter",
+      "title": "第一章",
+      "parentSectionId": "part-1",
+      "characterCount": 4,
+      "blockCount": 2,
+      "tailoringEligible": true,
+      "exclusionReason": null,
+      "nodeAbsoluteStart": 1,
+      "blocks": [
+        { "blockIndex": 1, "kind": "p", "blockAbsoluteStart": 1, "blockUtf16Length": 4 },
+        { "blockIndex": 2, "kind": "figure", "blockAbsoluteStart": 5, "blockUtf16Length": 0 }
+      ]
+    },
+    {
+      "sectionId": "section-1",
+      "segment": 1,
+      "order": 3,
+      "region": "bodymatter",
+      "dataType": "section",
+      "title": "第一节",
+      "parentSectionId": "chapter-1",
+      "characterCount": 5,
+      "blockCount": 1,
+      "tailoringEligible": true,
+      "exclusionReason": null,
+      "nodeAbsoluteStart": 5,
+      "blocks": [
+        { "blockIndex": 1, "kind": "p", "blockAbsoluteStart": 5, "blockUtf16Length": 5 }
+      ]
+    },
+    {
+      "sectionId": "chapter-1",
+      "segment": 2,
+      "order": 4,
+      "region": "bodymatter",
+      "dataType": "chapter",
+      "title": "第一章",
+      "parentSectionId": "part-1",
+      "characterCount": 2,
+      "blockCount": 1,
+      "tailoringEligible": true,
+      "exclusionReason": null,
+      "nodeAbsoluteStart": 10,
+      "blocks": [
+        { "blockIndex": 1, "kind": "p", "blockAbsoluteStart": 10, "blockUtf16Length": 2 }
+      ]
+    },
+    {
+      "sectionId": "appendix",
+      "segment": 1,
+      "order": 5,
+      "region": "backmatter",
+      "dataType": "appendix",
+      "title": "附录",
+      "parentSectionId": null,
+      "characterCount": 1,
+      "blockCount": 1,
+      "tailoringEligible": false,
+      "exclusionReason": "non_bodymatter",
+      "nodeAbsoluteStart": 12,
+      "blocks": [
+        { "blockIndex": 1, "kind": "p", "blockAbsoluteStart": 12, "blockUtf16Length": 1 }
+      ]
+    }
+  ],
+  "warnings": [],
+  "validation": {
+    "isValid": true,
+    "errorCount": 0,
+    "warningCount": 0
+  }
+}

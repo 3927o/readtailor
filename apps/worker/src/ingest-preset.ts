@@ -18,7 +18,13 @@ import {
   publishImmutablePackage,
   readBookMetadata,
   validateNormalizedCandidate,
+  validateReadingManifestForPublication,
 } from '@readtailor/normalized-book';
+import {
+  createManifestIndex,
+  findNode,
+  type ReadingManifest,
+} from '@readtailor/reader-core';
 import {
   createObjectStorage,
   ObjectNotFoundError,
@@ -31,23 +37,9 @@ import {
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const NORMALIZER = 'tools/normalize_preset_epub.py';
-const PACKAGE_VERSION = 'nb-1.0-preset-v1';
+const PACKAGE_VERSION = 'nb-1.0-preset-v1-reader-core-v1';
 const CONTRACT_VERSION = 'nb-1.0';
 const MANIFEST_VERSION = 'reading-nodes-1.0';
-
-type ManifestNode = {
-  section_id: string;
-  segment: number;
-  order: number;
-  title: string;
-  tailoring_eligible: boolean;
-};
-
-type ReadingManifest = {
-  version: string;
-  nodes: ManifestNode[];
-  [key: string]: unknown;
-};
 
 type TrialCandidate = {
   section_id: string;
@@ -136,6 +128,7 @@ function nonEmptyStrings(value: unknown): value is string[] {
 }
 
 function parseBookProfile(raw: string, manifest: ReadingManifest): BookProfile {
+  const manifestIndex = createManifestIndex(manifest);
   const value = JSON.parse(raw) as BookProfile;
   if (value.version !== 'book-profile-1.0') {
     throw new Error(`book profile version must be book-profile-1.0, got ${value.version}`);
@@ -155,13 +148,14 @@ function parseBookProfile(raw: string, manifest: ReadingManifest): BookProfile {
   }
   const eligible = new Set(
     manifest.nodes
-      .filter((node) => node.tailoring_eligible)
-      .map((node) => `${node.section_id}#${node.segment}`),
+      .filter((node) => node.tailoringEligible)
+      .map((node) => `${node.sectionId}#${node.segment}`),
   );
   const seen = new Set<string>();
   for (const candidate of value.trial_candidates) {
     const key = `${candidate.section_id}#${candidate.segment}`;
-    if (!eligible.has(key)) {
+    const node = findNode(manifestIndex, candidate.section_id, candidate.segment);
+    if (!node?.tailoringEligible || !eligible.has(key)) {
       throw new Error(`trial candidate ${key} is not a tailoring-eligible manifest node`);
     }
     if (seen.has(key)) {
@@ -451,6 +445,10 @@ async function main(): Promise<void> {
     if (sha256(manifestBytes) !== sha256(rebuiltManifestBytes)) {
       throw new Error('reading manifest is not deterministic for the immutable normalized HTML');
     }
+    const manifest = validateReadingManifestForPublication(
+      manifestBytes.toString('utf8'),
+      MANIFEST_VERSION,
+    );
     const hostValidation = await validateNormalizedCandidate({
       repoRoot: REPO_ROOT,
       sourceEpubPath: sourcePath,
@@ -468,10 +466,6 @@ async function main(): Promise<void> {
     );
 
     const metadata = await readBookMetadata(packageDir);
-    const manifest = JSON.parse(manifestBytes.toString('utf8')) as ReadingManifest;
-    if (manifest.version !== MANIFEST_VERSION) {
-      throw new Error(`unexpected manifest version: ${manifest.version}`);
-    }
     const bookProfile = parseBookProfile(profileRaw, manifest);
     await writeFile(
       join(packageDir, 'book_profile.json'),

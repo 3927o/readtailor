@@ -14,34 +14,34 @@ export function buildChapterUnits(
 ): ReaderChapterUnit[] {
   const parentIds = new Set(
     outline
-      .map((item) => item.parent_section_id)
+      .map((item) => item.parentSectionId)
       .filter((sectionId): sectionId is string => Boolean(sectionId)),
   );
-  const candidates = outline.filter((item) => !parentIds.has(item.section_id));
+  const candidates = outline.filter((item) => !parentIds.has(item.sectionId));
   const byStart = new Map<number, ReaderOutlineItem>();
   for (const item of candidates) {
-    if (!byStart.has(item.first_node_order)) byStart.set(item.first_node_order, item);
+    if (!byStart.has(item.firstNodeOrder)) byStart.set(item.firstNodeOrder, item);
   }
-  const starts = [...byStart.values()].sort((left, right) => left.first_node_order - right.first_node_order);
+  const starts = [...byStart.values()].sort((left, right) => left.firstNodeOrder - right.firstNodeOrder);
   if (starts.length === 0 && nodes[0]) {
     starts.push({
-      section_id: nodes[0].section_id,
-      data_type: nodes[0].data_type,
+      sectionId: nodes[0].sectionId,
+      dataType: nodes[0].dataType,
       title: nodes[0].title || '正文',
-      parent_section_id: null,
-      first_node_order: nodes[0].order,
+      parentSectionId: null,
+      firstNodeOrder: nodes[0].order,
     });
   }
   return starts.map((item, index) => {
     const next = starts[index + 1];
     const characterCount = nodes
-      .filter((node) => node.order >= item.first_node_order && (!next || node.order < next.first_node_order))
-      .reduce((sum, node) => sum + node.character_count, 0);
+      .filter((node) => node.order >= item.firstNodeOrder && (!next || node.order < next.firstNodeOrder))
+      .reduce((sum, node) => sum + node.characterCount, 0);
     return {
-      sectionId: item.section_id,
+      sectionId: item.sectionId,
       title: item.title,
-      startOrder: item.first_node_order,
-      endOrder: next?.first_node_order ?? null,
+      startOrder: item.firstNodeOrder,
+      endOrder: next?.firstNodeOrder ?? null,
       characterCount,
     };
   });

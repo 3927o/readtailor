@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
   },
   "dependencies": {
+    "@readtailor/reader-core": "workspace:*",
     "cheerio": "^1.1.2",
     "domhandler": "^5.0.3"
   }

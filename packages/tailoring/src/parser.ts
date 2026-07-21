@@ -5,10 +5,10 @@ import {
   type TailoringGenerationInput,
   type TailoringGenerationResult,
 } from './types';
-import { rangeContains, validateGenerationInput } from './validation';
+import { validateGenerationInput } from './validation';
 
 interface RawAnnotation {
-  block_index: number;
+  blockIndex: number;
   quote: string;
   content: string;
 }
@@ -16,7 +16,7 @@ interface RawAnnotation {
 interface RawOutput {
   guide: string | null;
   annotations: RawAnnotation[];
-  after_reading: string | null;
+  afterReading: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -51,10 +51,10 @@ function parseRawOutput(response: string): RawOutput {
     throw new TailoringError('invalid_model_json', 'model response is not valid JSON');
   }
 
-  if (!isRecord(value) || !hasExactKeys(value, ['guide', 'annotations', 'after_reading'])) {
+  if (!isRecord(value) || !hasExactKeys(value, ['guide', 'annotations', 'afterReading'])) {
     throw new TailoringError(
       'invalid_model_output',
-      'model output must contain exactly guide, annotations, and after_reading',
+      'model output must contain exactly guide, annotations, and afterReading',
     );
   }
   if (!Array.isArray(value.annotations)) {
@@ -62,16 +62,16 @@ function parseRawOutput(response: string): RawOutput {
   }
 
   const annotations = value.annotations.map((annotation, index): RawAnnotation => {
-    if (!isRecord(annotation) || !hasExactKeys(annotation, ['block_index', 'quote', 'content'])) {
+    if (!isRecord(annotation) || !hasExactKeys(annotation, ['blockIndex', 'quote', 'content'])) {
       throw new TailoringError(
         'invalid_model_output',
-        `annotations[${index}] must contain exactly block_index, quote, and content`,
+        `annotations[${index}] must contain exactly blockIndex, quote, and content`,
       );
     }
-    if (!Number.isInteger(annotation.block_index) || (annotation.block_index as number) < 1) {
+    if (!Number.isInteger(annotation.blockIndex) || (annotation.blockIndex as number) < 1) {
       throw new TailoringError(
         'invalid_model_output',
-        `annotations[${index}].block_index must be a positive integer`,
+        `annotations[${index}].blockIndex must be a positive integer`,
       );
     }
     if (typeof annotation.quote !== 'string' || annotation.quote.length === 0) {
@@ -87,7 +87,7 @@ function parseRawOutput(response: string): RawOutput {
       );
     }
     return {
-      block_index: annotation.block_index as number,
+      blockIndex: annotation.blockIndex as number,
       quote: annotation.quote,
       content: annotation.content,
     };
@@ -96,7 +96,7 @@ function parseRawOutput(response: string): RawOutput {
   return {
     guide: parseNullableMarkdown(value.guide, 'guide'),
     annotations,
-    after_reading: parseNullableMarkdown(value.after_reading, 'after_reading'),
+    afterReading: parseNullableMarkdown(value.afterReading, 'afterReading'),
   };
 }
 
@@ -106,11 +106,11 @@ function resolveAnnotation(
   input: TailoringGenerationInput,
   index: number,
 ): TailoringAnnotation {
-  const block = blocksByIndex.get(annotation.block_index);
+  const block = blocksByIndex.get(annotation.blockIndex);
   if (!block) {
     throw new TailoringError(
       'invalid_anchor',
-      `annotations[${index}] references block ${annotation.block_index} outside the source`,
+      `annotations[${index}] references block ${annotation.blockIndex} outside the source`,
     );
   }
 
@@ -118,25 +118,25 @@ function resolveAnnotation(
   if (start < 0) {
     throw new TailoringError(
       'invalid_anchor',
-      `annotations[${index}].quote does not exactly match block ${annotation.block_index}`,
+      `annotations[${index}].quote does not exactly match block ${annotation.blockIndex}`,
     );
   }
   if (block.text.indexOf(annotation.quote, start + 1) >= 0) {
     throw new TailoringError(
       'invalid_anchor',
-      `annotations[${index}].quote is not unique in block ${annotation.block_index}`,
+      `annotations[${index}].quote is not unique in block ${annotation.blockIndex}`,
     );
   }
 
-  const sourceOffset = block.source_offset ?? 0;
+  const sourceOffset = block.sourceOffset ?? 0;
   const range = {
-    start: { block_index: annotation.block_index, offset: sourceOffset + start },
+    start: { blockIndex: annotation.blockIndex, offset: sourceOffset + start },
     end: {
-      block_index: annotation.block_index,
+      blockIndex: annotation.blockIndex,
       offset: sourceOffset + start + annotation.quote.length,
     },
   };
-  if (!rangeContains(input.source.range, range)) {
+  if (!blockRangeContains(input.source.range, range)) {
     throw new TailoringError(
       'invalid_anchor',
       `annotations[${index}].quote falls outside the generation range`,
@@ -157,14 +157,14 @@ export function parseTailoringModelResponse(
     annotations: raw.annotations.map((annotation, index) =>
       resolveAnnotation(annotation, blocksByIndex, input, index),
     ),
-    after_reading: raw.after_reading,
+    afterReading: raw.afterReading,
   };
 
   if (
-    input.generation_scope === 'trial' &&
+    input.generationScope === 'trial' &&
     result.guide === null &&
     result.annotations.length === 0 &&
-    result.after_reading === null
+    result.afterReading === null
   ) {
     throw new TailoringError(
       'empty_trial_result',
@@ -173,3 +173,4 @@ export function parseTailoringModelResponse(
   }
   return result;
 }
+import { blockRangeContains } from '@readtailor/reader-core';

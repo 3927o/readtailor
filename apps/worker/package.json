@@ -22,6 +22,7 @@
     "@readtailor/normalized-book": "workspace:*",
     "@readtailor/observability": "workspace:*",
     "@readtailor/queue": "workspace:*",
+    "@readtailor/reader-core": "workspace:*",
     "@readtailor/storage": "workspace:*",
     "@readtailor/tailoring": "workspace:*",
     "bullmq": "^5.56.0",

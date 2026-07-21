@@ -7,6 +7,12 @@ import {
   sliceNodeSource,
 } from '@readtailor/tailoring';
 import {
+  createManifestIndex,
+  requireNode,
+  type ManifestIndex,
+  type ReadingManifestNode,
+} from '@readtailor/reader-core';
+import {
   bookPackages,
   bookReaderProfileVersions,
   nodeGenerations,
@@ -25,42 +31,33 @@ import {
 import type { ModelEngine } from '@readtailor/model';
 import type { PerfSink } from '@readtailor/observability';
 import type { ObjectStorage } from '@readtailor/storage';
-
-type ManifestNode = {
-  section_id: string;
-  segment: number;
-  order: number;
-  title?: string;
-  parent_section_id?: string | null;
-  tailoring_eligible: boolean;
-};
-
-type ManifestOutline = {
-  section_id: string;
-  title: string;
-  parent_section_id: string | null;
-};
-
-type Manifest = { nodes: ManifestNode[]; outline: ManifestOutline[] };
+import { readPublishedReadingManifestJson } from '../reading-manifest';
 
 function jsonValue(value: unknown): JsonValue {
   return value as JsonValue;
 }
 
-function ancestorTitles(node: ManifestNode, outline: ManifestOutline[]): string[] {
-  const byId = new Map(outline.map((item) => [item.section_id, item]));
+function ancestorTitles(node: ReadingManifestNode, manifestIndex: ManifestIndex): string[] {
   const titles: string[] = [];
-  let parent = node.parent_section_id ? byId.get(node.parent_section_id) : undefined;
+  let parent = node.parentSectionId
+    ? manifestIndex.outlineBySectionId.get(node.parentSectionId)
+    : undefined;
   while (parent) {
     if (parent.title.trim()) titles.unshift(parent.title.trim());
-    parent = parent.parent_section_id ? byId.get(parent.parent_section_id) : undefined;
+    parent = parent.parentSectionId
+      ? manifestIndex.outlineBySectionId.get(parent.parentSectionId)
+      : undefined;
   }
   return titles;
 }
 
-function contextExcerpt(rawHtml: string, node: ManifestNode | undefined, edge: 'start' | 'end'): string | null {
+function contextExcerpt(
+  rawHtml: string,
+  node: ReadingManifestNode | undefined,
+  edge: 'start' | 'end',
+): string | null {
   if (!node) return null;
-  const source = extractNodeSourceFromHtml(rawHtml, node.section_id, node.segment);
+  const source = extractNodeSourceFromHtml(rawHtml, node.sectionId, node.segment);
   const text = source.blocks.map((block) => block.text).join('\n').trim();
   if (!text) return null;
   return edge === 'start' ? text.slice(0, 1200) : text.slice(-1200);
@@ -76,7 +73,7 @@ function createModelClient(
         return JSON.stringify({
           guide: '先留意这一段正在推进的问题，以及关键概念之间的关系。',
           annotations: [],
-          after_reading: '读完后，可以用一句话复述这一段在全书主线中的作用。',
+          afterReading: '读完后，可以用一句话复述这一段在全书主线中的作用。',
         });
       }
       const started = performance.now();
@@ -542,64 +539,66 @@ export async function executeContentGeneration(options: {
     options.storage.get(`${row.package.objectPrefix}/book_profile.json`),
   ]);
   const rawHtml = new TextDecoder().decode(htmlBytes);
-  const manifest = JSON.parse(new TextDecoder().decode(manifestBytes)) as Manifest;
+  const manifest = readPublishedReadingManifestJson(new TextDecoder().decode(manifestBytes));
+  const manifestIndex = createManifestIndex(manifest);
   const bookProfile = JSON.parse(new TextDecoder().decode(bookProfileBytes)) as JsonValue;
-  const node = manifest.nodes.find(
-    (item) => item.section_id === row.generation.sectionId && item.segment === row.generation.segment,
+  const node = requireNode(
+    manifestIndex,
+    row.generation.sectionId,
+    row.generation.segment,
   );
-  if (!node) throw new Error('generation node is missing from manifest');
-  const eligible = manifest.nodes.filter((item) => item.tailoring_eligible);
+  const eligible = manifest.nodes.filter((item) => item.tailoringEligible);
   const eligibleIndex = eligible.findIndex(
-    (item) => item.section_id === node.section_id && item.segment === node.segment,
+    (item) => item.sectionId === node.sectionId && item.segment === node.segment,
   );
-  const fullSource = extractNodeSourceFromHtml(rawHtml, node.section_id, node.segment);
+  const fullSource = extractNodeSourceFromHtml(rawHtml, node.sectionId, node.segment);
   let source = fullSource;
   let range = {
-    start: { block_index: fullSource.blocks[0]?.block_index ?? 1, offset: 0 },
+    start: { blockIndex: fullSource.blocks[0]?.blockIndex ?? 1, offset: 0 },
     end: {
-      block_index: fullSource.blocks.at(-1)?.block_index ?? 1,
+      blockIndex: fullSource.blocks.at(-1)?.blockIndex ?? 1,
       offset: fullSource.blocks.at(-1)?.text.length ?? 0,
     },
   };
   if (segment) {
     range = {
-      start: { block_index: segment.startBlockIndex, offset: segment.startOffset },
-      end: { block_index: segment.endBlockIndex, offset: segment.endOffset },
+      start: { blockIndex: segment.startBlockIndex, offset: segment.startOffset },
+      end: { blockIndex: segment.endBlockIndex, offset: segment.endOffset },
     };
     source = sliceNodeSource(fullSource, range);
   }
   const base = {
-    user_id: row.userBook.userId,
-    package_id: row.package.id,
-    package_version: row.package.version,
+    userId: row.userBook.userId,
+    packageId: row.package.id,
+    packageVersion: row.package.version,
     profiles: {
       book: { version: row.package.id, value: bookProfile },
       reader: { version: reader.id, value: jsonValue(reader.profile) },
-      book_reader: { version: bookReader.id, value: jsonValue(bookReader.profile) },
+      bookReader: { version: bookReader.id, value: jsonValue(bookReader.profile) },
     },
     source: {
-      section_id: node.section_id,
+      sectionId: node.sectionId,
       segment: node.segment,
-      node_order: node.order,
+      nodeOrder: node.order,
       title: node.title ?? null,
-      ancestor_titles: ancestorTitles(node, manifest.outline),
+      ancestorTitles: ancestorTitles(node, manifestIndex),
       range,
-      structured_html: source.structuredHtml,
+      structuredHtml: source.structuredHtml,
       blocks: source.blocks,
-      original_notes: source.originalNotes as JsonValue[],
-      previous_context: contextExcerpt(rawHtml, eligible[eligibleIndex - 1], 'end'),
-      next_context: contextExcerpt(rawHtml, eligible[eligibleIndex + 1], 'start'),
+      originalNotes: source.originalNotes as JsonValue[],
+      previousContext: contextExcerpt(rawHtml, eligible[eligibleIndex - 1], 'end'),
+      nextContext: contextExcerpt(rawHtml, eligible[eligibleIndex + 1], 'start'),
     },
     model: {
-      model_id: options.model.name,
-      config_version: row.generation.modelConfigId,
+      modelId: options.model.name,
+      configVersion: row.generation.modelConfigId,
     },
   };
   const input: TailoringGenerationInput = row.generation.generationScope === 'trial'
     ? {
         ...base,
-        generation_scope: 'trial',
-        fragment_range: range,
+        generationScope: 'trial',
+        fragmentRange: range,
         strategy: {
           kind: 'strategy_draft',
           version: draft?.id ?? '',
@@ -609,7 +608,7 @@ export async function executeContentGeneration(options: {
       }
     : {
         ...base,
-        generation_scope: 'formal',
+        generationScope: 'formal',
         strategy: {
           kind: 'strategy',
           version: formalStrategy?.id ?? '',
@@ -617,10 +616,10 @@ export async function executeContentGeneration(options: {
           value: jsonValue(formalStrategy?.strategy),
         },
       };
-  if (input.generation_scope === 'trial' && draft?.status !== 'approved_for_trial') {
+  if (input.generationScope === 'trial' && draft?.status !== 'approved_for_trial') {
     throw new Error('trial generation draft is no longer approved');
   }
-  if (input.generation_scope === 'formal' && !formalStrategy) {
+  if (input.generationScope === 'formal' && !formalStrategy) {
     throw new Error('formal generation strategy is missing');
   }
 
@@ -721,13 +720,10 @@ export async function executeContentGeneration(options: {
       ? {
           guide: cached.result.guide,
           annotations: cached.result.annotations.map((annotation) => ({
-            range: {
-              start: { block_index: annotation.range.start.blockIndex, offset: annotation.range.start.offset },
-              end: { block_index: annotation.range.end.blockIndex, offset: annotation.range.end.offset },
-            },
+            range: annotation.range,
             content: annotation.content,
           })),
-          after_reading: cached.result.afterReading,
+          afterReading: cached.result.afterReading,
         }
       : await generateTailoredContent(
           input,
@@ -741,12 +737,12 @@ export async function executeContentGeneration(options: {
       annotations: generated.annotations.map((annotation, index) => ({
         id: `${row.generation.id}:${index + 1}`,
         range: {
-          start: { blockIndex: annotation.range.start.block_index, offset: annotation.range.start.offset },
-          end: { blockIndex: annotation.range.end.block_index, offset: annotation.range.end.offset },
+          start: annotation.range.start,
+          end: annotation.range.end,
         },
         content: annotation.content,
       })),
-      afterReading: generated.after_reading,
+      afterReading: generated.afterReading,
     };
     await finalizeContentGeneration({
       db: options.db,

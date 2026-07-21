@@ -22,6 +22,7 @@ import {
   strategyReviewGraph,
   trialReviewGraph,
 } from '../../test/database';
+import { createReadingManifestFixture } from '../../test/reading-manifest';
 import type { OwnedUserBook } from '../context/setup-context';
 import { UserBookError } from '../errors';
 import { createSetupOperationStore } from '../operations/setup-operation-store';
@@ -74,7 +75,7 @@ function fakeBooks(): BookService {
     async canAccess() { return false; },
     async getNormalizationStatus() { return null; },
     async getBook() { return null; },
-    async getManifest() { return {}; },
+    async getManifest() { return createReadingManifestFixture([]); },
     async getProfile() { return {}; },
     async getContent() { return null; },
     async getAsset() { return null; },

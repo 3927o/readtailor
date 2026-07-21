@@ -10,27 +10,12 @@ import {
   type ToolTextResult,
 } from '@readtailor/agent-kit';
 import { readBookMetadata, runCommand, type BookMetadata } from '@readtailor/normalized-book';
-
-type ManifestNode = {
-  section_id: string;
-  segment: number;
-  order: number;
-  region: string;
-  data_type: string;
-  title: string;
-  character_count: number;
-  block_count: number;
-  tailoring_eligible: boolean;
-};
-
-type ReadingManifest = {
-  version: string;
-  document: { title: string; language: string };
-  outline: unknown[];
-  book_total_characters: number;
-  node_count: number;
-  nodes: ManifestNode[];
-};
+import {
+  createManifestIndex,
+  findNode,
+  type ReadingManifest,
+} from '@readtailor/reader-core';
+import { readPublishedReadingManifestJson } from '../reading-manifest';
 
 async function runAnalysisHelper(options: {
   repoRoot: string;
@@ -68,17 +53,15 @@ export async function createBookAnalysisToolbox(options: {
 }> {
   const [manifest, metadata] = await Promise.all([
     readFile(join(options.packageDirectory, 'reading_manifest.json'), 'utf8').then(
-      (value) => JSON.parse(value) as ReadingManifest,
+      readPublishedReadingManifestJson,
     ),
     readBookMetadata(options.packageDirectory),
   ]);
-  if (manifest.version !== 'reading-nodes-1.0' || !Array.isArray(manifest.nodes)) {
-    throw new Error('book analysis requires a valid reading-nodes-1.0 manifest');
-  }
+  const manifestIndex = createManifestIndex(manifest);
   const eligibleKeys = new Set(
     manifest.nodes
-      .filter((node) => node.tailoring_eligible)
-      .map((node) => `${node.section_id}\0${node.segment}`),
+      .filter((node) => node.tailoringEligible)
+      .map((node) => `${node.sectionId}\0${node.segment}`),
   );
 
   const toolbox: BookAnalysisToolbox = {
@@ -87,9 +70,9 @@ export async function createBookAnalysisToolbox(options: {
         text: JSON.stringify(
           {
             ...metadata,
-            node_count: manifest.node_count,
+            node_count: manifest.nodeCount,
             tailoring_eligible_node_count: eligibleKeys.size,
-            book_total_characters: manifest.book_total_characters,
+            book_total_characters: manifest.bookTotalCharacters,
           },
           null,
           2,
@@ -162,7 +145,8 @@ export async function createBookAnalysisToolbox(options: {
       const seen = new Set<string>();
       for (const candidate of candidates) {
         const key = `${candidate.section_id}\0${candidate.segment}`;
-        if (!eligibleKeys.has(key)) {
+        const node = findNode(manifestIndex, candidate.section_id, candidate.segment);
+        if (!node?.tailoringEligible || !eligibleKeys.has(key)) {
           throw new Error(`trial candidate is missing or not tailoring eligible: ${key}`);
         }
         if (seen.has(key)) throw new Error(`duplicate trial candidate: ${key}`);

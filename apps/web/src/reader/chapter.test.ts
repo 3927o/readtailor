@@ -4,27 +4,31 @@ import { activeChapterUnit, buildChapterUnits } from './chapter';
 
 function node(order: number, sectionId: string, characterCount = 100): ReaderNode {
   return {
-    section_id: sectionId,
+    sectionId: sectionId,
     segment: 1,
     order,
     region: 'body',
-    data_type: 'chapter',
+    dataType: 'chapter',
     title: sectionId,
-    parent_section_id: null,
-    character_count: characterCount,
-    block_count: 1,
+    parentSectionId: null,
+    characterCount: characterCount,
+    blockCount: 0,
+    tailoringEligible: true,
+    exclusionReason: null,
+    nodeAbsoluteStart: 0,
+    blocks: [],
   };
 }
 
 describe('reader chapter units', () => {
   it('uses each leaf outline item as a reader chapter', () => {
     const outline: ReaderOutlineItem[] = [
-      { section_id: 'book', data_type: 'book', title: '全书', parent_section_id: null, first_node_order: 1 },
-      { section_id: 'part', data_type: 'part', title: '第四部', parent_section_id: 'book', first_node_order: 1 },
-      { section_id: 'chapter-1', data_type: 'chapter', title: '蜂蜜供品', parent_section_id: 'part', first_node_order: 1 },
-      { section_id: 'chapter-1-sub-1', data_type: 'subsection', title: '1', parent_section_id: 'chapter-1', first_node_order: 1 },
-      { section_id: 'chapter-1-sub-2', data_type: 'subsection', title: '2', parent_section_id: 'chapter-1', first_node_order: 2 },
-      { section_id: 'chapter-2', data_type: 'chapter', title: '求救的叫声', parent_section_id: 'part', first_node_order: 3 },
+      { sectionId: 'book', dataType: 'book', title: '全书', parentSectionId: null, firstNodeOrder: 1 },
+      { sectionId: 'part', dataType: 'part', title: '第四部', parentSectionId: 'book', firstNodeOrder: 1 },
+      { sectionId: 'chapter-1', dataType: 'chapter', title: '蜂蜜供品', parentSectionId: 'part', firstNodeOrder: 1 },
+      { sectionId: 'chapter-1-sub-1', dataType: 'subsection', title: '1', parentSectionId: 'chapter-1', firstNodeOrder: 1 },
+      { sectionId: 'chapter-1-sub-2', dataType: 'subsection', title: '2', parentSectionId: 'chapter-1', firstNodeOrder: 2 },
+      { sectionId: 'chapter-2', dataType: 'chapter', title: '求救的叫声', parentSectionId: 'part', firstNodeOrder: 3 },
     ];
 
     const units = buildChapterUnits(outline, [node(1, 'chapter-1-sub-1'), node(2, 'chapter-1-sub-2', 150), node(3, 'chapter-2', 200)]);
@@ -40,8 +44,8 @@ describe('reader chapter units', () => {
 
   it('deduplicates leaf headings that begin at the same reading node', () => {
     const outline: ReaderOutlineItem[] = [
-      { section_id: 'section-1', data_type: 'section', title: '开始', parent_section_id: null, first_node_order: 1 },
-      { section_id: 'section-2', data_type: 'section', title: '继续', parent_section_id: null, first_node_order: 1 },
+      { sectionId: 'section-1', dataType: 'section', title: '开始', parentSectionId: null, firstNodeOrder: 1 },
+      { sectionId: 'section-2', dataType: 'section', title: '继续', parentSectionId: null, firstNodeOrder: 1 },
     ];
 
     expect(buildChapterUnits(outline, [node(1, 'section-1'), node(2, 'section-2')]).map((unit) => unit.sectionId))

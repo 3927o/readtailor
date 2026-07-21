@@ -152,22 +152,22 @@ class ReadingNodeBuilderTests(unittest.TestCase):
             first.as_dict()["blocks"],
             [
                 {
-                    "block_index": 1,
+                    "blockIndex": 1,
                     "kind": "p",
-                    "block_absolute_start": 0,
-                    "block_utf16_length": 3,
+                    "blockAbsoluteStart": 0,
+                    "blockUtf16Length": 3,
                 },
                 {
-                    "block_index": 2,
+                    "blockIndex": 2,
                     "kind": "figure",
-                    "block_absolute_start": 3,
-                    "block_utf16_length": 0,
+                    "blockAbsoluteStart": 3,
+                    "blockUtf16Length": 0,
                 },
                 {
-                    "block_index": 3,
+                    "blockIndex": 3,
                     "kind": "figcaption",
-                    "block_absolute_start": 3,
-                    "block_utf16_length": 1,
+                    "blockAbsoluteStart": 3,
+                    "blockUtf16Length": 1,
                 },
             ],
         )
@@ -204,54 +204,54 @@ class ReadingManifestTests(unittest.TestCase):
 
         self.assertEqual(manifest["version"], "reading-nodes-1.0")
         self.assertEqual(
-            manifest["tailoring_eligibility_version"],
+            manifest["tailoringEligibilityVersion"],
             "tailoring-eligibility-1.0",
         )
         self.assertEqual(
             manifest["outline"],
             [
                 {
-                    "section_id": "preface",
-                    "data_type": "preface",
+                    "sectionId": "preface",
+                    "dataType": "preface",
                     "title": "前言",
-                    "parent_section_id": None,
-                    "first_node_order": 1,
+                    "parentSectionId": None,
+                    "firstNodeOrder": 1,
                 },
                 {
-                    "section_id": "part-1",
-                    "data_type": "part",
+                    "sectionId": "part-1",
+                    "dataType": "part",
                     "title": "第一部",
-                    "parent_section_id": None,
-                    "first_node_order": 3,
+                    "parentSectionId": None,
+                    "firstNodeOrder": 3,
                 },
                 {
-                    "section_id": "chapter-1",
-                    "data_type": "chapter",
+                    "sectionId": "chapter-1",
+                    "dataType": "chapter",
                     "title": "第一章",
-                    "parent_section_id": "part-1",
-                    "first_node_order": 3,
+                    "parentSectionId": "part-1",
+                    "firstNodeOrder": 3,
                 },
                 {
-                    "section_id": "chapter-media",
-                    "data_type": "chapter",
+                    "sectionId": "chapter-media",
+                    "dataType": "chapter",
                     "title": "图章",
-                    "parent_section_id": "part-1",
-                    "first_node_order": 4,
+                    "parentSectionId": "part-1",
+                    "firstNodeOrder": 4,
                 },
                 {
-                    "section_id": "appendix",
-                    "data_type": "appendix",
+                    "sectionId": "appendix",
+                    "dataType": "appendix",
                     "title": "附录",
-                    "parent_section_id": None,
-                    "first_node_order": 5,
+                    "parentSectionId": None,
+                    "firstNodeOrder": 5,
                 },
             ],
         )
 
         eligibility = {
-            node["section_id"]: (
-                node["tailoring_eligible"],
-                node["exclusion_reason"],
+            node["sectionId"]: (
+                node["tailoringEligible"],
+                node["exclusionReason"],
             )
             for node in manifest["nodes"]
         }
@@ -272,11 +272,11 @@ class ReadingManifestTests(unittest.TestCase):
         """)
 
         first, second = manifest["nodes"]
-        self.assertEqual(first["character_count"], 7)
-        self.assertEqual(first["node_absolute_start"], 0)
-        self.assertEqual(second["character_count"], 1)
-        self.assertEqual(second["node_absolute_start"], 7)
-        self.assertEqual(manifest["book_total_characters"], 8)
+        self.assertEqual(first["characterCount"], 7)
+        self.assertEqual(first["nodeAbsoluteStart"], 0)
+        self.assertEqual(second["characterCount"], 1)
+        self.assertEqual(second["nodeAbsoluteStart"], 7)
+        self.assertEqual(manifest["bookTotalCharacters"], 8)
         self.assertNotIn("content_html", first)
         self.assertTrue(all("text" not in block for block in first["blocks"]))
         self.assertNotIn("秘密正文", str(manifest))

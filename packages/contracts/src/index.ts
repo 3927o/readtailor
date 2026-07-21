@@ -1,4 +1,10 @@
 import { type Static, Type } from '@sinclair/typebox';
+import {
+  BlockPointSchema,
+  BlockRangeSchema,
+  type BlockPoint,
+  type BlockRange,
+} from '@readtailor/reader-core';
 
 export const UuidSchema = Type.String({
   pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
@@ -368,17 +374,11 @@ export const InterviewStateResponseSchema = Type.Object({
 });
 export type InterviewStateResponse = Static<typeof InterviewStateResponseSchema>;
 
-export const TextPositionSchema = Type.Object({
-  blockIndex: Type.Integer({ minimum: 1 }),
-  offset: Type.Integer({ minimum: 0 }),
-});
-export type TextPosition = Static<typeof TextPositionSchema>;
+export const TextPositionSchema = BlockPointSchema;
+export type TextPosition = BlockPoint;
 
-export const TextRangeSchema = Type.Object({
-  start: TextPositionSchema,
-  end: TextPositionSchema,
-});
-export type TextRange = Static<typeof TextRangeSchema>;
+export const TextRangeSchema = BlockRangeSchema;
+export type TextRange = BlockRange;
 
 export const TrialFragmentTagSchema = Type.Union([
   Type.Literal('threshold'),

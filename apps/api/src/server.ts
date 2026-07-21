@@ -11,6 +11,7 @@ import {
   pingSystemQueue,
 } from '@readtailor/queue';
 import { createObjectStorage } from '@readtailor/storage';
+import { TAILORING_PROMPT_VERSION } from '@readtailor/tailoring';
 import { buildApp } from './app';
 import { createAuthService } from './auth';
 import { createBookImportService } from './book-imports';
@@ -169,7 +170,7 @@ const userBooks =
             );
           },
         },
-        modelConfigId: `${modelEngine.name}:tailoring-content-1.0`,
+        modelConfigId: `${modelEngine.name}:${TAILORING_PROMPT_VERSION}`,
       })
     : undefined;
 

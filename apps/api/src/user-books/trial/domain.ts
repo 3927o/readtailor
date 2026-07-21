@@ -4,19 +4,19 @@ import { nodeGenerations, trialSegments } from '@readtailor/database';
 import { UserBookError } from '../errors';
 
 type TrialNodeContent = {
-  section_id: string;
+  sectionId: string;
   segment: number;
-  blocks: Array<{ block_index: number; text: string }>;
+  blocks: Array<{ blockIndex: number; text: string }>;
 };
 
 export function resolveTrialFragmentRanges(
   fragments: TrialFragmentSelection[],
   nodes: TrialNodeContent[],
 ): TrialCandidate[] {
-  const nodesByKey = new Map(nodes.map((node) => [`${node.section_id}\0${node.segment}`, node]));
+  const nodesByKey = new Map(nodes.map((node) => [`${node.sectionId}\0${node.segment}`, node]));
   return fragments.map((fragment) => {
     const node = nodesByKey.get(`${fragment.section_id}\0${fragment.segment}`);
-    const blocksByIndex = new Map(node?.blocks.map((block) => [block.block_index, block]) ?? []);
+    const blocksByIndex = new Map(node?.blocks.map((block) => [block.blockIndex, block]) ?? []);
     const startBlock = blocksByIndex.get(fragment.range.start.block_index);
     const endBlock = blocksByIndex.get(fragment.range.end.block_index);
     if (

@@ -24,7 +24,17 @@ import {
   userBooks,
   type Database,
 } from '@readtailor/database';
-import { extractNodeSourceFromHtml, sliceNodeSource } from '@readtailor/tailoring';
+import {
+  extractNodeSourceFromHtml,
+  sliceNodeSource,
+  TAILORING_PROMPT_VERSION,
+} from '@readtailor/tailoring';
+import {
+  createManifestIndex,
+  findNode,
+  type ReadingManifest,
+  type ReadingManifestNode,
+} from '@readtailor/reader-core';
 import type { BookService } from '../../books';
 import type { ReadingSetupEngine } from '../../reading-setup-engine';
 import type { OwnedUserBook } from '../context/setup-context';
@@ -39,22 +49,6 @@ import {
 } from '../operations/setup-operation-store';
 import { projectTrialReview, projectTrialSegment } from '../projections/trial-review';
 import { buildTrialRetryPlan, resolveTrialFragmentRanges } from './domain';
-
-export type TrialManifestNode = {
-  section_id: string;
-  segment: number;
-  title?: string;
-  tailoring_eligible: boolean;
-};
-
-export type TrialManifest = {
-  nodes: TrialManifestNode[];
-  outline: Array<{
-    section_id: string;
-    title: string;
-    parent_section_id: string | null;
-  }>;
-};
 
 type TrialFragmentStreamValue = Extract<ReadingSetupStreamDelta, { type: 'fragment_added' }>['fragment'];
 
@@ -95,7 +89,7 @@ type GenerationEnqueuer = {
   }): Promise<void>;
 };
 
-export type TrialServiceOptions<TManifest extends TrialManifest> = {
+export type TrialServiceOptions = {
   db: Database;
   books: BookService;
   setupEngine: ReadingSetupEngine;
@@ -106,10 +100,9 @@ export type TrialServiceOptions<TManifest extends TrialManifest> = {
   requestId?: string;
   getOwnedBook(userBookId: string): Promise<OwnedUserBook>;
   getSetupContext(userBookId: string): Promise<SetupContext>;
-  parseManifest(value: unknown): TManifest;
-  chapterPath(node: TManifest['nodes'][number], outline: TManifest['outline']): string[];
+  chapterPath(node: ReadingManifestNode, outline: ReadingManifest['outline']): string[];
   assertRangeWithinBlocks(
-    blocks: Array<{ block_index: number; text: string }>,
+    blocks: Array<{ blockIndex: number; kind: string; text: string; utf16Length: number }>,
     range: TextRange,
     label?: string,
   ): void;
@@ -148,9 +141,7 @@ function createStreamBridge<T>() {
   };
 }
 
-export function createTrialService<TManifest extends TrialManifest>(
-  options: TrialServiceOptions<TManifest>,
-) {
+export function createTrialService(options: TrialServiceOptions) {
   const {
     db,
     books,
@@ -162,7 +153,6 @@ export function createTrialService<TManifest extends TrialManifest>(
     requestId,
     getOwnedBook,
     getSetupContext,
-    parseManifest,
     chapterPath,
     assertRangeWithinBlocks,
     loadStrategyState,
@@ -177,7 +167,7 @@ export function createTrialService<TManifest extends TrialManifest>(
       throw new UserBookError('书籍原文或阅读索引不存在', 409);
     }
     return {
-      manifest: parseManifest(manifestValue),
+      manifest: manifestValue,
       html: new TextDecoder().decode(content),
     };
   };
@@ -318,6 +308,7 @@ export function createTrialService<TManifest extends TrialManifest>(
       getManifestAndHtml(owned.sharedBook.id),
       books.getProfile(owned.sharedBook.id),
     ]);
+    const manifestIndex = createManifestIndex(manifest);
     const allowedCandidates = new Set(
       ((bookProfileValue as { trial_candidates?: Array<{ section_id: string; segment: number }> } | null)
         ?.trial_candidates ?? [])
@@ -334,10 +325,8 @@ export function createTrialService<TManifest extends TrialManifest>(
       throw new UserBookError('试读片段选择结果不完整', 409);
     }
     const selected = fragments.map((candidate) => {
-      const node = manifest.nodes.find(
-        (item) => item.section_id === candidate.sectionId && item.segment === candidate.segment,
-      );
-      if (!node?.tailoring_eligible) {
+      const node = findNode(manifestIndex, candidate.sectionId, candidate.segment);
+      if (!node?.tailoringEligible) {
         throw new UserBookError('策略草稿引用了不可裁读的试读候选', 409);
       }
       if (!allowedCandidates.has(`${candidate.sectionId}:${candidate.segment}`)) {
@@ -353,7 +342,7 @@ export function createTrialService<TManifest extends TrialManifest>(
           : 3;
       return { candidate, node, ordinal, range: candidate.range };
     });
-    if (new Set(selected.map((item) => `${item.node.section_id}:${item.node.segment}`)).size !== 3) {
+    if (new Set(selected.map((item) => `${item.node.sectionId}:${item.node.segment}`)).size !== 3) {
       throw new UserBookError('三个试读片段必须互不重叠', 409);
     }
 
@@ -395,7 +384,7 @@ export function createTrialService<TManifest extends TrialManifest>(
           .values({
             trialRevisionId: revision.id,
             ordinal: item.ordinal,
-            sectionId: item.node.section_id,
+            sectionId: item.node.sectionId,
             segment: item.node.segment,
             startBlockIndex: item.range.start.blockIndex,
             startOffset: item.range.start.offset,
@@ -413,11 +402,11 @@ export function createTrialService<TManifest extends TrialManifest>(
           generationScope: 'trial',
           trialSegmentId: segment.id,
           strategyDraftVersionId: draftId,
-          sectionId: item.node.section_id,
+          sectionId: item.node.sectionId,
           segment: item.node.segment,
           status: 'queued',
           modelConfigId,
-          promptVersion: 'tailoring-content-1.0',
+          promptVersion: TAILORING_PROMPT_VERSION,
           cacheKey: `pending:${generationId}`,
         });
         generationIds.push(generationId);
@@ -478,6 +467,7 @@ export function createTrialService<TManifest extends TrialManifest>(
   ): Promise<TrialCandidate[]> => {
     const setup = await getSetupContext(userBookId);
     const { manifest, html } = await getManifestAndHtml(setup.owned.sharedBook.id);
+    const manifestIndex = createManifestIndex(manifest);
     const candidateKeys = new Set(
       draft.strategy.trialCandidates.map((candidate) => `${candidate.sectionId}:${candidate.segment}`),
     );
@@ -491,12 +481,10 @@ export function createTrialService<TManifest extends TrialManifest>(
     ): ProvisionalTrialSample => {
       const ordinal = fragment.tag === 'threshold' ? 1 : fragment.tag === 'typical' ? 2 : 3;
       const key = `${fragment.section_id}:${fragment.segment}`;
-      const node = manifest.nodes.find(
-        (item) => item.section_id === fragment.section_id && item.segment === fragment.segment,
-      );
+      const node = findNode(manifestIndex, fragment.section_id, fragment.segment);
       if (
         !candidateKeys.has(key)
-        || !node?.tailoring_eligible
+        || !node?.tailoringEligible
         || seenTags.has(fragment.tag)
         || seenNodes.has(key)
       ) {
@@ -504,17 +492,14 @@ export function createTrialService<TManifest extends TrialManifest>(
       }
       const source = extractNodeSourceFromHtml(html, fragment.section_id, fragment.segment);
       const resolved = resolveTrialFragmentRanges([fragment], [{
-        section_id: fragment.section_id,
+        sectionId: fragment.section_id,
         segment: fragment.segment,
-        blocks: source.blocks.map((block) => ({ block_index: block.block_index, text: block.text })),
+        blocks: source.blocks.map((block) => ({ blockIndex: block.blockIndex, text: block.text })),
       }])[0]!;
       const range = resolved.range;
       if (!range) throw new UserBookError('试读片段范围结果损坏', 409);
       assertRangeWithinBlocks(source.blocks, range);
-      const sliced = sliceNodeSource(source, {
-        start: { block_index: range.start.blockIndex, offset: range.start.offset },
-        end: { block_index: range.end.blockIndex, offset: range.end.offset },
-      });
+      const sliced = sliceNodeSource(source, range);
       seenTags.add(fragment.tag);
       seenNodes.add(key);
       return {
@@ -529,16 +514,14 @@ export function createTrialService<TManifest extends TrialManifest>(
       } as ProvisionalTrialSample;
     };
     const trialNodeContents = draft.strategy.trialCandidates.map((candidate) => {
-      const node = manifest.nodes.find(
-        (item) => item.section_id === candidate.sectionId && item.segment === candidate.segment,
-      );
+      const node = findNode(manifestIndex, candidate.sectionId, candidate.segment);
       const source = extractNodeSourceFromHtml(html, candidate.sectionId, candidate.segment);
       return {
         section_id: candidate.sectionId,
         segment: candidate.segment,
         title: node?.title ?? '',
-        tailoring_eligible: node?.tailoring_eligible ?? false,
-        blocks: source.blocks.map((block) => ({ block_index: block.block_index, text: block.text })),
+        tailoring_eligible: node?.tailoringEligible ?? false,
+        blocks: source.blocks.map((block) => ({ block_index: block.blockIndex, text: block.text })),
       };
     });
     let streamedEpoch = 0;
@@ -628,11 +611,13 @@ export function createTrialService<TManifest extends TrialManifest>(
     const segments = segmentRows.map(({ segment, generation }) => {
       const extracted = extractNodeSourceFromHtml(source.html, segment.sectionId, segment.segment);
       const sliced = sliceNodeSource(extracted, {
-        start: { block_index: segment.startBlockIndex, offset: segment.startOffset },
-        end: { block_index: segment.endBlockIndex, offset: segment.endOffset },
+        start: { blockIndex: segment.startBlockIndex, offset: segment.startOffset },
+        end: { blockIndex: segment.endBlockIndex, offset: segment.endOffset },
       });
-      const node = source.manifest.nodes.find(
-        (item) => item.section_id === segment.sectionId && item.segment === segment.segment,
+      const node = findNode(
+        createManifestIndex(source.manifest),
+        segment.sectionId,
+        segment.segment,
       )!;
       return projectTrialSegment({
         id: segment.id,
@@ -1019,7 +1004,7 @@ export function createTrialService<TManifest extends TrialManifest>(
           status: 'queued' as const,
           maxAttempts: generation.maxAttempts,
           modelConfigId: generation.modelConfigId,
-          promptVersion: generation.promptVersion,
+          promptVersion: TAILORING_PROMPT_VERSION,
         };
       });
       await tx.insert(nodeGenerations).values(generationRows.map((generation) => ({

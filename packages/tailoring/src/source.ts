@@ -1,6 +1,10 @@
+import {
+  validateCanonicalBlocks,
+  type BlockRange,
+} from '@readtailor/reader-core';
 import { load, type Cheerio, type CheerioAPI } from 'cheerio';
 import type { AnyNode, Element } from 'domhandler';
-import { TailoringError, type GenerationBlock, type TextRange } from './types';
+import { TailoringError, type GenerationBlock } from './types';
 
 const headingNames = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
 const textBlockNames = new Set(['p', 'pre', 'dt', 'dd', 'th', 'td']);
@@ -101,8 +105,15 @@ export function extractBlocks(fragmentHtml: string): GenerationBlock[] {
       }
     }
     if (kind === undefined || text === undefined) return;
-    blocks.push({ block_index: blocks.length + 1, text, html: blockHtml($, raw) });
+    blocks.push({
+      blockIndex: blocks.length + 1,
+      kind,
+      text,
+      utf16Length: text.length,
+      html: blockHtml($, raw),
+    });
   });
+  validateCanonicalBlocks(blocks);
   return blocks;
 }
 
@@ -230,7 +241,7 @@ function sliceBlockHtml(
   const root = $.root().children().first();
   const rootElement = root.get(0);
   if (!rootElement || !isElement(rootElement)) {
-    return `<p data-block-index="${block.block_index}" data-source-offset="${start}">${escapeHtml(block.text.slice(start, end))}</p>`;
+    return `<p data-block-index="${block.blockIndex}" data-source-offset="${start}">${escapeHtml(block.text.slice(start, end))}</p>`;
   }
 
   let cursor = 0;
@@ -278,33 +289,34 @@ function sliceBlockHtml(
   };
 
   trim(rootElement, true);
-  root.attr('data-block-index', String(block.block_index));
+  root.attr('data-block-index', String(block.blockIndex));
   root.attr('data-source-offset', String(start));
   return $.html(rootElement);
 }
 
 export function sliceNodeSource(
   source: ExtractedNodeSource,
-  range: TextRange,
+  range: BlockRange,
 ): ExtractedNodeSource {
   const selected = source.blocks.filter(
-    (block) => block.block_index >= range.start.block_index && block.block_index <= range.end.block_index,
+    (block) => block.blockIndex >= range.start.blockIndex && block.blockIndex <= range.end.blockIndex,
   );
   if (selected.length === 0) {
     throw new TailoringError('invalid_input', 'generation range does not include any source block');
   }
   const blocks = selected.map((block) => {
-    const start = block.block_index === range.start.block_index ? range.start.offset : 0;
-    const end = block.block_index === range.end.block_index ? range.end.offset : block.text.length;
+    const start = block.blockIndex === range.start.blockIndex ? range.start.offset : 0;
+    const end = block.blockIndex === range.end.blockIndex ? range.end.offset : block.text.length;
     const text = block.text.slice(start, end);
     const partial = start !== 0 || end !== block.text.length;
     return {
       ...block,
       text,
-      source_offset: start,
+      utf16Length: text.length,
+      sourceOffset: start,
       html: partial
         ? sliceBlockHtml(block, start, end)
-        : addBlockMetadata(block.html, block.block_index, 0),
+        : addBlockMetadata(block.html, block.blockIndex, 0),
     };
   });
   return {

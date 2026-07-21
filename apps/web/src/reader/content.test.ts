@@ -10,17 +10,31 @@ function fragment(html: string): DocumentFragment {
   return template.content;
 }
 
-function readerNode(sectionId: string): ReaderNode {
+function readerNode(
+  sectionId: string,
+  blocks: Array<{ kind: string; text: string }>,
+): ReaderNode {
   return {
-    section_id: sectionId,
+    sectionId: sectionId,
     segment: 1,
     order: 1,
     region: 'bodymatter',
-    data_type: 'chapter',
+    dataType: 'chapter',
     title: '第一章',
-    parent_section_id: null,
-    character_count: 2,
-    block_count: 1,
+    parentSectionId: null,
+    characterCount: blocks.reduce((total, block) => total + block.text.length, 0),
+    blockCount: blocks.length,
+    tailoringEligible: true,
+    exclusionReason: null,
+    nodeAbsoluteStart: 0,
+    blocks: blocks.map((block, index) => ({
+      blockIndex: index + 1,
+      kind: block.kind,
+      blockUtf16Length: block.text.length,
+      blockAbsoluteStart: blocks
+        .slice(0, index)
+        .reduce((total, preceding) => total + preceding.text.length, 0),
+    })),
   };
 }
 
@@ -135,14 +149,20 @@ describe('prepareBookContent', () => {
       </section>
     </main></body></html>`;
     const outline: ReaderOutlineItem[] = [{
-      section_id: 'chapter-1',
-      data_type: 'chapter',
+      sectionId: 'chapter-1',
+      dataType: 'chapter',
       title: '第一章',
-      parent_section_id: null,
-      first_node_order: 1,
+      parentSectionId: null,
+      firstNodeOrder: 1,
     }];
 
-    const prepared = prepareBookContent(rawHtml, [readerNode('chapter-1')], outline, '/books/1/assets/');
+    const prepared = prepareBookContent(rawHtml, [readerNode('chapter-1', [
+      { kind: 'p', text: '正文' },
+      { kind: 'th', text: '甲' },
+      { kind: 'td', text: '乙' },
+      { kind: 'td', text: '丙' },
+      { kind: 'pre', text: 'const value = 1;' },
+    ])], outline, '/books/1/assets/');
     const renderedNode = prepared.nodes[0];
     const renderedHeading = renderedNode?.headings[0];
     if (!renderedNode || !renderedHeading) throw new Error('expected rendered chapter content');
@@ -184,12 +204,14 @@ describe('prepareBookContent', () => {
       </section>
     </main></body></html>`;
     const outline: ReaderOutlineItem[] = [
-      { section_id: 'part-1', data_type: 'part', title: '第一部', parent_section_id: null, first_node_order: 1 },
-      { section_id: 'appendix-1', data_type: 'appendix', title: '附录', parent_section_id: 'part-1', first_node_order: 1 },
-      { section_id: 'preface-1', data_type: 'preface', title: '说明', parent_section_id: 'appendix-1', first_node_order: 1 },
+      { sectionId: 'part-1', dataType: 'part', title: '第一部', parentSectionId: null, firstNodeOrder: 1 },
+      { sectionId: 'appendix-1', dataType: 'appendix', title: '附录', parentSectionId: 'part-1', firstNodeOrder: 1 },
+      { sectionId: 'preface-1', dataType: 'preface', title: '说明', parentSectionId: 'appendix-1', firstNodeOrder: 1 },
     ];
 
-    const prepared = prepareBookContent(rawHtml, [readerNode('preface-1')], outline, '/assets/');
+    const prepared = prepareBookContent(rawHtml, [readerNode('preface-1', [
+      { kind: 'p', text: '正文' },
+    ])], outline, '/assets/');
     const renderedNode = prepared.nodes[0];
     if (!renderedNode) throw new Error('expected rendered nested content');
 
@@ -207,14 +229,16 @@ describe('prepareBookContent', () => {
       </section>
     </main></body></html>`;
     const outline: ReaderOutlineItem[] = [{
-      section_id: 'chapter-1',
-      data_type: 'chapter',
+      sectionId: 'chapter-1',
+      dataType: 'chapter',
       title: '第一章',
-      parent_section_id: null,
-      first_node_order: 1,
+      parentSectionId: null,
+      firstNodeOrder: 1,
     }];
 
-    const prepared = prepareBookContent(rawHtml, [readerNode('chapter-1')], outline, '/assets/');
+    const prepared = prepareBookContent(rawHtml, [readerNode('chapter-1', [
+      { kind: 'p', text: '正文9' },
+    ])], outline, '/assets/');
     const renderedNode = prepared.nodes[0];
     if (!renderedNode) throw new Error('expected rendered chapter content');
     const body = fragment(renderedNode.html);

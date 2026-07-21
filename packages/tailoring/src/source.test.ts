@@ -20,7 +20,7 @@ describe('normalized book source extraction', () => {
     const first = extractNodeSourceFromHtml(html, 'chapter-1', 1);
     const second = extractNodeSourceFromHtml(html, 'chapter-1', 2);
 
-    expect(first.blocks.map((block) => [block.block_index, block.text])).toEqual([
+    expect(first.blocks.map((block) => [block.blockIndex, block.text])).toEqual([
       [1, '甲关键\n乙'],
       [2, '独立条目'],
       [3, '嵌套条目'],
@@ -48,15 +48,15 @@ describe('normalized book source extraction', () => {
   it('slices a continuous trial range while retaining stable block indexes', () => {
     const source = extractNodeSourceFromHtml(html, 'chapter-1', 1);
     const sliced = sliceNodeSource(source, {
-      start: { block_index: 1, offset: 1 },
-      end: { block_index: 2, offset: 4 },
+      start: { blockIndex: 1, offset: 1 },
+      end: { blockIndex: 2, offset: 4 },
     });
 
-    expect(sliced.blocks.map((block) => [block.block_index, block.text])).toEqual([
+    expect(sliced.blocks.map((block) => [block.blockIndex, block.text])).toEqual([
       [1, '关键\n乙'],
       [2, '独立条目'.slice(0, 4)],
     ]);
-    expect(sliced.blocks.map((block) => block.source_offset)).toEqual([1, 0]);
+    expect(sliced.blocks.map((block) => block.sourceOffset)).toEqual([1, 0]);
     expect(sliced.blocks[0]?.html).toBe(
       '<p data-block-index="1" data-source-offset="1"><strong>关键</strong><br>乙<a data-role="noteref" href="#note-1"></a></p>',
     );
@@ -65,22 +65,22 @@ describe('normalized book source extraction', () => {
     const result = parseTailoringModelResponse(
       JSON.stringify({
         guide: null,
-        annotations: [{ block_index: 1, quote: '关键', content: '解释' }],
-        after_reading: null,
+        annotations: [{ blockIndex: 1, quote: '关键', content: '解释' }],
+        afterReading: null,
       }),
       {
-        user_id: 'user-1',
-        package_id: 'package-1',
-        package_version: 'v1',
-        generation_scope: 'trial',
-        fragment_range: {
-          start: { block_index: 1, offset: 1 },
-          end: { block_index: 2, offset: 4 },
+        userId: 'user-1',
+        packageId: 'package-1',
+        packageVersion: 'v1',
+        generationScope: 'trial',
+        fragmentRange: {
+          start: { blockIndex: 1, offset: 1 },
+          end: { blockIndex: 2, offset: 4 },
         },
         profiles: {
           book: { version: 'book-1', value: {} },
           reader: { version: 'reader-1', value: {} },
-          book_reader: { version: 'book-reader-1', value: {} },
+          bookReader: { version: 'book-reader-1', value: {} },
         },
         strategy: {
           kind: 'strategy_draft',
@@ -89,38 +89,38 @@ describe('normalized book source extraction', () => {
           value: {},
         },
         source: {
-          section_id: 'chapter-1',
+          sectionId: 'chapter-1',
           segment: 1,
-          node_order: 1,
+          nodeOrder: 1,
           title: '第一章',
-          ancestor_titles: [],
+          ancestorTitles: [],
           range: {
-            start: { block_index: 1, offset: 1 },
-            end: { block_index: 2, offset: 4 },
+            start: { blockIndex: 1, offset: 1 },
+            end: { blockIndex: 2, offset: 4 },
           },
-          structured_html: sliced.structuredHtml,
+          structuredHtml: sliced.structuredHtml,
           blocks: sliced.blocks,
-          original_notes: [],
-          previous_context: null,
-          next_context: null,
+          originalNotes: [],
+          previousContext: null,
+          nextContext: null,
         },
-        model: { model_id: 'fake', config_version: 'v1' },
+        model: { modelId: 'fake', configVersion: 'v1' },
       },
     );
     expect(result.annotations[0]?.range).toEqual({
-      start: { block_index: 1, offset: 1 },
-      end: { block_index: 1, offset: 3 },
+      start: { blockIndex: 1, offset: 1 },
+      end: { blockIndex: 1, offset: 3 },
     });
   });
 
   it('adds stable source indexes to complete blocks when a slice starts after block one', () => {
     const source = extractNodeSourceFromHtml(html, 'chapter-1', 1);
     const sliced = sliceNodeSource(source, {
-      start: { block_index: 2, offset: 0 },
-      end: { block_index: 3, offset: source.blocks[2]!.text.length },
+      start: { blockIndex: 2, offset: 0 },
+      end: { blockIndex: 3, offset: source.blocks[2]!.text.length },
     });
 
-    expect(sliced.blocks.map((block) => block.block_index)).toEqual([2, 3]);
+    expect(sliced.blocks.map((block) => block.blockIndex)).toEqual([2, 3]);
     expect(sliced.blocks[0]?.html).toContain('data-block-index="2" data-source-offset="0"');
     expect(sliced.blocks[1]?.html).toContain('data-block-index="3" data-source-offset="0"');
   });

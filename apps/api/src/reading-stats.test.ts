@@ -168,7 +168,7 @@ describe('reading activity slices', () => {
         dataType: 'chapter',
         nodeStart: 0,
         charCount: 200,
-        blocks: [{ block_index: 1, block_utf16_length: 200 }],
+        blocks: [{ blockIndex: 1, kind: 'p', blockAbsoluteStart: 0, blockUtf16Length: 200 }],
       }],
       [2, {
         sectionId: 'chapter-2',
@@ -177,7 +177,7 @@ describe('reading activity slices', () => {
         dataType: 'chapter',
         nodeStart: 200,
         charCount: 100,
-        blocks: [{ block_index: 1, block_utf16_length: 100 }],
+        blocks: [{ blockIndex: 1, kind: 'p', blockAbsoluteStart: 200, blockUtf16Length: 100 }],
       }],
     ]),
   };

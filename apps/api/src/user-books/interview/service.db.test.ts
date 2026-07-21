@@ -19,6 +19,7 @@ import {
   hasTestDatabase,
   interviewingGraph,
 } from '../../test/database';
+import { createReadingManifestFixture } from '../../test/reading-manifest';
 import type { OwnedUserBook } from '../context/setup-context';
 import { UserBookError } from '../errors';
 import { createInterviewService } from './service';
@@ -54,7 +55,7 @@ function createService(options: {
     async canAccess() { return false; },
     async getNormalizationStatus() { return null; },
     async getBook() { return null; },
-    async getManifest() { return {}; },
+    async getManifest() { return createReadingManifestFixture([]); },
     async getProfile() { return null; },
     async getContent() { return null; },
     async getAsset() { return null; },

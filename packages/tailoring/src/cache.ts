@@ -6,20 +6,20 @@ import type { TailoringGenerationInput } from './types';
 export function createTailoringCacheKey(input: TailoringGenerationInput): string {
   const prompt = buildTailoringPrompt(input);
   const identity = {
-    user_id: input.user_id,
+    userId: input.userId,
     package: {
-      id: input.package_id,
-      version: input.package_version,
+      id: input.packageId,
+      version: input.packageVersion,
     },
     profiles: input.profiles,
     strategy: input.strategy,
     scope: {
-      generation_scope: input.generation_scope,
-      section_id: input.source.section_id,
+      generationScope: input.generationScope,
+      sectionId: input.source.sectionId,
       segment: input.source.segment,
       range: input.source.range,
     },
-    prompt_version: TAILORING_PROMPT_VERSION,
+    promptVersion: TAILORING_PROMPT_VERSION,
     prompt,
     model: input.model,
   };

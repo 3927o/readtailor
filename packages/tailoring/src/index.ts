@@ -18,13 +18,12 @@ export {
   type TailoringGenerationInput,
   type TailoringGenerationResult,
   type TailoringModelClient,
-  type TextPoint,
-  type TextRange,
   type TrialGenerationInput,
   type TrialStrategyReference,
   type VersionedProfile,
 } from './types';
-export { comparePoints, rangeContains, rangesEqual, validateGenerationInput } from './validation';
+export type { BlockPoint, BlockRange, CanonicalReadingBlock } from '@readtailor/reader-core';
+export { validateGenerationInput } from './validation';
 export {
   extractBlocks,
   extractNodeSourceFromHtml,
@@ -49,7 +48,7 @@ export async function generateTailoredContent(
   const response = await modelClient.generate({
     prompt,
     model: input.model,
-    response_format: 'json',
+    responseFormat: 'json',
   });
   return parseTailoringModelResponse(response, input);
 }

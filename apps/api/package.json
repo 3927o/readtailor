@@ -24,6 +24,7 @@
     "@readtailor/model": "workspace:*",
     "@readtailor/observability": "workspace:*",
     "@readtailor/queue": "workspace:*",
+    "@readtailor/reader-core": "workspace:*",
     "@readtailor/storage": "workspace:*",
     "@readtailor/tailoring": "workspace:*",
     "@sinclair/typebox": "^0.34.0",

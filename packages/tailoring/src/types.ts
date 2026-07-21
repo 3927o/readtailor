@@ -1,23 +1,13 @@
+import type { BlockRange, CanonicalReadingBlock } from '@readtailor/reader-core';
+
 export type GenerationScope = 'trial' | 'formal';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
-export interface TextPoint {
-  block_index: number;
-  offset: number;
-}
-
-export interface TextRange {
-  start: TextPoint;
-  end: TextPoint;
-}
-
-export interface GenerationBlock {
-  block_index: number;
-  text: string;
+export interface GenerationBlock extends CanonicalReadingBlock {
   html: string;
-  source_offset?: number;
+  sourceOffset?: number;
 }
 
 export interface VersionedProfile {
@@ -28,26 +18,26 @@ export interface VersionedProfile {
 export interface GenerationProfiles {
   book: VersionedProfile;
   reader: VersionedProfile;
-  book_reader: VersionedProfile;
+  bookReader: VersionedProfile;
 }
 
 export interface NodeSource {
-  section_id: string;
+  sectionId: string;
   segment: number;
-  node_order: number;
+  nodeOrder: number;
   title: string | null;
-  ancestor_titles: string[];
-  range: TextRange;
-  structured_html: string;
+  ancestorTitles: string[];
+  range: BlockRange;
+  structuredHtml: string;
   blocks: GenerationBlock[];
-  original_notes: JsonValue[];
-  previous_context: string | null;
-  next_context: string | null;
+  originalNotes: JsonValue[];
+  previousContext: string | null;
+  nextContext: string | null;
 }
 
 export interface ModelConfiguration {
-  model_id: string;
-  config_version: string;
+  modelId: string;
+  configVersion: string;
 }
 
 export interface TrialStrategyReference {
@@ -65,22 +55,22 @@ export interface FormalStrategyReference {
 }
 
 interface GenerationInputBase {
-  user_id: string;
-  package_id: string;
-  package_version: string;
+  userId: string;
+  packageId: string;
+  packageVersion: string;
   profiles: GenerationProfiles;
   source: NodeSource;
   model: ModelConfiguration;
 }
 
 export interface TrialGenerationInput extends GenerationInputBase {
-  generation_scope: 'trial';
-  fragment_range: TextRange;
+  generationScope: 'trial';
+  fragmentRange: BlockRange;
   strategy: TrialStrategyReference;
 }
 
 export interface FormalGenerationInput extends GenerationInputBase {
-  generation_scope: 'formal';
+  generationScope: 'formal';
   strategy: FormalStrategyReference;
 }
 
@@ -89,7 +79,7 @@ export type TailoringGenerationInput = TrialGenerationInput | FormalGenerationIn
 export interface ModelGenerationRequest {
   prompt: string;
   model: ModelConfiguration;
-  response_format: 'json';
+  responseFormat: 'json';
 }
 
 export interface TailoringModelClient {
@@ -97,14 +87,14 @@ export interface TailoringModelClient {
 }
 
 export interface TailoringAnnotation {
-  range: TextRange;
+  range: BlockRange;
   content: string;
 }
 
 export interface TailoringGenerationResult {
   guide: string | null;
   annotations: TailoringAnnotation[];
-  after_reading: string | null;
+  afterReading: string | null;
 }
 
 export type TailoringErrorCode =

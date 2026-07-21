@@ -39,7 +39,7 @@ describe('front/back block enumeration consistency', () => {
     const html = '<p>第一段落</p><div data-role="separator"></div><p>第二段落文本</p>';
 
     // Backend authority: the empty separator is not a block, so the second paragraph is block 2.
-    expect(extractBlocks(html).map((block) => [block.block_index, block.text])).toEqual([
+    expect(extractBlocks(html).map((block) => [block.blockIndex, block.text])).toEqual([
       [1, '第一段落'],
       [2, '第二段落文本'],
     ]);
@@ -59,7 +59,7 @@ describe('front/back block enumeration consistency', () => {
 
     // Backend authority: the outer li projects "入口尾随文本" (nested list excluded); the
     // nested li is its own block.
-    expect(extractBlocks(html).map((block) => [block.block_index, block.text])).toEqual([
+    expect(extractBlocks(html).map((block) => [block.blockIndex, block.text])).toEqual([
       [1, '入口尾随文本'],
       [2, '子项'],
     ]);
@@ -76,7 +76,7 @@ describe('front/back block enumeration consistency', () => {
   it('agrees on a role div that carries text and on inline media guards', () => {
     const html = '<div data-role="unit">独立单元</div><p>说明<img src="assets/x.png" alt=""></p>';
 
-    expect(extractBlocks(html).map((block) => [block.block_index, block.text])).toEqual([
+    expect(extractBlocks(html).map((block) => [block.blockIndex, block.text])).toEqual([
       [1, '独立单元'],
       [2, '说明'],
     ]);

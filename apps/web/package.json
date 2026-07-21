@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@readtailor/contracts": "workspace:*",
+    "@readtailor/reader-core": "workspace:*",
     "@tanstack/react-query": "^5.81.0",
     "eventsource-parser": "^3.1.0",
     "react": "^19.1.0",

@@ -7,6 +7,7 @@ import type { SystemChatService } from './system-chat';
 import type { SystemJobService } from './system-jobs';
 import { BookImportError, type BookImportService } from './book-imports';
 import type { BookService } from './books';
+import { createReadingManifestFixture } from './test/reading-manifest';
 
 const JOB_ID = 'a3bb189e-8bf9-3888-9912-ace4e6543002';
 const TEST_ORIGIN = 'http://localhost:5173';
@@ -98,7 +99,7 @@ const fakeBooks: BookService = {
     };
   },
   async getManifest() {
-    return { version: 'reading-nodes-1.0' };
+    return createReadingManifestFixture([]);
   },
   async getProfile() {
     return { version: 'book-profile-1.0' };
@@ -291,7 +292,7 @@ describe('ready book routes', () => {
     expect(book.json().status).toBe('ready');
 
     const manifest = await app.inject({ method: 'GET', url: `/v1/books/${JOB_ID}/manifest` });
-    expect(manifest.json()).toEqual({ version: 'reading-nodes-1.0' });
+    expect(manifest.json()).toEqual(createReadingManifestFixture([]));
 
     const content = await app.inject({ method: 'GET', url: `/v1/books/${JOB_ID}/content` });
     expect(content.headers['content-type']).toContain('text/html');

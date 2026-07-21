@@ -3,12 +3,12 @@ import { resolveTrialFragmentRanges, UserBookError } from './user-books';
 
 describe('resolveTrialFragmentRanges', () => {
   const nodes = [{
-    section_id: 'chapter-1',
+    sectionId: 'chapter-1',
     segment: 1,
     blocks: [
-      { block_index: 1, text: '开头' },
-      { block_index: 2, text: '甲😀乙' },
-      { block_index: 3, text: '结尾' },
+      { blockIndex: 1, text: '开头' },
+      { blockIndex: 2, text: '甲😀乙' },
+      { blockIndex: 3, text: '结尾' },
     ],
   }];
 

@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import type { AdoptTrialRequest, AdoptTrialResponse } from '@readtailor/contracts';
+import type { ReadingManifest } from '@readtailor/reader-core';
+import { TAILORING_PROMPT_VERSION } from '@readtailor/tailoring';
 import {
   nodeGenerations,
   strategyDraftVersions,
@@ -13,22 +15,13 @@ import {
 import type { OwnedUserBook } from '../context/setup-context';
 import { UserBookError } from '../errors';
 
-export type AdoptionManifest = {
-  nodes: Array<{
-    section_id: string;
-    segment: number;
-    order: number;
-    tailoring_eligible: boolean;
-  }>;
-};
-
-export type StrategyAdoptionServiceOptions<TManifest extends AdoptionManifest> = {
+export type StrategyAdoptionServiceOptions = {
   db: Database;
   userId: string;
   modelConfigId: string;
   formalWindowSize: number;
   getOwnedBook(userBookId: string): Promise<OwnedUserBook>;
-  loadManifest(sharedBookId: string): Promise<TManifest>;
+  loadManifest(sharedBookId: string): Promise<ReadingManifest>;
   ensureFormalWindow(
     userBookId: string,
     strategyVersionId: string,
@@ -38,9 +31,7 @@ export type StrategyAdoptionServiceOptions<TManifest extends AdoptionManifest> =
   enqueuePendingFormalGenerations(userBookId: string): Promise<void>;
 };
 
-export function createStrategyAdoptionService<TManifest extends AdoptionManifest>(
-  options: StrategyAdoptionServiceOptions<TManifest>,
-) {
+export function createStrategyAdoptionService(options: StrategyAdoptionServiceOptions) {
   const {
     db,
     userId,
@@ -80,7 +71,7 @@ export function createStrategyAdoptionService<TManifest extends AdoptionManifest
 
     const manifest = await loadManifest(owned.sharedBook.id);
     const formalNodes = manifest.nodes
-      .filter((node) => node.tailoring_eligible)
+      .filter((node) => node.tailoringEligible)
       .sort((left, right) => left.order - right.order)
       .slice(0, formalWindowSize);
     if (formalNodes.length === 0) {
@@ -175,11 +166,11 @@ export function createStrategyAdoptionService<TManifest extends AdoptionManifest
           userBookId,
           generationScope: 'formal' as const,
           strategyVersionId: strategy.id,
-          sectionId: node.section_id,
+          sectionId: node.sectionId,
           segment: node.segment,
           status: 'queued' as const,
           modelConfigId,
-          promptVersion: 'tailoring-content-1.0',
+          promptVersion: TAILORING_PROMPT_VERSION,
           cacheKey: `pending:${id}`,
         };
       }));

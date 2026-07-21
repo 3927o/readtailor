@@ -25,6 +25,7 @@ import {
   strategyReviewGraph,
   trialReviewGraph,
 } from './test/database';
+import { createReadingManifestFixture } from './test/reading-manifest';
 
 const nodeContents = [
   '第一节点正文abcdefghij',
@@ -33,23 +34,11 @@ const nodeContents = [
   '第四节点正文abcdefghij',
 ];
 
-const manifest = {
-  version: 'reading-nodes-1.0',
-  nodes: nodeContents.map((content, index) => ({
-    section_id: `section-${index + 1}`,
-    segment: 1,
-    order: index + 1,
-    title: `第 ${index + 1} 节`,
-    parent_section_id: null,
-    tailoring_eligible: true,
-    blocks: [{ block_index: 1, block_utf16_length: content.length }],
-  })),
-  outline: nodeContents.map((_content, index) => ({
-    section_id: `section-${index + 1}`,
-    title: `第 ${index + 1} 节`,
-    parent_section_id: null,
-  })),
-};
+const manifest = createReadingManifestFixture(nodeContents.map((text, index) => ({
+  sectionId: `section-${index + 1}`,
+  text,
+  title: `第 ${index + 1} 节`,
+})));
 
 const normalizedHtml = `<!doctype html><html><body><main id="book" data-type="book">
   ${nodeContents.map((content, index) => (
@@ -61,7 +50,7 @@ const bookProfile = {
   summary: '测试书籍围绕四个连续主题展开。',
   structure: '四个节点按顺序推进。',
   trial_candidates: manifest.nodes.slice(0, 3).map((node) => ({
-    section_id: node.section_id,
+    section_id: node.sectionId,
     segment: node.segment,
   })),
 };
@@ -89,7 +78,7 @@ const completedOutcome: ReadingSetupOutcome = {
     annotations: { enabled: true, focuses: ['关键概念'], exclusions: [] },
     after_reading: { enabled: true, objectives: ['回顾节点要点'] },
     trial_candidates: manifest.nodes.slice(0, 3).map((node, index) => ({
-      section_id: node.section_id,
+      section_id: node.sectionId,
       segment: node.segment,
       reason: `验证候选节点 ${index + 1}`,
     })),

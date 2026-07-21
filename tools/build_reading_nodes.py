@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,37 +70,35 @@ class ReadingNode:
             return "no_text_block"
         return None
 
-    def as_dict(self, html_file: str | None = None) -> dict[str, object]:
+    def as_dict(self) -> dict[str, object]:
         block_dicts: list[dict[str, object]] = []
         block_absolute_start = self.node_absolute_start
         for block_index, block in enumerate(self.blocks, start=1):
             block_dicts.append(
                 {
-                    "block_index": block_index,
+                    "blockIndex": block_index,
                     "kind": block.kind,
-                    "block_absolute_start": block_absolute_start,
-                    "block_utf16_length": block.utf16_length,
+                    "blockAbsoluteStart": block_absolute_start,
+                    "blockUtf16Length": block.utf16_length,
                 }
             )
             block_absolute_start += block.utf16_length
 
         result: dict[str, object] = {
-            "section_id": self.section_id,
+            "sectionId": self.section_id,
             "segment": self.segment,
             "order": self.order,
             "region": self.region,
-            "data_type": self.data_type,
+            "dataType": self.data_type,
             "title": self.title,
-            "parent_section_id": self.parent_section_id,
-            "character_count": self.character_count,
-            "block_count": self.block_count,
-            "tailoring_eligible": self.exclusion_reason is None,
-            "exclusion_reason": self.exclusion_reason,
-            "node_absolute_start": self.node_absolute_start,
+            "parentSectionId": self.parent_section_id,
+            "characterCount": self.character_count,
+            "blockCount": self.block_count,
+            "tailoringEligible": self.exclusion_reason is None,
+            "exclusionReason": self.exclusion_reason,
+            "nodeAbsoluteStart": self.node_absolute_start,
             "blocks": block_dicts,
         }
-        if html_file is not None:
-            result["html_file"] = html_file
         return result
 
 
@@ -263,11 +260,11 @@ def build_outline(book: Tag, nodes: list[ReadingNode]) -> list[dict[str, object]
         ]
         outline.append(
             {
-                "section_id": section_id,
-                "data_type": str(element["data-type"]),
+                "sectionId": section_id,
+                "dataType": str(element["data-type"]),
                 "title": own_title(element),
-                "parent_section_id": str(parent.get("id")) if parent else None,
-                "first_node_order": min(descendant_orders) if descendant_orders else None,
+                "parentSectionId": str(parent.get("id")) if parent else None,
+                "firstNodeOrder": min(descendant_orders) if descendant_orders else None,
             }
         )
     return outline
@@ -410,14 +407,8 @@ class ReadingNodeBuilder:
         return element_id
 
 
-def safe_filename(value: str) -> str:
-    value = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-.")
-    return value[:80] or "node"
-
-
 def build_manifest(
     input_path: Path,
-    html_dir: Path | None = None,
     require_valid: bool = False,
 ) -> dict[str, object]:
     raw = input_path.read_text(encoding="utf-8")
@@ -440,34 +431,25 @@ def build_manifest(
     html = soup.find("html")
     node_dicts: list[dict[str, object]] = []
 
-    if html_dir is not None:
-        html_dir.mkdir(parents=True, exist_ok=True)
-
     for node in nodes:
-        html_file: str | None = None
-        if html_dir is not None:
-            suffix = f"-{node.segment}" if node.segment > 1 else ""
-            filename = f"{node.order:04d}-{safe_filename(node.section_id)}{suffix}.html"
-            (html_dir / filename).write_text(node.content_html + "\n", encoding="utf-8")
-            html_file = filename
-        node_dicts.append(node.as_dict(html_file))
+        node_dicts.append(node.as_dict())
 
     return {
         "version": "reading-nodes-1.0",
-        "tailoring_eligibility_version": "tailoring-eligibility-1.0",
+        "tailoringEligibilityVersion": "tailoring-eligibility-1.0",
         "document": {
             "title": title.get_text(" ", strip=True) if title else "",
             "language": str(html.get("lang") or "und") if isinstance(html, Tag) else "und",
         },
         "outline": build_outline(book, nodes),
-        "book_total_characters": sum(node.character_count for node in nodes),
-        "node_count": len(node_dicts),
+        "bookTotalCharacters": sum(node.character_count for node in nodes),
+        "nodeCount": len(node_dicts),
         "nodes": node_dicts,
         "warnings": builder.warnings,
         "validation": {
-            "is_valid": not lint_errors,
-            "error_count": len(lint_errors),
-            "warning_count": len(lint_result["warnings"]),
+            "isValid": not lint_errors,
+            "errorCount": len(lint_errors),
+            "warningCount": len(lint_result["warnings"]),
         },
     }
 
@@ -479,11 +461,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("input", type=Path, help="Path to book.normalized.html")
     parser.add_argument("-o", "--output", type=Path, help="Write manifest JSON to this path")
     parser.add_argument(
-        "--html-dir",
-        type=Path,
-        help="Optionally write each node's exclusive HTML to this directory",
-    )
-    parser.add_argument(
         "--require-valid",
         action="store_true",
         help="Refuse input that has nb-1.0 linter errors",
@@ -494,7 +471,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     try:
-        manifest = build_manifest(args.input, args.html_dir, args.require_valid)
+        manifest = build_manifest(args.input, args.require_valid)
     except (OSError, UnicodeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

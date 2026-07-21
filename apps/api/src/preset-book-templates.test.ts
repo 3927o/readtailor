@@ -13,10 +13,10 @@ describe('zarathustra preset template', () => {
     const template = getPresetBookTemplate({
       title: '查拉图斯特拉如是说',
       epubSha256: '5814044076bd72c553087c0166b65b635897b54499187f787036569abb81a6f6',
-      packageVersion: 'nb-1.0-v3',
+      packageVersion: 'nb-1.0-v3-reader-core-v1',
       manifestVersion: 'reading-nodes-1.0',
       readingManifestSha256:
-        'f97fc41a497fa7c72493026d2c4d66cb385055fe870992453023fd56fcefa851',
+        '615a608ddd4b0336174550dbf238d92036270d06a12d65b0197f7c515f65c52e',
     });
 
     expect(template).toBeDefined();

@@ -13,18 +13,19 @@ import {
   hasTestDatabase,
   trialReviewGraph,
 } from '../../test/database';
-import { createStrategyAdoptionService, type AdoptionManifest } from './adoption-service';
+import { createReadingManifestFixture } from '../../test/reading-manifest';
+import { createStrategyAdoptionService } from './adoption-service';
 
 const describePostgres = hasTestDatabase ? describe : describe.skip;
 const skipReason = hasTestDatabase ? '' : ' (skipped: TEST_DATABASE_URL is not set)';
 
-const unorderedManifest: AdoptionManifest = {
-  nodes: [5, 2, 4, 1, 3].map((order) => ({
-    section_id: `formal-${order}`,
-    segment: 1,
-    order,
-    tailoring_eligible: true,
-  })),
+const orderedManifest = createReadingManifestFixture([1, 2, 3, 4, 5].map((order) => ({
+  sectionId: `formal-${order}`,
+  text: `正文 ${order}`,
+})));
+const unorderedManifest = {
+  ...orderedManifest,
+  nodes: [5, 2, 4, 1, 3].map((order) => orderedManifest.nodes[order - 1]!),
 };
 
 describePostgres(`strategy adoption service${skipReason}`, () => {

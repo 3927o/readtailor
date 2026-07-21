@@ -20,6 +20,7 @@ import {
   readBookMetadata,
   runCommand,
   sha256,
+  validateReadingManifestForPublication,
 } from '@readtailor/normalized-book';
 import type { ObjectStorage } from '@readtailor/storage';
 import {
@@ -101,6 +102,7 @@ export async function publishValidatedNormalization(options: {
     if (sha256(manifestBytes) !== sha256(rebuiltBytes)) {
       throw new Error('reading manifest is not deterministic for the normalized HTML');
     }
+    validateReadingManifestForPublication(manifestBytes.toString('utf8'), MANIFEST_VERSION);
 
     await Promise.all([
       writeFile(

@@ -5,6 +5,7 @@ import type {
   BookNormalizationStatus,
   SharedBook,
 } from '@readtailor/contracts';
+import type { ReadingManifest } from '@readtailor/reader-core';
 import {
   bookPackages,
   bookProfiles,
@@ -38,7 +39,7 @@ export interface BookService {
   canAccess(userId: string, id: string): Promise<boolean>;
   getNormalizationStatus(id: string): Promise<BookNormalizationStatus | null>;
   getBook(id: string): Promise<SharedBook | null>;
-  getManifest(id: string): Promise<unknown | null>;
+  getManifest(id: string): Promise<ReadingManifest | null>;
   getProfile(id: string): Promise<unknown | null>;
   getContent(id: string): Promise<Uint8Array | null>;
   getAsset(id: string, assetPath: string): Promise<Uint8Array | null>;
@@ -255,7 +256,7 @@ export function createBookService(options: {
         if (!bytes) {
           return null;
         }
-        return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+        return JSON.parse(new TextDecoder().decode(bytes)) as ReadingManifest;
       });
     },
     async getProfile(id) {

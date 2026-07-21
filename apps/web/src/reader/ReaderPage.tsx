@@ -238,11 +238,11 @@ function nearestNodeByOrder(nodes: ReaderNode[], targetOrder: number): ReaderNod
 }
 
 function defaultTocCollapsed(outline: ReaderOutlineItem[]): Set<string> {
-  const childParents = new Set(outline.map((item) => item.parent_section_id).filter((id): id is string => Boolean(id)));
+  const childParents = new Set(outline.map((item) => item.parentSectionId).filter((id): id is string => Boolean(id)));
   return new Set(
     outline
-      .filter((item) => childParents.has(item.section_id) && getOutlineDepth(item, outline) >= 2)
-      .map((item) => item.section_id),
+      .filter((item) => childParents.has(item.sectionId) && getOutlineDepth(item, outline) >= 2)
+      .map((item) => item.sectionId),
   );
 }
 
@@ -448,7 +448,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
   const sessionRef = useRef<ReadingSessionTracker | null>(null);
   if (sessionRef.current === null) sessionRef.current = new ReadingSessionTracker();
   const charCountByOrder = useMemo(
-    () => new Map(document.manifest.nodes.map((node) => [node.order, node.character_count])),
+    () => new Map(document.manifest.nodes.map((node) => [node.order, node.characterCount])),
     [document.manifest.nodes],
   );
   const nodeByOrder = useMemo(
@@ -459,7 +459,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     const node = nodeByOrder.get(order) ?? document.manifest.nodes[0];
     return {
       order: node?.order ?? order,
-      sectionId: node?.section_id ?? 'unknown',
+      sectionId: node?.sectionId ?? 'unknown',
       segment: node?.segment ?? 1,
       blockIndex: 1,
       offset: 0,
@@ -626,7 +626,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
 
     const nodes = document.manifest.nodes;
     // §3.3 fallback chain: exact section/segment → nearest by nodeOrder → start of book.
-    const exactNode = nodes.find((item) => item.section_id === resume.sectionId && item.segment === resume.segment);
+    const exactNode = nodes.find((item) => item.sectionId === resume.sectionId && item.segment === resume.segment);
     const targetNode = exactNode ?? nearestNodeByOrder(nodes, resume.nodeOrder) ?? nodes[0];
     if (!targetNode) return;
 
@@ -636,13 +636,13 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     const versionMatches = resume.manifestVersion == null || resume.manifestVersion === document.manifest.version;
     const nodeTarget: ReaderAnchorTarget = {
       kind: 'node',
-      sectionId: targetNode.section_id,
+      sectionId: targetNode.sectionId,
       segment: targetNode.segment,
     };
     let restoreTarget: ReaderAnchorTarget = nodeTarget;
     const firstBlockTarget: ReaderAnchorTarget = {
       kind: 'block',
-      sectionId: targetNode.section_id,
+      sectionId: targetNode.sectionId,
       segment: targetNode.segment,
       blockIndex: 1,
     };
@@ -1048,7 +1048,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     const target = document.manifest.nodes.find((item) => item.order === order);
     reportFocus.current(order, target
       ? {
-        sectionId: target.section_id,
+        sectionId: target.sectionId,
         segment: target.segment,
         blockIndex: 1,
         offset: 0,
@@ -1158,19 +1158,17 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       return;
     }
     if (!targetId) return;
-    const targetOutline = document.manifest.outline.find((item) => item.section_id === targetId);
+    const targetOutline = document.manifest.outline.find((item) => item.sectionId === targetId);
     if (targetOutline) {
       event.preventDefault();
-      jumpToOrder(targetOutline.first_node_order);
+      jumpToOrder(targetOutline.firstNodeOrder);
     }
   };
 
-  const totalCharacters = document.manifest.book_total_characters
-    ?? document.manifest.position_index?.book_total_characters
-    ?? document.manifest.nodes.reduce((sum, node) => sum + node.character_count, 0);
+  const totalCharacters = document.manifest.bookTotalCharacters;
   const charactersBefore = document.manifest.nodes
     .filter((node) => node.order < currentOrder)
-    .reduce((sum, node) => sum + node.character_count, 0);
+    .reduce((sum, node) => sum + node.characterCount, 0);
   const bookProgressPercent = totalCharacters > 0
     ? Math.round((charactersBefore / totalCharacters) * 100)
     : bookStats.data?.progressPercent ?? 0;
@@ -1205,8 +1203,8 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     return labels;
   }, [chapterEstimateApproximate, chapterUnits, secondsPerCharacter]);
   const activeSectionId = [...document.manifest.outline]
-    .filter((item) => item.first_node_order <= currentOrder)
-    .at(-1)?.section_id;
+    .filter((item) => item.firstNodeOrder <= currentOrder)
+    .at(-1)?.sectionId;
   const closeReaderSheets = () => {
     setTocOpen(false);
     setSettingsOpen(false);
@@ -1337,7 +1335,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       const scroll = scrollRoot.current;
       if (!scroll) return;
       const exactNode = document.manifest.nodes.find((item) => (
-        item.section_id === context.sectionId && item.segment === context.segment
+        item.sectionId === context.sectionId && item.segment === context.segment
       ));
       const targetNode = exactNode
         ?? nearestNodeByOrder(document.manifest.nodes, context.nodeOrder)
@@ -1399,7 +1397,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
         jumpToOrder(node.order);
         setSearchOpen(false);
       });
-      const enhancement = enhancements.get(`${node.section_id}:${node.segment}`);
+      const enhancement = enhancements.get(`${node.sectionId}:${node.segment}`);
       if (enhancement?.status === 'ready') {
         if (enhancement.tailoredContent?.guide) {
           pushHit(`guide-${node.order}`, `导读 · ${node.title || node.order}`, enhancement.tailoredContent.guide, () => {
@@ -1539,10 +1537,10 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
           </header>
           {prepared.nodes.map((node) => (
             <ReadingNode
-              key={`${node.section_id}:${node.segment}`}
+              key={`${node.sectionId}:${node.segment}`}
               node={node}
               bookTitle={document.book.title}
-              enhancement={enhancements.get(`${node.section_id}:${node.segment}`)}
+              enhancement={enhancements.get(`${node.sectionId}:${node.segment}`)}
               chapterEstimate={chapterEstimateByOrder.get(node.order)}
             />
           ))}
@@ -1655,12 +1653,12 @@ const ReadingNode = memo(function ReadingNode({ node, bookTitle, enhancement, ch
       className="reader-node"
       data-has-heading={headings.length > 0}
       data-node-order={node.order}
-      data-section-id={node.section_id}
+      data-section-id={node.sectionId}
       data-segment={node.segment}
       id={`reader-node-${node.order}`}
     >
       {headings.map((heading) => (
-        <OutlineHeading key={heading.section_id} heading={heading} />
+        <OutlineHeading key={heading.sectionId} heading={heading} />
       ))}
       {chapterEstimate ? (
         <div className="reader-chapter-estimate">
@@ -1694,7 +1692,7 @@ const ReadingNode = memo(function ReadingNode({ node, bookTitle, enhancement, ch
 function OutlineHeading({ heading }: { heading: RenderedHeading }) {
   const props = {
     className: 'reader-outline-heading rt-reader-heading-content',
-    'data-outline-type': heading.data_type,
+    'data-outline-type': heading.dataType,
     'data-outline-level': heading.visualLevel,
   };
   if (heading.visualLevel === 'part') {
@@ -1725,17 +1723,17 @@ function TocDrawer({ open, title, outline, activeSectionId, collapsed, toggleCol
   const childCount = useMemo(() => {
     const count = new Map<string, number>();
     for (const item of outline) {
-      if (!item.parent_section_id) continue;
-      count.set(item.parent_section_id, (count.get(item.parent_section_id) ?? 0) + 1);
+      if (!item.parentSectionId) continue;
+      count.set(item.parentSectionId, (count.get(item.parentSectionId) ?? 0) + 1);
     }
     return count;
   }, [outline]);
-  const byId = useMemo(() => new Map(outline.map((item) => [item.section_id, item])), [outline]);
+  const byId = useMemo(() => new Map(outline.map((item) => [item.sectionId, item])), [outline]);
   const visibleItems = outline.filter((item) => {
-    let parent = item.parent_section_id ? byId.get(item.parent_section_id) : undefined;
+    let parent = item.parentSectionId ? byId.get(item.parentSectionId) : undefined;
     while (parent) {
-      if (collapsed.has(parent.section_id)) return false;
-      parent = parent.parent_section_id ? byId.get(parent.parent_section_id) : undefined;
+      if (collapsed.has(parent.sectionId)) return false;
+      parent = parent.parentSectionId ? byId.get(parent.parentSectionId) : undefined;
     }
     return true;
   });
@@ -1751,18 +1749,18 @@ function TocDrawer({ open, title, outline, activeSectionId, collapsed, toggleCol
         <p className="toc-description">进度只算原文位置，原书注释不计入。</p>
         <nav>
           {visibleItems.map((item) => {
-            const active = item.section_id === activeSectionId;
-            const hasChildren = (childCount.get(item.section_id) ?? 0) > 0;
-            const isCollapsed = collapsed.has(item.section_id);
+            const active = item.sectionId === activeSectionId;
+            const hasChildren = (childCount.get(item.sectionId) ?? 0) > 0;
+            const isCollapsed = collapsed.has(item.sectionId);
             return (
               <div
-                key={item.section_id}
+                key={item.sectionId}
                 className="toc-item"
                 data-active={active}
                 data-collapsible={hasChildren ? 'true' : undefined}
                 style={{ '--toc-depth': getOutlineDepth(item, outline) } as React.CSSProperties}
               >
-                <button type="button" onClick={() => jump(item.first_node_order)}>
+                <button type="button" onClick={() => jump(item.firstNodeOrder)}>
                   <span>{item.title || '未命名部分'}</span>
                   {active && <i aria-label="当前位置">·</i>}
                 </button>
@@ -1770,7 +1768,7 @@ function TocDrawer({ open, title, outline, activeSectionId, collapsed, toggleCol
                   <button
                     className="toc-collapse"
                     type="button"
-                    onClick={() => toggleCollapse(item.section_id)}
+                    onClick={() => toggleCollapse(item.sectionId)}
                     aria-label={isCollapsed ? '展开目录项' : '收起目录项'}
                     title={isCollapsed ? '展开' : '收起'}
                   >
