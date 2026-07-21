@@ -497,24 +497,24 @@ describe('reading setup Pi Agent', () => {
   it('lets select_trial choose block boundaries without model-calculated offsets', async () => {
     const fragments = [
       {
-        section_id: 'chapter-1',
+        sectionId: 'chapter-1',
         segment: 1,
         tag: 'threshold' as const,
-        range: { start: { block_index: 1 }, end: { block_index: 2 } },
+        range: { start: { blockIndex: 1 }, end: { blockIndex: 2 } },
         reason: '覆盖进入本书时的理解门槛。',
       },
       {
-        section_id: 'chapter-2',
+        sectionId: 'chapter-2',
         segment: 1,
         tag: 'typical' as const,
-        range: { start: { block_index: 3 }, end: { block_index: 5 } },
+        range: { start: { blockIndex: 3 }, end: { blockIndex: 5 } },
         reason: '覆盖全书典型内容的表达方式。',
       },
       {
-        section_id: 'chapter-3',
+        sectionId: 'chapter-3',
         segment: 1,
         tag: 'hardest' as const,
-        range: { start: { block_index: 2 }, end: { block_index: 4 } },
+        range: { start: { blockIndex: 2 }, end: { blockIndex: 4 } },
         reason: '覆盖较高难度内容的处理效果。',
       },
     ];
@@ -569,11 +569,11 @@ describe('reading setup Pi Agent', () => {
       context: {
         book: { title: 'Book' },
         trialNodeContents: fragments.map((fragment) => ({
-          section_id: fragment.section_id,
+          sectionId: fragment.sectionId,
           segment: fragment.segment,
           blocks: Array.from(
-            { length: fragment.range.end.block_index },
-            (_value, index) => ({ block_index: index + 1, text: `正文 ${index + 1}` }),
+            { length: fragment.range.end.blockIndex },
+            (_value, index) => ({ blockIndex: index + 1, text: `正文 ${index + 1}` }),
           ),
         })),
       },
@@ -582,7 +582,12 @@ describe('reading setup Pi Agent', () => {
 
     expect(result).toEqual({ type: 'fragments', fragments });
     expect(selectTool).toBeDefined();
-    expect(JSON.stringify(selectTool)).not.toMatch(/"offset"\s*:/);
+    const serializedTool = JSON.stringify(selectTool);
+    expect(serializedTool).toContain('sectionId');
+    expect(serializedTool).toContain('blockIndex');
+    expect(serializedTool).not.toContain('section_id');
+    expect(serializedTool).not.toContain('block_index');
+    expect(serializedTool).not.toMatch(/"offset"\s*:/);
   });
 });
 
@@ -642,7 +647,7 @@ describe('reconstructReadingSetupHistory', () => {
         ...context,
         currentStrategy: { version: 1, userFacingSummary: 'draft' },
         trialNodeContents: [
-          { section_id: 'chapter-1', segment: 1, blocks: [{ block_index: 1, text: '门槛段落' }] },
+          { sectionId: 'chapter-1', segment: 1, blocks: [{ blockIndex: 1, text: '门槛段落' }] },
         ],
       },
       'fake-model',
@@ -652,7 +657,7 @@ describe('reconstructReadingSetupHistory', () => {
     // The node bodies must be a user turn (host-provided data), placed after the draft.
     expect(roleOf(last)).toBe('user');
     expect(textOf(last)).toContain('【候选试读节点正文');
-    expect(textOf(last)).toContain('"section_id": "chapter-1"');
+    expect(textOf(last)).toContain('"sectionId": "chapter-1"');
     expect(textOf(history.at(-2))).toContain('【当前处理方式草稿】');
   });
 });
@@ -707,24 +712,24 @@ describe('createReadingSetupStreamParser', () => {
 
   const fragments = [
     {
-      section_id: 'chapter-1',
+      sectionId: 'chapter-1',
       segment: 1,
       tag: 'threshold',
-      range: { start: { block_index: 1, offset: 0 }, end: { block_index: 2, offset: 12 } },
+      range: { start: { blockIndex: 1 }, end: { blockIndex: 12 } },
       reason: '覆盖进入本书时的理解门槛。',
     },
     {
-      section_id: 'chapter-2',
+      sectionId: 'chapter-2',
       segment: 2,
       tag: 'typical',
-      range: { start: { block_index: 3, offset: 4 }, end: { block_index: 5, offset: 20 } },
+      range: { start: { blockIndex: 3 }, end: { blockIndex: 5 } },
       reason: '覆盖典型内容，并保留“关键”例子。',
     },
     {
-      section_id: 'chapter-3',
+      sectionId: 'chapter-3',
       segment: 3,
       tag: 'hardest',
-      range: { start: { block_index: 6, offset: 1 }, end: { block_index: 8, offset: 30 } },
+      range: { start: { blockIndex: 6 }, end: { blockIndex: 8 } },
       reason: '覆盖较难内容与嵌套关系 {A\\B}。',
     },
   ] as const;
@@ -936,16 +941,32 @@ describe('createReadingSetupStreamParser', () => {
     });
   }
 
-  it('does not accept a fragment whose numeric offset may still grow', () => {
+  it('does not accept a fragment whose numeric blockIndex may still grow', () => {
     const source = JSON.stringify({ fragments });
     const events: ReadingSetupStreamDelta[] = [];
     const parser = createReadingSetupStreamParser((delta) => events.push(delta));
     parser.onToolStart('select_trial_fragments');
-    const offset = source.indexOf('12');
-    parser.onDelta(source.slice(0, offset + 1));
+    const blockIndex = source.indexOf('12');
+    parser.onDelta(source.slice(0, blockIndex + 1));
     expect(events.some((event) => event.type === 'fragment_added')).toBe(false);
-    parser.onDelta(source.slice(offset + 1));
+    parser.onDelta(source.slice(blockIndex + 1));
     expect(events.filter((event) => event.type === 'fragment_added')).toHaveLength(3);
+  });
+
+  it('does not accept the legacy snake_case fragment shape', () => {
+    const events: ReadingSetupStreamDelta[] = [];
+    const parser = createReadingSetupStreamParser((delta) => events.push(delta));
+    parser.onToolStart('select_trial_fragments');
+    parser.onDelta(JSON.stringify({
+      fragments: [{
+        section_id: 'chapter-1',
+        segment: 1,
+        tag: 'threshold',
+        range: { start: { block_index: 1 }, end: { block_index: 2 } },
+        reason: '覆盖进入本书时的理解门槛。',
+      }],
+    }));
+    expect(events.some((event) => event.type === 'fragment_added')).toBe(false);
   });
 
   it('increments speculativeEpoch and resets streamed state for a replacement tool call', () => {

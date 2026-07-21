@@ -140,9 +140,9 @@ async function collect<T>(stream: AsyncGenerator<T>): Promise<T[]> {
 }
 
 type TrialNodeContent = {
-  section_id: string;
+  sectionId: string;
   segment: number;
-  blocks: Array<{ block_index: number; text: string }>;
+  blocks: Array<{ blockIndex: number; text: string }>;
 };
 
 function validTrialFragments(
@@ -157,12 +157,12 @@ function validTrialFragments(
       throw new Error('trial selection test context is incomplete');
     }
     return {
-      section_id: node.section_id,
+      sectionId: node.sectionId,
       segment: node.segment,
       tag: tags[index],
       range: {
-        start: { block_index: firstBlock.block_index },
-        end: { block_index: lastBlock.block_index },
+        start: { blockIndex: firstBlock.blockIndex },
+        end: { blockIndex: lastBlock.blockIndex },
       },
       reason: `验证 ${tags[index]} 试读片段`,
     };
@@ -176,7 +176,7 @@ const invalidTrialFragmentCases: Array<{
   {
     name: 'a position outside the candidate pool',
     mutate: (fragments) => fragments.map((fragment, index) => (
-      index === 0 ? { ...fragment, section_id: 'section-4' } : fragment
+      index === 0 ? { ...fragment, sectionId: 'section-4' } : fragment
     )),
   },
   {
@@ -191,7 +191,7 @@ const invalidTrialFragmentCases: Array<{
       index === 0
         ? {
             ...fragment,
-            range: { start: { block_index: 999 }, end: { block_index: 999 } },
+            range: { start: { blockIndex: 999 }, end: { blockIndex: 999 } },
           }
         : fragment
     )),
@@ -202,7 +202,7 @@ const invalidTrialFragmentCases: Array<{
       index === 1
         ? {
             ...fragment,
-            section_id: fragments[0]!.section_id,
+            sectionId: fragments[0]!.sectionId,
             segment: fragments[0]!.segment,
             range: fragments[0]!.range,
           }

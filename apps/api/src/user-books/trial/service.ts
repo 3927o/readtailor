@@ -480,8 +480,8 @@ export function createTrialService(options: TrialServiceOptions) {
       seenNodes: Set<string>,
     ): ProvisionalTrialSample => {
       const ordinal = fragment.tag === 'threshold' ? 1 : fragment.tag === 'typical' ? 2 : 3;
-      const key = `${fragment.section_id}:${fragment.segment}`;
-      const node = findNode(manifestIndex, fragment.section_id, fragment.segment);
+      const key = `${fragment.sectionId}:${fragment.segment}`;
+      const node = findNode(manifestIndex, fragment.sectionId, fragment.segment);
       if (
         !candidateKeys.has(key)
         || !node?.tailoringEligible
@@ -490,9 +490,9 @@ export function createTrialService(options: TrialServiceOptions) {
       ) {
         throw new UserBookError('试读片段选择不符合当前候选位置', 409);
       }
-      const source = extractNodeSourceFromHtml(html, fragment.section_id, fragment.segment);
+      const source = extractNodeSourceFromHtml(html, fragment.sectionId, fragment.segment);
       const resolved = resolveTrialFragmentRanges([fragment], [{
-        sectionId: fragment.section_id,
+        sectionId: fragment.sectionId,
         segment: fragment.segment,
         blocks: source.blocks.map((block) => ({ blockIndex: block.blockIndex, text: block.text })),
       }])[0]!;
@@ -505,7 +505,7 @@ export function createTrialService(options: TrialServiceOptions) {
       return {
         ordinal,
         tag: fragment.tag,
-        sectionId: fragment.section_id,
+        sectionId: fragment.sectionId,
         segment: fragment.segment,
         range,
         chapterPath: chapterPath(node, manifest.outline),
@@ -517,11 +517,11 @@ export function createTrialService(options: TrialServiceOptions) {
       const node = findNode(manifestIndex, candidate.sectionId, candidate.segment);
       const source = extractNodeSourceFromHtml(html, candidate.sectionId, candidate.segment);
       return {
-        section_id: candidate.sectionId,
+        sectionId: candidate.sectionId,
         segment: candidate.segment,
         title: node?.title ?? '',
-        tailoring_eligible: node?.tailoringEligible ?? false,
-        blocks: source.blocks.map((block) => ({ block_index: block.blockIndex, text: block.text })),
+        tailoringEligible: node?.tailoringEligible ?? false,
+        blocks: source.blocks.map((block) => ({ blockIndex: block.blockIndex, text: block.text })),
       };
     });
     let streamedEpoch = 0;

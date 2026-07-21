@@ -163,9 +163,9 @@ describe('createAgentReadingSetupEngine', () => {
       askedCount: 0,
       context: {
         trialNodeContents: [1, 2, 3].map((segment) => ({
-          section_id: 'chapter-1',
+          sectionId: 'chapter-1',
           segment,
-          blocks: [{ block_index: 1, text: `candidate-${segment}` }],
+          blocks: [{ blockIndex: 1, text: `candidate-${segment}` }],
         })),
       },
       onStream: (event) => events.push(event),

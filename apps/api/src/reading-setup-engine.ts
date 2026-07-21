@@ -173,17 +173,17 @@ function fakeSelectFragments(context: Record<string, unknown>): TrialFragmentSel
     const node = record(raw);
     const blocks = (Array.isArray(node.blocks) ? node.blocks : [])
       .map((block) => record(block))
-      .filter((block) => Number.isInteger(block.block_index));
+      .filter((block) => Number.isInteger(block.blockIndex));
     const first = blocks[0];
     const last = blocks.at(-1);
     if (!first || !last) throw new Error('fake select_trial candidate node has no blocks');
     return {
-      section_id: node.section_id as string,
+      sectionId: node.sectionId as string,
       segment: node.segment as number,
       tag: tags[ordinal]!,
       range: {
-        start: { block_index: first.block_index as number },
-        end: { block_index: last.block_index as number },
+        start: { blockIndex: first.blockIndex as number },
+        end: { blockIndex: last.blockIndex as number },
       },
       reason: reasons[ordinal]!,
     };

@@ -14,10 +14,10 @@ describe('resolveTrialFragmentRanges', () => {
 
   it('derives exact UTF-16 offsets from the selected source blocks', () => {
     expect(resolveTrialFragmentRanges([{
-      section_id: 'chapter-1',
+      sectionId: 'chapter-1',
       segment: 1,
       tag: 'typical',
-      range: { start: { block_index: 1 }, end: { block_index: 2 } },
+      range: { start: { blockIndex: 1 }, end: { blockIndex: 2 } },
       reason: '覆盖典型内容的处理效果。',
     }], nodes)).toEqual([{
       sectionId: 'chapter-1',
@@ -33,10 +33,10 @@ describe('resolveTrialFragmentRanges', () => {
 
   it('rejects a block range outside the candidate node', () => {
     expect(() => resolveTrialFragmentRanges([{
-      section_id: 'chapter-1',
+      sectionId: 'chapter-1',
       segment: 1,
       tag: 'hardest',
-      range: { start: { block_index: 2 }, end: { block_index: 9 } },
+      range: { start: { blockIndex: 2 }, end: { blockIndex: 9 } },
       reason: '覆盖较高难度内容的处理效果。',
     }], nodes)).toThrowError(UserBookError);
   });

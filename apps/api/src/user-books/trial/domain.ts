@@ -15,32 +15,32 @@ export function resolveTrialFragmentRanges(
 ): TrialCandidate[] {
   const nodesByKey = new Map(nodes.map((node) => [`${node.sectionId}\0${node.segment}`, node]));
   return fragments.map((fragment) => {
-    const node = nodesByKey.get(`${fragment.section_id}\0${fragment.segment}`);
+    const node = nodesByKey.get(`${fragment.sectionId}\0${fragment.segment}`);
     const blocksByIndex = new Map(node?.blocks.map((block) => [block.blockIndex, block]) ?? []);
-    const startBlock = blocksByIndex.get(fragment.range.start.block_index);
-    const endBlock = blocksByIndex.get(fragment.range.end.block_index);
+    const startBlock = blocksByIndex.get(fragment.range.start.blockIndex);
+    const endBlock = blocksByIndex.get(fragment.range.end.blockIndex);
     if (
       !node
       || !startBlock
       || !endBlock
-      || fragment.range.start.block_index > fragment.range.end.block_index
+      || fragment.range.start.blockIndex > fragment.range.end.blockIndex
     ) {
       throw new UserBookError('试读片段范围超出候选节点', 409);
     }
     if (
-      fragment.range.start.block_index === fragment.range.end.block_index
+      fragment.range.start.blockIndex === fragment.range.end.blockIndex
       && endBlock.text.length === 0
     ) {
       throw new UserBookError('试读片段范围为空', 409);
     }
     return {
-      sectionId: fragment.section_id,
+      sectionId: fragment.sectionId,
       segment: fragment.segment,
       reason: fragment.reason,
       tag: fragment.tag,
       range: {
-        start: { blockIndex: fragment.range.start.block_index, offset: 0 },
-        end: { blockIndex: fragment.range.end.block_index, offset: endBlock.text.length },
+        start: { blockIndex: fragment.range.start.blockIndex, offset: 0 },
+        end: { blockIndex: fragment.range.end.blockIndex, offset: endBlock.text.length },
       },
     };
   });

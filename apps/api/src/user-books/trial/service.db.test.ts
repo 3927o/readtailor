@@ -60,21 +60,21 @@ const unusedSetupEngine: ReadingSetupEngine = {
 };
 
 type TrialNodeContent = {
-  section_id: string;
+  sectionId: string;
   segment: number;
-  blocks: Array<{ block_index: number; text: string }>;
+  blocks: Array<{ blockIndex: number; text: string }>;
 };
 
 function fragments(input: Parameters<ReadingSetupEngine['runTurn']>[0]): TrialFragmentSelection[] {
   const nodes = input.context.trialNodeContents as TrialNodeContent[];
   const tags = ['threshold', 'typical', 'hardest'] as const;
   return nodes.map((node, index) => ({
-    section_id: node.section_id,
+    sectionId: node.sectionId,
     segment: node.segment,
     tag: tags[index]!,
     range: {
-      start: { block_index: node.blocks[0]!.block_index },
-      end: { block_index: node.blocks.at(-1)!.block_index },
+      start: { blockIndex: node.blocks[0]!.blockIndex },
+      end: { blockIndex: node.blocks.at(-1)!.blockIndex },
     },
     reason: `验证 ${tags[index]}`,
   }));
