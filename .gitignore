@@ -22,3 +22,6 @@ packages/database/rt-*.mjs
 
 # 本地预置书籍 EPUB，不入库
 fixtures/preset/
+
+.codex/
+.claude/
