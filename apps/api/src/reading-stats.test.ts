@@ -164,19 +164,31 @@ describe('reading activity slices', () => {
       [1, {
         sectionId: 'chapter-1',
         segment: 1,
+        order: 1,
         region: 'bodymatter',
         dataType: 'chapter',
-        nodeStart: 0,
-        charCount: 200,
+        title: '第一章',
+        parentSectionId: null,
+        characterCount: 200,
+        blockCount: 1,
+        tailoringEligible: true,
+        exclusionReason: null,
+        nodeAbsoluteStart: 0,
         blocks: [{ blockIndex: 1, kind: 'p', blockAbsoluteStart: 0, blockUtf16Length: 200 }],
       }],
       [2, {
         sectionId: 'chapter-2',
         segment: 1,
+        order: 2,
         region: 'bodymatter',
         dataType: 'chapter',
-        nodeStart: 200,
-        charCount: 100,
+        title: '第二章',
+        parentSectionId: null,
+        characterCount: 100,
+        blockCount: 1,
+        tailoringEligible: true,
+        exclusionReason: null,
+        nodeAbsoluteStart: 200,
         blocks: [{ blockIndex: 1, kind: 'p', blockAbsoluteStart: 200, blockUtf16Length: 100 }],
       }],
     ]),
@@ -204,6 +216,104 @@ describe('reading activity slices', () => {
       classification: 'original_forward',
       forwardSeconds: 15,
       forwardChars: 120,
+    });
+  });
+
+  it('uses canonical UTF-16 offsets across blocks', () => {
+    const firstBlock = '甲😀乙';
+    const secondBlock = '结尾';
+    const utf16Meta: ManifestMeta = {
+      version: 'v1',
+      language: 'zh',
+      bookTotalChars: firstBlock.length + secondBlock.length,
+      charCountByOrder: new Map([[1, firstBlock.length + secondBlock.length]]),
+      nodesByOrder: new Map([[1, {
+        sectionId: 'chapter-1',
+        segment: 1,
+        order: 1,
+        region: 'bodymatter',
+        dataType: 'chapter',
+        title: '第一章',
+        parentSectionId: null,
+        characterCount: firstBlock.length + secondBlock.length,
+        blockCount: 2,
+        tailoringEligible: true,
+        exclusionReason: null,
+        nodeAbsoluteStart: 0,
+        blocks: [
+          { blockIndex: 1, kind: 'p', blockAbsoluteStart: 0, blockUtf16Length: firstBlock.length },
+          { blockIndex: 2, kind: 'p', blockAbsoluteStart: firstBlock.length, blockUtf16Length: secondBlock.length },
+        ],
+      }]]),
+    };
+    expect(classifyReadingActivitySlice(utf16Meta, {
+      ...base,
+      startPosition: { ...base.startPosition, blockIndex: 1, offset: 1 },
+      endPosition: { ...base.endPosition, blockIndex: 2, offset: 1 },
+    }, 15)).toEqual({
+      classification: 'original_forward',
+      forwardSeconds: 15,
+      forwardChars: firstBlock.length,
+    });
+    expect(classifyReadingActivitySlice(utf16Meta, {
+      ...base,
+      startPosition: { ...base.startPosition, blockIndex: 1, offset: firstBlock.length },
+      endPosition: { ...base.endPosition, blockIndex: 2, offset: 0 },
+    }, 15)).toEqual({
+      classification: 'stationary',
+      forwardSeconds: 0,
+      forwardChars: 0,
+    });
+  });
+
+  it('uses whole-book offsets across nodes and clamps oversized offsets', () => {
+    expect(classifyReadingActivitySlice(meta, {
+      ...base,
+      startPosition: { ...base.startPosition, offset: 190 },
+      endPosition: { order: 2, sectionId: 'chapter-2', segment: 1, blockIndex: 1, offset: 10 },
+    }, 15)).toEqual({
+      classification: 'original_forward',
+      forwardSeconds: 15,
+      forwardChars: 20,
+    });
+    expect(classifyReadingActivitySlice(meta, {
+      ...base,
+      endPosition: { ...base.endPosition, offset: 999 },
+    }, 15)).toEqual({
+      classification: 'original_forward',
+      forwardSeconds: 15,
+      forwardChars: 200,
+    });
+  });
+
+  it('keeps invalid positions out of the speed sample', () => {
+    expect(classifyReadingActivitySlice(meta, {
+      ...base,
+      endPosition: { ...base.endPosition, blockIndex: 99 },
+    }, 15)).toEqual({
+      classification: 'stationary',
+      forwardSeconds: 0,
+      forwardChars: 0,
+    });
+    expect(classifyReadingActivitySlice(meta, {
+      ...base,
+      endPosition: { ...base.endPosition, sectionId: 'chapter-2' },
+    }, 15)).toEqual({
+      classification: 'stationary',
+      forwardSeconds: 0,
+      forwardChars: 0,
+    });
+  });
+
+  it('keeps backward movement classified as rereading', () => {
+    expect(classifyReadingActivitySlice(meta, {
+      ...base,
+      startPosition: { ...base.startPosition, offset: 120 },
+      endPosition: { ...base.endPosition, offset: 20 },
+    }, 15)).toEqual({
+      classification: 'original_reread',
+      forwardSeconds: 0,
+      forwardChars: 0,
     });
   });
 

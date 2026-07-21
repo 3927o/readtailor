@@ -83,14 +83,15 @@ import {
   TAILORING_PROMPT_VERSION,
 } from '@readtailor/tailoring';
 import {
+  absoluteCharacterOffsetForPoint,
   compareBlockPoints,
   createManifestIndex,
+  findBlock,
   findNode,
   quoteFromBlocks as quoteFromCanonicalBlocks,
   validateRangeAgainstBlocks,
   type ManifestIndex,
   type ReadingManifest,
-  type ReadingManifestBlock,
   type ReadingManifestNode,
   type ReadingManifestOutlineItem,
 } from '@readtailor/reader-core';
@@ -250,13 +251,17 @@ function positionAbsoluteChar(
 ): number | null {
   const node = meta.nodesByOrder.get(position.order);
   if (!node || node.sectionId !== position.sectionId || node.segment !== position.segment) return null;
-  if (node.blocks.length === 0) {
-    return node.nodeStart + Math.min(Math.max(0, position.offset), node.charCount);
-  }
-  const block = node.blocks.find((item) => item.blockIndex === position.blockIndex);
+  const block = findBlock(node, position.blockIndex);
   if (!block) return null;
   const inBlock = Math.min(Math.max(0, position.offset), block.blockUtf16Length);
-  return block.blockAbsoluteStart + inBlock;
+  try {
+    return absoluteCharacterOffsetForPoint(node, {
+      blockIndex: position.blockIndex,
+      offset: inBlock,
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function classifyReadingActivitySlice(
@@ -479,16 +484,6 @@ export function applyReaderProfilePatch(
   };
 }
 
-interface ManifestMetaNode {
-  sectionId: string;
-  segment: number;
-  region: string | null;
-  dataType: string | null;
-  nodeStart: number;
-  charCount: number;
-  blocks: ReadingManifestBlock[];
-}
-
 // The manifest is immutable per (immutable) book package, so memoize its position-relevant metadata
 // per process. The position-save path (§11.5) stamps `version` onto every reader_states row for
 // future migration识别 and validates the reported `order` against `nodesByOrder` (§4.3) — but it runs
@@ -501,7 +496,7 @@ export interface ManifestMeta {
   language: string | null;
   bookTotalChars: number | null;
   charCountByOrder: Map<number, number>;
-  nodesByOrder: Map<number, ManifestMetaNode>;
+  nodesByOrder: Map<number, ReadingManifestNode>;
 }
 
 // §2.2/§4.3: an anchor is self-consistent only when the manifest node it names by `order` really
@@ -535,18 +530,10 @@ async function getManifestMeta(books: BookService, sharedBookId: string): Promis
     const manifest = await books.getManifest(sharedBookId);
     if (!manifest) return empty();
     const manifestIndex = createManifestIndex(manifest);
-    const nodesByOrder = new Map<number, ManifestMetaNode>();
+    const nodesByOrder = new Map<number, ReadingManifestNode>();
     const charCountByOrder = new Map<number, number>();
     for (const [order, node] of manifestIndex.nodeByOrder) {
-      nodesByOrder.set(order, {
-        sectionId: node.sectionId,
-        segment: node.segment,
-        region: node.region,
-        dataType: node.dataType,
-        nodeStart: node.nodeAbsoluteStart,
-        charCount: node.characterCount,
-        blocks: node.blocks,
-      });
+      nodesByOrder.set(order, node);
       charCountByOrder.set(order, node.characterCount);
     }
     meta = {
