@@ -1,6 +1,8 @@
 import type { Highlight, ReaderNode, ReaderOutlineItem } from './api';
 import type { TailoredAnnotation, TextRange } from '../user-books/api';
 import {
+  blockPointsEqual,
+  normalizeBlockRange,
   quoteFromBlocks,
   validateCanonicalBlocks,
   validateCanonicalBlocksAgainstManifestNode,
@@ -481,11 +483,9 @@ export function rangeFromSelection(contentRoot: HTMLElement, range: Range): Text
   if (!a || !b) return null;
   // A DOM Range's endpoints are already in document order, but normalize defensively; a collapsed
   // range (same block + offset) is a caret, not a highlight.
-  const forward = a.blockIndex < b.blockIndex || (a.blockIndex === b.blockIndex && a.offset <= b.offset);
-  const start = forward ? a : b;
-  const end = forward ? b : a;
-  if (start.blockIndex === end.blockIndex && start.offset === end.offset) return null;
-  return { start, end };
+  const normalized = normalizeBlockRange({ start: a, end: b });
+  if (blockPointsEqual(normalized.start, normalized.end)) return null;
+  return normalized;
 }
 
 // A resolved reading anchor discovered from the live DOM: which content root / block / offset the

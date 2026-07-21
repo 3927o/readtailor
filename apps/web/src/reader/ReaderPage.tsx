@@ -4,6 +4,11 @@ import { flushSync } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router';
 import type { Briefing } from '@readtailor/contracts';
+import {
+  blockPointsEqual,
+  blockRangesEqual,
+  normalizeBlockRange,
+} from '@readtailor/reader-core';
 import { ProgressBar } from '../components/chrome/ProgressBar';
 import { Segmented } from '../components/core/Segmented';
 import { Slider } from '../components/core/Slider';
@@ -152,13 +157,6 @@ function readCachedSettings(): ReaderSettings | null {
 function contentRootOf(node: Node): HTMLElement | null {
   const element = node instanceof Element ? node : node.parentElement;
   return element?.closest<HTMLElement>('.reader-original') ?? null;
-}
-
-function sameTextRange(left: NodeRange, right: NodeRange): boolean {
-  return left.start.blockIndex === right.start.blockIndex
-    && left.start.offset === right.start.offset
-    && left.end.blockIndex === right.end.blockIndex
-    && left.end.offset === right.end.offset;
 }
 
 function samePopoverPlacement(left: PopoverPlacement, right: PopoverPlacement): boolean {
@@ -738,7 +736,7 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
       if (contentRootOf(liveRange.startContainer) === contentRoot
         && contentRootOf(liveRange.endContainer) === contentRoot) {
         const liveTextRange = rangeFromSelection(contentRoot, liveRange);
-        if (liveTextRange && sameTextRange(liveTextRange, selectionDraft.range)) return;
+        if (liveTextRange && blockRangesEqual(liveTextRange, selectionDraft.range)) return;
       }
     }
     const domRange = domRangeForReaderRange(contentRoot, selectionDraft.range);
@@ -1284,10 +1282,8 @@ function Reader({ document }: { document: Awaited<ReturnType<typeof getReaderDoc
     ) ?? focusAnchor;
     const top = { blockIndex: topAnchor.blockIndex, offset: topAnchor.offset };
     const bottom = { blockIndex: bottomAnchor.blockIndex, offset: bottomAnchor.offset };
-    const topFirst = top.blockIndex < bottom.blockIndex
-      || (top.blockIndex === bottom.blockIndex && top.offset <= bottom.offset);
-    let range: NodeRange | undefined = { start: topFirst ? top : bottom, end: topFirst ? bottom : top };
-    if (range.start.blockIndex === range.end.blockIndex && range.start.offset === range.end.offset) {
+    let range: NodeRange | undefined = normalizeBlockRange({ start: top, end: bottom });
+    if (blockPointsEqual(range.start, range.end)) {
       const blocks = readingBlocks(focusAnchor.root);
       const block = blocks[focusAnchor.blockIndex - 1];
       const length = block ? readerBlockLength(block) : 0;

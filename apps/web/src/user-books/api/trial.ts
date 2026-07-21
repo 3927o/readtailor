@@ -1,8 +1,10 @@
 import type {
+  TextRange,
   TrialReviewResponse,
   TrialSegment,
   TrialSelectionStreamEvent,
 } from '@readtailor/contracts';
+export type { TextPosition, TextRange } from '@readtailor/contracts';
 import { postJsonSse } from '../sse';
 import {
   getJson,
@@ -15,16 +17,6 @@ import {
   streamStrategyRevisionRequest,
   type StrategyRevisionStreamHandlers,
 } from './strategy';
-
-export interface TextPosition {
-  blockIndex: number;
-  offset: number;
-}
-
-export interface TextRange {
-  start: TextPosition;
-  end: TextPosition;
-}
 
 export interface TailoredAnnotation {
   id: string;

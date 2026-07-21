@@ -124,6 +124,28 @@ describe('rangeFromSelection', () => {
     root.remove();
   });
 
+  it('normalizes forward and reversed cross-block endpoints in UTF-16 coordinates', () => {
+    const root = contentRoot('<p>甲😀乙</p><p>丁戊</p>');
+    const [first, second] = [...root.querySelectorAll('p')].map((block) => block.firstChild as Text);
+    const forward = document.createRange();
+    forward.setStart(first!, 1);
+    forward.setEnd(second!, 1);
+    const reversed = {
+      startContainer: second!,
+      startOffset: 1,
+      endContainer: first!,
+      endOffset: 1,
+    } as unknown as Range;
+    const expected = {
+      start: { blockIndex: 1, offset: 1 },
+      end: { blockIndex: 2, offset: 1 },
+    };
+
+    expect(rangeFromSelection(root, forward)).toEqual(expected);
+    expect(rangeFromSelection(root, reversed)).toEqual(expected);
+    root.remove();
+  });
+
   it('rebuilds a selection across inline seams without changing its logical range', () => {
     const root = contentRoot('<p>甲<strong>关键</strong>乙</p>');
     const strongText = root.querySelector('strong')!.firstChild as Text;
