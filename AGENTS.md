@@ -10,6 +10,7 @@
 - Build a shared system model before descending into code details. Make clear whether a change affects externally observable behavior, data or contracts, failure handling, or only the internal implementation, so the project owner can make a technical decision without reconstructing the business meaning from code identifiers.
 - Ask the project owner promptly whenever requirements, constraints, or expected behavior are unclear and could materially affect the implementation; do not proceed based on unsupported assumptions.
 - When editing a document, interpret the project owner's statement that an existing point does not need changing as a request to leave that part alone, rather than adding an unnecessary sentence that calls out its unchanged status. Apply this with reasonable contextual judgment instead of treating it as a rigid rule.
+- When reviewing code or documents, raise only substantive, actionable issues with a meaningful impact; do not manufacture findings from personal preferences, harmless wording differences, or inconsequential details.
 
 ## Sub-Agent Usage
 
@@ -28,6 +29,7 @@
 ## Engineering Quality
 
 - Do not satisfy a requirement through architecturally unsound shortcuts, fragile workarounds, duplicated or accumulating technical debt, or by merely shifting the problem elsewhere; implement a solution that fits the existing design and addresses the root cause.
+- Do not introduce unnecessary code or engineering complexity through excessive defensive programming; keep safeguards proportionate to realistic risks, established contracts, and the system's actual requirements.
 
 ## UI And Interaction Acceptance
 
