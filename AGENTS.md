@@ -9,6 +9,7 @@
 - Communicate with the project owner at the technical-lead and system-decision level. Translate implementation details into the affected business capability, data flow, and module boundary, then explain the trigger, the system's handling, and the observable impact. Treat file names, functions, and variables as supporting evidence or engineering locators rather than the main narrative.
 - Build a shared system model before descending into code details. Make clear whether a change affects externally observable behavior, data or contracts, failure handling, or only the internal implementation, so the project owner can make a technical decision without reconstructing the business meaning from code identifiers.
 - Ask the project owner promptly whenever requirements, constraints, or expected behavior are unclear and could materially affect the implementation; do not proceed based on unsupported assumptions.
+- When editing a document, interpret the project owner's statement that an existing point does not need changing as a request to leave that part alone, rather than adding an unnecessary sentence that calls out its unchanged status. Apply this with reasonable contextual judgment instead of treating it as a rigid rule.
 
 ## Sub-Agent Usage
 
