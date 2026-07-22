@@ -30,6 +30,7 @@
 
 - Do not satisfy a requirement through architecturally unsound shortcuts, fragile workarounds, duplicated or accumulating technical debt, or by merely shifting the problem elsewhere; implement a solution that fits the existing design and addresses the root cause.
 - Do not introduce unnecessary code or engineering complexity through excessive defensive programming; keep safeguards proportionate to realistic risks, established contracts, and the system's actual requirements.
+- Source files must include at least a file-level comment explaining the file's responsibility; large files must also include module-level comments that explain their major modules or logical sections.
 
 ## UI And Interaction Acceptance
 
