@@ -5,6 +5,19 @@ import {
   type BlockPoint,
   type BlockRange,
 } from '@readtailor/reader-core';
+import {
+  BriefingSchema,
+  READING_STRATEGY_CORE_FIELDS,
+} from './reading-setup';
+
+export {
+  BookReaderProfileSchema,
+  BriefingSchema,
+  ProposedStrategySchema,
+  type BookReaderProfile,
+  type Briefing,
+  type ProposedStrategy,
+} from './reading-setup';
 
 export const UuidSchema = Type.String({
   pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
@@ -297,16 +310,6 @@ export const ReaderProfileVersionSchema = Type.Object({
 });
 export type ReaderProfileVersion = Static<typeof ReaderProfileVersionSchema>;
 
-export const BookReaderProfileSchema = Type.Object({
-  purpose: Type.String({ minLength: 1 }),
-  existingKnowledge: Type.Array(Type.String({ minLength: 1 })),
-  desiredDepthOrOutcome: Type.String({ minLength: 1 }),
-  likelyObstacles: Type.Array(Type.String({ minLength: 1 })),
-  expectedCommitment: Type.String({ minLength: 1 }),
-  otherConclusions: Type.Array(Type.String({ minLength: 1 })),
-});
-export type BookReaderProfile = Static<typeof BookReaderProfileSchema>;
-
 export const InterviewSessionStatusSchema = Type.Union([
   Type.Literal('active'),
   Type.Literal('completed'),
@@ -409,51 +412,11 @@ const READING_NODE_PREVIEW_FIELDS = {
 export const ReadingNodePreviewSchema = Type.Object(READING_NODE_PREVIEW_FIELDS);
 export type ReadingNodePreview = Static<typeof ReadingNodePreviewSchema>;
 
-// The tailoring core shared by the full setup Strategy (which adds trialCandidates) and the
-// Q&A ProposedStrategy (§8.2 — a mid-reading adjustment has no trial phase). Camel-cased
-// persistence shape; the host projects the agent's snake_case output onto it (see mapStrategy).
-const STRATEGY_CORE = {
-  goals: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-  expressionPrinciples: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-  guide: Type.Object({
-    enabled: Type.Boolean(),
-    objectives: Type.Array(Type.String({ minLength: 1 })),
-  }),
-  annotations: Type.Object({
-    enabled: Type.Boolean(),
-    focuses: Type.Array(Type.String({ minLength: 1 })),
-    exclusions: Type.Array(Type.String({ minLength: 1 })),
-  }),
-  afterReading: Type.Object({
-    enabled: Type.Boolean(),
-    objectives: Type.Array(Type.String({ minLength: 1 })),
-  }),
-};
-
 export const StrategySchema = Type.Object({
-  ...STRATEGY_CORE,
+  ...READING_STRATEGY_CORE_FIELDS,
   trialCandidates: Type.Array(TrialCandidateSchema, { minItems: 3, maxItems: 3 }),
 });
 export type Strategy = Static<typeof StrategySchema>;
-
-// The pre-reading briefing is a small structured object rendered as labelled sections
-// (design-system BriefCard): what the book is, how it unfolds, what it assumes you know,
-// and a personalised how-to-read note. Fields are lenient here (read side) so briefings
-// migrated from the legacy free-text column — which land wholly in `bookIdentity` with the
-// other three empty — still validate and render; the agent enforces per-field brevity on write.
-export const BriefingSchema = Type.Object({
-  bookIdentity: Type.String(),
-  arc: Type.String(),
-  assumedKnowledge: Type.String(),
-  readingAdvice: Type.String(),
-});
-export type Briefing = Static<typeof BriefingSchema>;
-
-// A reading-strategy change proposed by the 问 AI Agent mid-reading (§8.2): the setup
-// Strategy without trialCandidates. Persisted in strategy_change_proposals.proposed_strategy
-// until the user confirms it, at which point the host promotes it to a strategy_versions row.
-export const ProposedStrategySchema = Type.Object(STRATEGY_CORE);
-export type ProposedStrategy = Static<typeof ProposedStrategySchema>;
 
 // 问 AI 会话状态 (§8): a session is one question thread (initial + follow-ups); it stays
 // `active` while the user can keep asking, and is `closed` once the thread is abandoned/ended.
@@ -1732,3 +1695,5 @@ export type UserBookDetail = Static<typeof UserBookDetailSchema>;
 
 export const UserBookDetailResponseSchema = UserBookDetailSchema;
 export type UserBookDetailResponse = UserBookDetail;
+
+export * from './agent-driven-reading-setup';

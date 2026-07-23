@@ -283,7 +283,7 @@ describePostgres(`interview service${skipReason}`, () => {
             .from(userBooks)
             .where(eq(userBooks.id, graph.userBookId));
           expect(book?.workflowStatus).toBe('strategy_review');
-        });
+        }, { timeout: 30_000, interval: 100 });
       },
     });
     const input = {
@@ -294,7 +294,10 @@ describePostgres(`interview service${skipReason}`, () => {
     };
 
     const first = collect(service.streamAnswer(graph.userBookId, input));
-    await vi.waitFor(() => expect(runTurn).toHaveBeenCalledOnce());
+    await vi.waitFor(
+      () => expect(runTurn).toHaveBeenCalledOnce(),
+      { timeout: 30_000, interval: 100 },
+    );
     const replay = collect(service.streamAnswer(graph.userBookId, input));
     const [firstEvents, replayEvents] = await Promise.all([first, replay]);
 

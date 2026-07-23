@@ -200,10 +200,11 @@ describePostgres(`interview completion checkpoint store${skipReason}`, () => {
       db,
       claim: { ...graph.claim, leaseId: replacementLeaseId },
     });
-    expect(await replacementStore.load()).toMatchObject({
+    const replacementSnapshot = await replacementStore.load();
+    expect(replacementSnapshot).toMatchObject({
       completionId: expect.any(String),
-      briefing: undefined,
     });
+    expect(replacementSnapshot.briefing).toBeUndefined();
 
     await db
       .update(interviewSessions)

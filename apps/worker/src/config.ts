@@ -16,7 +16,12 @@ import {
 // The queue consumers this worker binary knows how to run. A process starts a consumer only
 // when its kind is selected via WORKER_QUEUES *and* its dependencies are configured — the two
 // gates compose, so you can run dedicated pools (e.g. a content-generation-only fleet).
-export const WORKER_QUEUE_KINDS = ['system', 'normalization', 'content-generation'] as const;
+export const WORKER_QUEUE_KINDS = [
+  'system',
+  'normalization',
+  'content-generation',
+  'agent-run',
+] as const;
 export type WorkerQueueKind = (typeof WORKER_QUEUE_KINDS)[number];
 
 export function allEnabledQueuesActive(
@@ -87,6 +92,7 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
     // conservative base so bumping it never fans out normalization. Safe now that the publish
     // path serializes with a row lock (tailoring/job.ts §6.3).
     contentGenerationConcurrency: readInteger(env, 'CONTENT_GENERATION_CONCURRENCY', 5, { min: 1 }),
+    agentRunConcurrency: readInteger(env, 'AGENT_RUN_CONCURRENCY', concurrency, { min: 1 }),
     queues: readEnumList(env, 'WORKER_QUEUES', WORKER_QUEUE_KINDS, WORKER_QUEUE_KINDS),
     redisUrl: readOptionalString(env, 'REDIS_URL'),
     databaseUrl: readOptionalString(env, 'DATABASE_URL'),
@@ -97,6 +103,7 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
     normalizationModel: readModelEndpoint(env, 'NORMALIZATION'),
     analysisModel: readModelEndpoint(env, 'BOOK_ANALYSIS', 'NORMALIZATION'),
     contentGenerationModel: readModelEndpoint(env, 'CONTENT_GENERATION'),
+    readingSetupModel: readModelEndpoint(env, 'READING_SETUP'),
     objectStorageLocalRoot: readOptionalString(env, 'OBJECT_STORAGE_LOCAL_ROOT'),
     objectStorageEndpoint: readOptionalString(env, 'OBJECT_STORAGE_ENDPOINT'),
     objectStorageRegion: readOptionalString(env, 'OBJECT_STORAGE_REGION'),

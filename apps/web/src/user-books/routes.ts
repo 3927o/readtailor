@@ -5,6 +5,7 @@ export function routeForWorkflow(userBookId: string, workflowStatus: UserBookWor
   const root = `/user-books/${encodeURIComponent(userBookId)}`;
   switch (workflowStatus) {
     case 'on_shelf':
+      return `${root}/reading-setup`;
     case 'interviewing':
       return `${root}/interview`;
     case 'strategy_review':

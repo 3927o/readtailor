@@ -1,3 +1,5 @@
+/** Builds production API dependencies and starts the HTTP server. */
+
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { requireCompleteModelEndpoint } from '@readtailor/config';
@@ -6,6 +8,8 @@ import { createFakeModelEngine, createOpenAiCompatibleEngine } from '@readtailor
 import { createLogger, createPerfSink } from '@readtailor/observability';
 import {
   createContentGenerationQueue,
+  createAgentRunObserver,
+  createAgentRunQueue,
   createNormalizationQueue,
   createSystemQueue,
   pingSystemQueue,
@@ -26,6 +30,14 @@ import {
 } from './reading-setup-engine';
 import { createAgentAskAiEngine } from './ask-ai-engine';
 import { createUserBookService } from './user-books';
+import {
+  createAgentDrivenReadingSetupService,
+} from './agent-driven-reading-setup';
+import {
+  READING_SETUP_AGENT_PROMPT_VERSION,
+  READING_SETUP_AGENT_SYSTEM_PROMPT,
+} from '@readtailor/agent-kit/reading-setup';
+import { createAgentSessionState } from '@readtailor/agent-kit/runtime';
 
 const config = loadApiConfig();
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -60,6 +72,8 @@ const normalizationQueue = config.redisUrl ? createNormalizationQueue(config.red
 const contentGenerationQueue = config.redisUrl
   ? createContentGenerationQueue(config.redisUrl)
   : undefined;
+const agentRunQueue = config.redisUrl ? createAgentRunQueue(config.redisUrl) : undefined;
+const agentRunObserver = config.redisUrl ? createAgentRunObserver(config.redisUrl) : undefined;
 const objectStorage = createObjectStorage({
   localRoot: config.objectStorageLocalRoot
     ? resolve(repoRoot, config.objectStorageLocalRoot)
@@ -174,6 +188,22 @@ const userBooks =
       })
     : undefined;
 
+const agentDrivenReadingSetup =
+  database && books && agentRunQueue && agentRunObserver && readingSetupEndpoint
+    ? createAgentDrivenReadingSetupService({
+        db: database.db,
+        books,
+        queue: agentRunQueue,
+        observer: agentRunObserver,
+        initialState: () =>
+          createAgentSessionState({
+            systemPrompt: READING_SETUP_AGENT_SYSTEM_PROMPT,
+            modelConfigId: `${readingSetupEndpoint.modelName}:${READING_SETUP_AGENT_PROMPT_VERSION}`,
+            thinkingLevel: 'medium',
+          }),
+      })
+    : undefined;
+
 const healthProbes: Record<string, () => Promise<void>> = {};
 if (database) {
   healthProbes.database = async () => {
@@ -201,6 +231,7 @@ const app = await buildApp(config, {
   auth,
   profiles,
   perfSink,
+  agentDrivenReadingSetup,
 });
 
 app.log.info({ model: modelEngine.name }, 'model engine ready');
@@ -224,6 +255,11 @@ if (!userBooks) {
     'user book workflow disabled: DATABASE_URL, REDIS_URL and object storage are required',
   );
 }
+if (!agentDrivenReadingSetup) {
+  app.log.warn(
+    'agent-driven reading setup disabled: DATABASE_URL, REDIS_URL, object storage and reading setup model are required',
+  );
+}
 if (!auth) {
   app.log.warn('authentication disabled: DATABASE_URL and AUTH_COOKIE_SECRET are required');
 }
@@ -236,6 +272,8 @@ const shutdown = async (signal: string) => {
   await systemQueue?.close();
   await normalizationQueue?.close();
   await contentGenerationQueue?.close();
+  await agentRunObserver?.close();
+  await agentRunQueue?.close();
   await database?.client.end({ timeout: 5 });
   process.exit(0);
 };

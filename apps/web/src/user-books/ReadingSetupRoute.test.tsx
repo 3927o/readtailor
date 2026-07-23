@@ -180,7 +180,7 @@ describe('ReadingSetupRoute', () => {
 
 describe('routeForWorkflow', () => {
   it.each([
-    ['on_shelf', 'interview'],
+    ['on_shelf', 'reading-setup'],
     ['interviewing', 'interview'],
     ['strategy_review', 'strategy'],
     ['trial_generating', 'trial'],

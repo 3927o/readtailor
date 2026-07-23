@@ -1,3 +1,5 @@
+/** Legacy aggregate entry point for established domain Agent APIs. */
+
 import {
   Agent,
   type AgentEvent,

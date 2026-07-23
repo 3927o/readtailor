@@ -1,6 +1,6 @@
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
-import { readingSetupOperations } from './schema';
+import { readingSetupSessions, readingSetupOperations } from './schema';
 
 describe('readingSetupOperations schema', () => {
   const config = getTableConfig(readingSetupOperations);
@@ -74,5 +74,23 @@ describe('readingSetupOperations schema', () => {
       ]),
     );
     expect(config.foreignKeys).toHaveLength(5);
+  });
+});
+
+describe('readingSetupSessions schema', () => {
+  it('contains only the session identity, full state, active run fence and timestamps', () => {
+    const config = getTableConfig(readingSetupSessions);
+    expect(config.columns.map((column) => column.name)).toEqual([
+      'id',
+      'user_book_id',
+      'agent_state',
+      'active_run_id',
+      'created_at',
+      'updated_at',
+    ]);
+    expect(config.columns.map((column) => column.name)).not.toContain('version');
+    expect(config.indexes).toEqual([
+      expect.objectContaining({ config: expect.objectContaining({ unique: true }) }),
+    ]);
   });
 });

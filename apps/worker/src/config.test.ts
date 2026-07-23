@@ -8,6 +8,7 @@ describe('loadWorkerConfig', () => {
         system: true,
         normalization: false,
         'content-generation': true,
+        'agent-run': true,
       }),
     ).toBe(false);
     expect(
@@ -15,6 +16,7 @@ describe('loadWorkerConfig', () => {
         system: true,
         normalization: false,
         'content-generation': false,
+        'agent-run': false,
       }),
     ).toBe(true);
   });
@@ -52,6 +54,7 @@ describe('loadWorkerConfig', () => {
       'system',
       'normalization',
       'content-generation',
+      'agent-run',
     ]);
   });
 

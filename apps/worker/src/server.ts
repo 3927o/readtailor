@@ -8,6 +8,7 @@ import { createFakeModelEngine, createOpenAiCompatibleEngine } from '@readtailor
 import { createLogger, createPerfSink } from '@readtailor/observability';
 import {
   createContentGenerationWorker,
+  createAgentRunWorker,
   createNormalizationWorker,
   createSystemWorker,
 } from '@readtailor/queue';
@@ -16,6 +17,9 @@ import { allEnabledQueuesActive, loadWorkerConfig } from './config';
 import { executeNormalizationRun } from './normalization/job';
 import { reconcileOrphanedNormalizationRuns } from './normalization/reconcile';
 import { executeContentGeneration, failContentGeneration } from './tailoring/job';
+import { executeAgentRun, failAgentRun } from './agent-run/job';
+import { createAgentHandlerRegistry } from './agent-run/registry';
+import { createReadingSetupAgentHandler } from './agent-run/reading-setup-handler';
 
 const config = loadWorkerConfig();
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -171,6 +175,38 @@ const contentGenerationWorker =
       })
     : undefined;
 
+const agentDrivenReadingSetupEndpoint = requireCompleteModelEndpoint(
+  config.readingSetupModel,
+  'agent-driven-reading-setup',
+);
+const agentRunRegistry =
+  database && objectStorage && agentDrivenReadingSetupEndpoint
+    ? createAgentHandlerRegistry([
+        createReadingSetupAgentHandler({
+          db: database.db,
+          storage: objectStorage,
+          apiBaseUrl: agentDrivenReadingSetupEndpoint.baseUrl,
+          apiKey: agentDrivenReadingSetupEndpoint.apiKey,
+          modelName: agentDrivenReadingSetupEndpoint.modelName,
+          tailoringModel: contentModel,
+        }),
+      ])
+    : undefined;
+const agentRunWorker =
+  config.redisUrl && database && agentRunRegistry && enabledQueues.has('agent-run')
+    ? createAgentRunWorker({
+        redisUrl: config.redisUrl,
+        concurrency: config.agentRunConcurrency,
+        logger,
+        handler: async (job) => {
+          await executeAgentRun({ registry: agentRunRegistry, job });
+        },
+        onTerminalFailure: async (job, error) => {
+          await failAgentRun({ registry: agentRunRegistry, job, error });
+        },
+      })
+    : undefined;
+
 // Only warn about missing dependencies for queues this process was actually asked to run;
 // a queue left out of WORKER_QUEUES is disabled on purpose, not misconfigured.
 if (enabledQueues.has('system') && !queueWorker) {
@@ -186,10 +222,15 @@ if (enabledQueues.has('content-generation') && !contentGenerationWorker) {
     'content generation queue consumer disabled: Redis, database and object storage are required',
   );
 }
+if (enabledQueues.has('agent-run') && !agentRunWorker) {
+  logger.warn(
+    'agent run consumer disabled: Redis, database, object storage and reading setup model are required',
+  );
+}
 
 // Health/connection status follows whichever consumer this process runs (they share one Redis),
 // so a content-generation-only pool still reports ready without the system queue.
-const healthWorker = queueWorker ?? normalizationWorker ?? contentGenerationWorker;
+const healthWorker = queueWorker ?? normalizationWorker ?? contentGenerationWorker ?? agentRunWorker;
 let queueStatus: QueueStatus = !config.redisUrl
   ? 'not_configured'
   : !database
@@ -202,6 +243,7 @@ const activeConsumers = {
   system: Boolean(queueWorker),
   normalization: Boolean(normalizationWorker),
   'content-generation': Boolean(contentGenerationWorker),
+  'agent-run': Boolean(agentRunWorker),
 };
 
 logger.info(
@@ -316,6 +358,7 @@ const shutdown = async (signal: string) => {
   await queueWorker?.close();
   await normalizationWorker?.close();
   await contentGenerationWorker?.close();
+  await agentRunWorker?.close();
   await app.close();
   await database?.client.end({ timeout: 5 });
   process.exit(0);

@@ -15,6 +15,7 @@ import {
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import type {
+  AgentSessionState,
   BookReaderProfile,
   Briefing,
   GenerationResult,
@@ -631,6 +632,27 @@ export const userBooks = pgTable(
     check(
       'user_books_formal_strategy_pointer_present',
       sql`${table.workflowStatus} <> 'active_reading' or ${table.currentStrategyVersionId} is not null`,
+    ),
+  ],
+);
+
+export const readingSetupSessions = pgTable(
+  'reading_setup_sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userBookId: uuid('user_book_id')
+      .notNull()
+      .references(() => userBooks.id),
+    agentState: jsonb('agent_state').$type<AgentSessionState>().notNull(),
+    activeRunId: uuid('active_run_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('reading_setup_sessions_user_book_unique').on(table.userBookId),
+    check(
+      'reading_setup_sessions_agent_state_object',
+      sql`jsonb_typeof(${table.agentState}) = 'object'`,
     ),
   ],
 );

@@ -14,7 +14,10 @@
   },
   "dependencies": {
     "@e2b/code-interpreter": "^2.6.1",
+    "@earendil-works/pi-agent-core": "^0.80.6",
+    "@earendil-works/pi-ai": "^0.80.6",
     "@readtailor/agent-kit": "workspace:*",
+    "@readtailor/agent-state": "workspace:*",
     "@readtailor/config": "workspace:*",
     "@readtailor/contracts": "workspace:*",
     "@readtailor/database": "workspace:*",

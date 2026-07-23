@@ -1,3 +1,5 @@
+/** Composes the Fastify API, cross-cutting hooks, and bounded-context route plugins. */
+
 import { Readable } from 'node:stream';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
@@ -85,6 +87,9 @@ import type { SystemChatEvent, SystemChatService } from './system-chat';
 import type { SystemJobService } from './system-jobs';
 import { ProfileError, type ProfileService } from './profiles';
 import { UserBookError, type UserBookService } from './user-books';
+import type { AgentDrivenReadingSetupService } from './agent-driven-reading-setup';
+import { agentDrivenReadingSetupRoutes } from './agent-driven-reading-setup-routes';
+import { withHeartbeat } from './sse';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -110,6 +115,7 @@ export interface AppDeps {
   auth?: AuthService | undefined;
   profiles?: ProfileService | undefined;
   perfSink?: PerfSink | undefined;
+  agentDrivenReadingSetup?: AgentDrivenReadingSetupService | undefined;
 }
 
 const bookIdParams = Type.Object({
@@ -134,7 +140,6 @@ const userBookHighlightParams = Type.Object({
   id: Type.String({ pattern: UUID_PATTERN }),
   hid: Type.String({ pattern: UUID_PATTERN }),
 });
-
 function assetContentType(path: string): string {
   const extension = path.split('.').pop()?.toLowerCase();
   return (
@@ -171,29 +176,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
       },
     );
   });
-}
-
-// Interleaves SSE keep-alive comments so a long silent gap during an agent tool turn doesn't
-// trip idle proxy/load-balancer timeouts. A single pending
-// read of the source is kept across heartbeats so no event is dropped.
-async function* withHeartbeat(source: AsyncGenerator<string>, intervalMs: number): AsyncGenerator<string> {
-  let pending = source.next();
-  for (;;) {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const heartbeat = new Promise<'heartbeat'>((resolve) => {
-      timer = setTimeout(() => resolve('heartbeat'), intervalMs);
-    });
-    const winner = await Promise.race([pending.then(() => 'data' as const), heartbeat]);
-    if (timer) clearTimeout(timer);
-    if (winner === 'heartbeat') {
-      yield ': ping\n\n';
-      continue;
-    }
-    const result = await pending;
-    if (result.done) return;
-    yield result.value;
-    pending = source.next();
-  }
 }
 
 export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
@@ -737,6 +719,10 @@ export async function buildApp(config: ApiConfig, deps: AppDeps = {}) {
       }
     },
   );
+
+  await app.register(agentDrivenReadingSetupRoutes, {
+    service: deps.agentDrivenReadingSetup,
+  });
 
   app.get(
     '/v1/user-books/:id/interview',

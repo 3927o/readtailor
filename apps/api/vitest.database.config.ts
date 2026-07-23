@@ -15,7 +15,9 @@ export default defineConfig({
     setupFiles: ['apps/api/src/test/database/setup.ts'],
     globalSetup: ['apps/api/src/test/database/global-setup.ts'],
     pool: 'forks',
-    hookTimeout: 60_000,
-    testTimeout: 30_000,
+    // The configured development database may be remote; applying the full migration history
+    // to an isolated schema can exceed one minute even though individual tests stay fast.
+    hookTimeout: 180_000,
+    testTimeout: 120_000,
   },
 });

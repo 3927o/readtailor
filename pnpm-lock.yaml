@@ -44,6 +44,9 @@ importers:
       '@readtailor/agent-kit':
         specifier: workspace:*
         version: link:../../packages/agent-kit
+      '@readtailor/agent-state':
+        specifier: workspace:*
+        version: link:../../packages/agent-state
       '@readtailor/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -102,6 +105,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@readtailor/agent-state':
+        specifier: workspace:*
+        version: link:../../packages/agent-state
       '@readtailor/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -145,9 +151,18 @@ importers:
       '@e2b/code-interpreter':
         specifier: ^2.6.1
         version: 2.6.1
+      '@earendil-works/pi-agent-core':
+        specifier: ^0.80.6
+        version: 0.80.6(ws@8.21.0)(zod@4.4.3)
+      '@earendil-works/pi-ai':
+        specifier: ^0.80.6
+        version: 0.80.6(ws@8.21.0)(zod@4.4.3)
       '@readtailor/agent-kit':
         specifier: workspace:*
         version: link:../../packages/agent-kit
+      '@readtailor/agent-state':
+        specifier: workspace:*
+        version: link:../../packages/agent-state
       '@readtailor/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -215,6 +230,18 @@ importers:
       '@earendil-works/pi-ai':
         specifier: ^0.80.6
         version: 0.80.6(ws@8.21.0)(zod@4.4.3)
+      '@readtailor/agent-state':
+        specifier: workspace:*
+        version: link:../agent-state
+      '@readtailor/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/agent-state:
+    dependencies:
+      '@readtailor/contracts':
+        specifier: workspace:*
+        version: link:../contracts
 
   packages/config: {}
 

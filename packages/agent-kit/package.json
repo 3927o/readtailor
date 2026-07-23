@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./reading-setup": "./src/reading-setup-session.ts",
+    "./runtime": "./src/runtime/index.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit --pretty false",
@@ -12,6 +14,8 @@
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.80.6",
-    "@earendil-works/pi-ai": "^0.80.6"
+    "@earendil-works/pi-ai": "^0.80.6",
+    "@readtailor/agent-state": "workspace:*",
+    "@readtailor/contracts": "workspace:*"
   }
 }

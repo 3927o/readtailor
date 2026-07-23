@@ -1,9 +1,12 @@
-import { Queue, Worker } from 'bullmq';
+import { Queue, QueueEvents, Worker } from 'bullmq';
 import type { Job, RedisOptions } from 'bullmq';
 import type IORedis from 'ioredis';
 import type { Logger } from 'pino';
 import type {
   ContentGenerationJobPayload,
+  AgentRunJobPayload,
+  AgentRunDisplaySnapshot,
+  AgentSequencedRunEvent,
   NormalizationJobPayload,
   SystemJobPayload,
 } from '@readtailor/contracts';
@@ -11,6 +14,14 @@ import type {
 export const SYSTEM_QUEUE_NAME = 'system';
 export const NORMALIZATION_QUEUE_NAME = 'normalization';
 export const CONTENT_GENERATION_QUEUE_NAME = 'content-generation';
+export const AGENT_RUN_QUEUE_NAME = 'agent-run';
+
+export const AGENT_RUN_DEFAULT_JOB_OPTIONS = {
+  attempts: 3,
+  backoff: { type: 'exponential' as const, delay: 2_000 },
+  removeOnComplete: 200,
+  removeOnFail: 200,
+};
 
 // 传连接参数而非 ioredis 实例：实例会被 BullMQ 视作调用方所有（shared），
 // close() 时不 quit，socket 只能靠进程退出回收。
@@ -92,6 +103,125 @@ export function createContentGenerationQueue(redisUrl: string) {
     },
   });
 }
+
+export interface AgentRunJobProgress {
+  snapshot: AgentRunDisplaySnapshot;
+  event: AgentSequencedRunEvent | null;
+}
+
+export function createAgentRunQueue(redisUrl: string) {
+  return new Queue<AgentRunJobPayload, void, string>(AGENT_RUN_QUEUE_NAME, {
+    connection: redisOptionsFromUrl(redisUrl),
+    defaultJobOptions: AGENT_RUN_DEFAULT_JOB_OPTIONS,
+  });
+}
+
+export type AgentRunQueue = ReturnType<typeof createAgentRunQueue>;
+export type AgentRunQueueJob = Job<AgentRunJobPayload, void, string>;
+
+export function isTerminalAgentRunFailure(
+  job: Pick<AgentRunQueueJob, 'attemptsMade' | 'opts'>,
+  error: Pick<Error, 'name'>,
+): boolean {
+  const attempts = job.opts.attempts ?? 1;
+  return job.attemptsMade >= attempts || error.name === 'UnrecoverableError';
+}
+
+export function createAgentRunWorker(options: {
+  redisUrl: string;
+  concurrency: number;
+  logger: Logger;
+  handler: (job: AgentRunQueueJob) => Promise<void>;
+  onTerminalFailure?: (job: AgentRunQueueJob, error: Error) => Promise<void>;
+}) {
+  const worker = new Worker<AgentRunJobPayload, void, string>(
+    AGENT_RUN_QUEUE_NAME,
+    async (job) => {
+      options.logger.info(
+        {
+          jobId: job.id,
+          agentType: job.data.agentType,
+          sessionId: job.data.sessionId,
+          runId: job.data.runId,
+        },
+        'processing agent run job',
+      );
+      await options.handler(job);
+    },
+    {
+      connection: redisOptionsFromUrl(options.redisUrl),
+      concurrency: options.concurrency,
+    },
+  );
+  worker.on('failed', (job, error) => {
+    options.logger.error(
+      { err: error, jobId: job?.id, runId: job?.data.runId },
+      'agent run job failed',
+    );
+    if (!job) return;
+    if (!isTerminalAgentRunFailure(job, error)) return;
+    void options.onTerminalFailure?.(job, error).catch((failure: unknown) => {
+      options.logger.error(
+        { err: failure, runId: job.data.runId },
+        'failed to persist terminal agent run failure',
+      );
+    });
+  });
+  return worker;
+}
+
+export function createAgentRunObserver(redisUrl: string) {
+  const queue = createAgentRunQueue(redisUrl);
+  const events = new QueueEvents(AGENT_RUN_QUEUE_NAME, {
+    connection: redisOptionsFromUrl(redisUrl),
+  });
+
+  return {
+    async getRun(runId: string): Promise<{
+      payload: AgentRunJobPayload;
+      status: string;
+      progress: AgentRunJobProgress | null;
+    } | null> {
+      const job = await queue.getJob(runId);
+      if (!job) return null;
+      const progress =
+        job.progress && typeof job.progress === 'object'
+          ? (job.progress as Partial<AgentRunJobProgress>)
+          : null;
+      return {
+        payload: job.data,
+        status: await job.getState(),
+        progress: progress?.snapshot ? (progress as AgentRunJobProgress) : null,
+      };
+    },
+
+    async getProgress(runId: string): Promise<AgentRunJobProgress | null> {
+      const job = await queue.getJob(runId);
+      if (!job || !job.progress || typeof job.progress !== 'object') return null;
+      const progress = job.progress as Partial<AgentRunJobProgress>;
+      return progress.snapshot ? (progress as AgentRunJobProgress) : null;
+    },
+
+    subscribe(
+      runId: string,
+      listener: (progress: AgentRunJobProgress) => void,
+    ): () => void {
+      const onProgress = ({ jobId, data }: { jobId: string; data: unknown }) => {
+        if (jobId !== runId || !data || typeof data !== 'object') return;
+        const progress = data as Partial<AgentRunJobProgress>;
+        if (progress.snapshot) listener(progress as AgentRunJobProgress);
+      };
+      events.on('progress', onProgress);
+      return () => events.off('progress', onProgress);
+    },
+
+    async close(): Promise<void> {
+      await Promise.all([events.close(), queue.close()]);
+    },
+  };
+}
+
+export type AgentRunObserver = ReturnType<typeof createAgentRunObserver>;
 
 export type ContentGenerationQueue = ReturnType<typeof createContentGenerationQueue>;
 export type ContentGenerationQueueJob = Job<ContentGenerationJobPayload>;

@@ -11,6 +11,7 @@ import { InterviewPage } from './user-books/InterviewPage';
 import { ReadingSetupRoute } from './user-books/ReadingSetupRoute';
 import { StrategyPage } from './user-books/StrategyPage';
 import { TrialPage } from './user-books/TrialPage';
+import { AgentDrivenReadingSetupPage } from './agent-driven-reading-setup/AgentDrivenReadingSetupPage';
 
 export function App() {
   return (
@@ -25,6 +26,7 @@ export function App() {
         <Route path="/stats" element={<StatsPage />} />
         <Route path="/books/import" element={<ImportPage />} />
         <Route path="/books/:bookId/processing" element={<ProcessingPage />} />
+        <Route path="/user-books/:id/reading-setup" element={<AgentDrivenReadingSetupPage />} />
         <Route path="/user-books/:id" element={<ReadingSetupRoute />}>
           <Route path="interview" element={<InterviewPage />} />
           <Route path="strategy" element={<StrategyPage />} />

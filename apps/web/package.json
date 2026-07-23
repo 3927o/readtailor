@@ -9,6 +9,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@readtailor/agent-state": "workspace:*",
     "@readtailor/contracts": "workspace:*",
     "@readtailor/reader-core": "workspace:*",
     "@tanstack/react-query": "^5.81.0",

@@ -20,7 +20,7 @@ const statusCopy: Record<SharedBookStatus, { label: string; meta: string }> = {
 };
 
 const workflowCopy: Record<WorkflowStatus, { label: string; meta: string }> = {
-  on_shelf: { label: '开始裁读', meta: '先聊几句，准备这本书的读法' },
+  on_shelf: { label: '阅读准备', meta: '在一段对话里准备读法和片段试读' },
   interviewing: { label: '继续访谈', meta: '上次的回答已经保存' },
   strategy_review: { label: '确认处理方式', meta: '读前简报和草稿等你确认' },
   trial_generating: { label: '正在生成试读', meta: '三个片段会完整生成后一起出现' },
