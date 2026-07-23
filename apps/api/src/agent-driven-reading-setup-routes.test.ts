@@ -54,6 +54,7 @@ describe('Reading setup routes', () => {
   it('wires session, run subscription and explicit confirmation to the independent service', async () => {
     const getOrCreateSession = vi.fn(async () => snapshot);
     const submitMessage = vi.fn(async () => ({ runId, accepted: true }));
+    const submitStrategyConfirmation = vi.fn(async () => ({ runId, accepted: true }));
     const confirm = vi.fn(async () => ({
       userBookId,
       workflowStatus: 'active_reading' as const,
@@ -62,6 +63,7 @@ describe('Reading setup routes', () => {
     const service = {
       getOrCreateSession,
       submitMessage,
+      submitStrategyConfirmation,
       confirm,
       async *subscribeRun() {
         yield {
@@ -103,6 +105,18 @@ describe('Reading setup routes', () => {
     expect(started.json()).toEqual({ runId, accepted: true });
     expect(submitMessage).toHaveBeenCalledWith(userId, sessionId, '开始准备');
 
+    const strategyConfirmed = await app.inject({
+      method: 'POST',
+      url: `/v1/reading-setup/sessions/${sessionId}/strategy-confirmations`,
+      headers: { origin: 'http://localhost:5173', 'content-type': 'application/json' },
+      payload: { strategyToolCallId: 'strategy-1' },
+    });
+    expect(strategyConfirmed.statusCode).toBe(202);
+    expect(strategyConfirmed.json()).toEqual({ runId, accepted: true });
+    expect(submitStrategyConfirmation).toHaveBeenCalledWith(userId, sessionId, {
+      strategyToolCallId: 'strategy-1',
+    });
+
     const events = await app.inject({
       method: 'GET',
       url: `/v1/reading-setup/sessions/${sessionId}/runs/${runId}/events`,
@@ -116,7 +130,7 @@ describe('Reading setup routes', () => {
       method: 'POST',
       url: `/v1/reading-setup/sessions/${sessionId}/confirm`,
       headers: { origin: 'http://localhost:5173', 'content-type': 'application/json' },
-      payload: { offerToolCallId: 'offer-1' },
+      payload: { trialToolCallId: 'trial-1' },
     });
     expect(activated.statusCode).toBe(200);
     expect(activated.json()).toEqual({
@@ -124,6 +138,6 @@ describe('Reading setup routes', () => {
       workflowStatus: 'active_reading',
       strategyVersionId,
     });
-    expect(confirm).toHaveBeenCalledWith(userId, sessionId, 'offer-1');
+    expect(confirm).toHaveBeenCalledWith(userId, sessionId, 'trial-1');
   });
 });

@@ -54,6 +54,7 @@ function createTailoringClient(engine: ModelEngine): TailoringModelClient {
 
 export function createReadingSetupTrialTool(options: {
   history: ReadingSetupToolHistory;
+  isStrategyConfirmed(strategyToolCallId: string): boolean;
   resources(): Promise<ReadingSetupAgentResources>;
   tailoringModel: ModelEngine;
 }): AgentTool {
@@ -70,8 +71,17 @@ export function createReadingSetupTrialTool(options: {
         input.strategyToolCallId,
         'publish_strategy',
       );
-      const profileRecord = options.history.latestSuccessful('publish_book_reader_profile');
-      if (!profileRecord) throw new Error('生成试读前必须先成功发布 book reader profile');
+      if (!options.isStrategyConfirmed(strategyRecord.toolCallId)) {
+        throw new Error('生成试读前必须先由用户确认对应的 strategy');
+      }
+      const strategyArgs = asObject(strategyRecord.arguments);
+      if (typeof strategyArgs.bookReaderProfileToolCallId !== 'string') {
+        throw new Error('strategy 没有引用有效的 book reader profile');
+      }
+      const profileRecord = options.history.requireSuccessful(
+        strategyArgs.bookReaderProfileToolCallId,
+        'publish_book_reader_profile',
+      );
       const loaded = await options.resources();
       const node = requireNode(createManifestIndex(loaded.manifest), input.sectionId, input.segment);
       if (!node.tailoringEligible) throw new Error('指定 reading node 不允许裁读');
@@ -84,7 +94,6 @@ export function createReadingSetupTrialTool(options: {
       if (sourceText.length > TRIAL_SOURCE_MAX) {
         throw new Error(`试读原文超过 ${TRIAL_SOURCE_MAX} 字符上限`);
       }
-      const strategyArgs = asObject(strategyRecord.arguments);
       const profileArgs = asObject(profileRecord.arguments);
       const strategy = strategyArgs.strategy as unknown as ProposedStrategy;
       const bookReaderProfile = profileArgs.profile as unknown as BookReaderProfile;

@@ -18,6 +18,7 @@ import {
   createReadingSetupSession,
   submitReadingSetupMessage,
   submitReadingSetupQuestionAnswer,
+  submitReadingSetupStrategyConfirmation,
   subscribeReadingSetupRun,
 } from './api';
 import { parsePartialJson } from './partial-json';
@@ -154,11 +155,32 @@ export function AgentDrivenReadingSetupPage() {
     }
   };
 
-  const confirm = async (offerToolCallId: string) => {
+  const confirmStrategy = async (strategyToolCallId: string) => {
     if (!session) return;
     setSubmitError(null);
     try {
-      await confirmReadingSetup(session.id, offerToolCallId);
+      const started = await submitReadingSetupStrategyConfirmation(session.id, {
+        strategyToolCallId,
+      });
+      setActiveRun({
+        runId: started.runId,
+        lastSequence: 0,
+        status: 'queued',
+        assistantText: '',
+        assistantMessage: null,
+        tools: [],
+        error: null,
+      });
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : '策略确认失败');
+    }
+  };
+
+  const confirmTrial = async (trialToolCallId: string) => {
+    if (!session) return;
+    setSubmitError(null);
+    try {
+      await confirmReadingSetup(session.id, trialToolCallId);
       await queryClient.invalidateQueries({ queryKey: ['user-books'] });
       navigate(`/user-books/${encodeURIComponent(id)}/read`, { replace: true });
     } catch (error) {
@@ -192,7 +214,8 @@ export function AgentDrivenReadingSetupPage() {
             <PersistedHistory
               messages={session.agentState.messages}
               onAnswer={answerQuestion}
-              onConfirm={confirm}
+              onStrategyConfirm={confirmStrategy}
+              onTrialConfirm={confirmTrial}
               interactionsEnabled={!busy}
             />
             {activeRun ? (
@@ -238,7 +261,8 @@ function PersistedHistory(props: {
   messages: AgentMessageDto[];
   interactionsEnabled: boolean;
   onAnswer(toolCallId: string, selected: string[], freeText: string | null): Promise<void>;
-  onConfirm(toolCallId: string): Promise<void>;
+  onStrategyConfirm(toolCallId: string): Promise<void>;
+  onTrialConfirm(toolCallId: string): Promise<void>;
 }) {
   const tools = useMemo(() => indexAgentTranscript(props.messages), [props.messages]);
   return props.messages.map((message, messageIndex) => {
@@ -270,7 +294,8 @@ function PersistedHistory(props: {
               isError={record?.status === 'failed'}
               interactive={props.interactionsEnabled && record?.status === 'succeeded'}
               onAnswer={props.onAnswer}
-              onConfirm={props.onConfirm}
+              onStrategyConfirm={props.onStrategyConfirm}
+              onTrialConfirm={props.onTrialConfirm}
             />
           );
         })}
@@ -317,7 +342,8 @@ export function ToolCard(props: {
   isError: boolean;
   interactive: boolean;
   onAnswer?(toolCallId: string, selected: string[], freeText: string | null): Promise<void>;
-  onConfirm?(toolCallId: string): Promise<void>;
+  onStrategyConfirm?(toolCallId: string): Promise<void>;
+  onTrialConfirm?(toolCallId: string): Promise<void>;
 }) {
   const args = object(props.argumentsValue);
   const title: Record<string, string> = {
@@ -326,7 +352,6 @@ export function ToolCard(props: {
     publish_book_reader_profile: '这本书与你',
     publish_strategy: '建议的阅读方式',
     generate_trial_slice: '片段试读',
-    offer_final_confirmation: '准备完成',
   };
   if (props.toolName === 'present_question' && args) {
     return (
@@ -342,13 +367,22 @@ export function ToolCard(props: {
     <article className="agent-tool-card" data-tool={props.toolName} data-error={props.isError || undefined}>
       <h2>{title[props.toolName] ?? `工具：${props.toolName}`}</h2>
       <ToolBody toolName={props.toolName} args={args} result={props.result} />
-      {props.toolName === 'offer_final_confirmation' ? (
+      {props.toolName === 'publish_strategy' ? (
         <button
           type="button"
           disabled={!props.interactive}
-          onClick={() => void props.onConfirm?.(props.toolCallId)}
+          onClick={() => void props.onStrategyConfirm?.(props.toolCallId)}
         >
-          确认并开始阅读
+          确认这个阅读方式
+        </button>
+      ) : null}
+      {props.toolName === 'generate_trial_slice' ? (
+        <button
+          type="button"
+          disabled={!props.interactive}
+          onClick={() => void props.onTrialConfirm?.(props.toolCallId)}
+        >
+          就按这个方式，开始阅读
         </button>
       ) : null}
       {props.isError ? <p className="reading-setup-error-inline">工具执行失败</p> : null}
@@ -383,7 +417,6 @@ function ToolBody(props: {
       </>
     );
   }
-  if (toolName === 'offer_final_confirmation') return <p>{String(args.summary ?? '')}</p>;
   return <pre>{JSON.stringify({ arguments: args, result: props.result }, null, 2)}</pre>;
 }
 

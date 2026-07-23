@@ -9,6 +9,7 @@ import {
   StartAgentRunResponseSchema,
   SubmitAgentMessageRequestSchema,
   SubmitAgentQuestionAnswerRequestSchema,
+  SubmitAgentStrategyConfirmationRequestSchema,
 } from '@readtailor/contracts';
 import {
   AgentDrivenReadingSetupError,
@@ -127,6 +128,36 @@ export const agentDrivenReadingSetupRoutes: FastifyPluginAsyncTypebox<{
           request.authUser!.id,
           request.params.sessionId,
         );
+      } catch (error) {
+        return readingSetupFailure(error, reply);
+      }
+    },
+  );
+
+  app.post(
+    '/v1/reading-setup/sessions/:sessionId/strategy-confirmations',
+    {
+      schema: {
+        params: readingSetupSessionParams,
+        body: SubmitAgentStrategyConfirmationRequestSchema,
+        response: {
+          202: StartAgentRunResponseSchema,
+          400: ErrorResponseSchema,
+          404: ErrorResponseSchema,
+          409: ErrorResponseSchema,
+          503: ErrorResponseSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      if (!options.service) return reply.code(503).send({ error: '阅读准备未配置' });
+      try {
+        const result = await options.service.submitStrategyConfirmation(
+          request.authUser!.id,
+          request.params.sessionId,
+          request.body,
+        );
+        return reply.code(202).send(result);
       } catch (error) {
         return readingSetupFailure(error, reply);
       }
@@ -269,7 +300,7 @@ export const agentDrivenReadingSetupRoutes: FastifyPluginAsyncTypebox<{
         return await options.service.confirm(
           request.authUser!.id,
           request.params.sessionId,
-          request.body.offerToolCallId,
+          request.body.trialToolCallId,
         );
       } catch (error) {
         return readingSetupFailure(error, reply);

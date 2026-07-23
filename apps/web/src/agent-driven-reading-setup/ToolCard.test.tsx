@@ -1,3 +1,5 @@
+/** Verifies interaction availability and unknown-tool fallback in the legacy Tool card. */
+
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ToolCard } from './AgentDrivenReadingSetupPage';
@@ -6,9 +8,9 @@ describe('Reading setup ToolCard', () => {
   it('keeps confirmation disabled until the committed Tool is actionable', () => {
     const pending = renderToStaticMarkup(
       <ToolCard
-        toolCallId="offer-1"
-        toolName="offer_final_confirmation"
-        argumentsValue={{ summary: '请确认' }}
+        toolCallId="trial-1"
+        toolName="generate_trial_slice"
+        argumentsValue={{ reason: '试试这个方式' }}
         result={null}
         isError={false}
         interactive={false}
@@ -16,10 +18,10 @@ describe('Reading setup ToolCard', () => {
     );
     const committed = renderToStaticMarkup(
       <ToolCard
-        toolCallId="offer-1"
-        toolName="offer_final_confirmation"
-        argumentsValue={{ summary: '请确认' }}
-        result={{ toolCallId: 'offer-1' }}
+        toolCallId="trial-1"
+        toolName="generate_trial_slice"
+        argumentsValue={{ reason: '试试这个方式' }}
+        result={{ toolCallId: 'trial-1' }}
         isError={false}
         interactive
       />,

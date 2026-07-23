@@ -9,6 +9,7 @@ import type {
   ReadingSetupSessionSnapshot,
   StartAgentRunResponse,
   SubmitAgentQuestionAnswerRequest,
+  SubmitAgentStrategyConfirmationRequest,
 } from '@readtailor/contracts';
 import { indexAgentTranscript } from '@readtailor/agent-state';
 import {
@@ -237,6 +238,37 @@ export function createAgentDrivenReadingSetupService(options: {
         questionToolCallId: input.questionToolCallId,
         selectedOptionIds: input.selectedOptionIds,
         freeText: input.freeText?.trim() || null,
+      });
+    },
+
+    async submitStrategyConfirmation(
+      userId: string,
+      sessionId: string,
+      input: SubmitAgentStrategyConfirmationRequest,
+    ): Promise<StartAgentRunResponse> {
+      const session = await requireOwnedSession(userId, sessionId);
+      const strategy = indexAgentTranscript(session.agentState.messages).getSuccessful(
+        input.strategyToolCallId,
+        'publish_strategy',
+      );
+      if (!strategy) {
+        throw new AgentDrivenReadingSetupError(
+          `${input.strategyToolCallId} 不是当前 session 中成功的 publish_strategy 调用`,
+          409,
+        );
+      }
+      if (
+        session.agentState.actions.some(
+          (action) =>
+            action.type === 'strategy_confirmation' &&
+            action.strategyToolCallId === input.strategyToolCallId,
+        )
+      ) {
+        throw new AgentDrivenReadingSetupError('该阅读策略已经确认', 409);
+      }
+      return startRun(userId, sessionId, {
+        type: 'strategy_confirmation',
+        strategyToolCallId: input.strategyToolCallId,
       });
     },
 

@@ -1,4 +1,4 @@
-/** Validates a final Agent offer and atomically activates formal reading data. */
+/** Validates a confirmed trial's artifact graph and atomically activates formal reading data. */
 
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import {
@@ -8,7 +8,8 @@ import {
   type BookReaderProfile,
   type Briefing,
   type ConfirmReadingSetupResponse,
-  type OfferFinalConfirmationArguments,
+  type GenerateTrialSliceArguments,
+  type PublishStrategyArguments,
   type ProposedStrategy,
   type Strategy,
 } from '@readtailor/contracts';
@@ -70,15 +71,15 @@ export function createReadingSetupActivationService(options: {
     async confirm(
       userId: string,
       sessionId: string,
-      offerToolCallId: string,
+      trialToolCallId: string,
     ): Promise<ConfirmReadingSetupResponse> {
       const initialSession = await options.requireOwnedSession(userId, sessionId);
       const initialReplay = initialSession.agentState.actions.find(
         (action) =>
-          action.type === 'final_confirmation' &&
-          action.offerToolCallId === offerToolCallId,
+          action.type === 'trial_confirmation' &&
+          action.trialToolCallId === trialToolCallId,
       );
-      if (initialReplay?.type === 'final_confirmation') return initialReplay.result;
+      if (initialReplay?.type === 'trial_confirmation') return initialReplay.result;
       const [initialBook] = await options.db
         .select({ sharedBookId: userBooks.sharedBookId })
         .from(userBooks)
@@ -116,10 +117,10 @@ export function createReadingSetupActivationService(options: {
 
         const replay = session.agentState.actions.find(
           (action) =>
-            action.type === 'final_confirmation' &&
-            action.offerToolCallId === offerToolCallId,
+            action.type === 'trial_confirmation' &&
+            action.trialToolCallId === trialToolCallId,
         );
-        if (replay?.type === 'final_confirmation') return replay.result;
+        if (replay?.type === 'trial_confirmation') return replay.result;
         if (session.activeRunId) throw new AgentDrivenReadingSetupError('Agent run 仍在进行中', 409);
         if (book.workflowStatus !== 'on_shelf') {
           throw new AgentDrivenReadingSetupError('用户书籍状态已经变化', 409);
@@ -132,45 +133,52 @@ export function createReadingSetupActivationService(options: {
         if (!readySharedBook) throw new AgentDrivenReadingSetupError('共享书籍尚未就绪', 409);
 
         const records = indexAgentTranscript(session.agentState.messages);
-        const offer = requireSuccessfulTool(
+        const trialRecord = requireSuccessfulTool(
           records,
-          offerToolCallId,
-          'offer_final_confirmation',
+          trialToolCallId,
+          'generate_trial_slice',
         );
-        const offerArgs = objectValue(
-          offer.arguments,
-          'offer arguments',
-        ) as unknown as OfferFinalConfirmationArguments;
+        const trialArgs = objectValue(
+          trialRecord.arguments,
+          'trial arguments',
+        ) as unknown as GenerateTrialSliceArguments;
+        const strategyRecord = requireSuccessfulTool(
+          records,
+          trialArgs.strategyToolCallId,
+          'publish_strategy',
+        );
+        if (
+          !session.agentState.actions.some(
+            (action) =>
+              action.type === 'strategy_confirmation' &&
+              action.strategyToolCallId === strategyRecord.toolCallId,
+          )
+        ) {
+          throw new AgentDrivenReadingSetupError('试读使用的 strategy 尚未由用户确认', 409);
+        }
+        const strategyArgs = objectValue(
+          strategyRecord.arguments,
+          'strategy arguments',
+        ) as unknown as PublishStrategyArguments;
         const briefRecord = requireSuccessfulTool(
           records,
-          offerArgs.briefToolCallId,
+          strategyArgs.briefToolCallId,
           'publish_brief',
         );
         const profileRecord = requireSuccessfulTool(
           records,
-          offerArgs.bookReaderProfileToolCallId,
+          strategyArgs.bookReaderProfileToolCallId,
           'publish_book_reader_profile',
         );
-        const strategyRecord = requireSuccessfulTool(
-          records,
-          offerArgs.strategyToolCallId,
-          'publish_strategy',
-        );
-        const trialRecord = requireSuccessfulTool(
-          records,
-          offerArgs.trialToolCallId,
-          'generate_trial_slice',
-        );
         const trialResult = objectValue(trialRecord.result!, 'trial result');
-        if (trialResult.strategyToolCallId !== offerArgs.strategyToolCallId) {
-          throw new AgentDrivenReadingSetupError('试读使用的 strategy 与确认引用不一致', 409);
+        if (trialResult.strategyToolCallId !== strategyRecord.toolCallId) {
+          throw new AgentDrivenReadingSetupError('试读结果引用的 strategy 不一致', 409);
         }
         const brief = objectValue(briefRecord.arguments, 'brief arguments')
           .brief as unknown as Briefing;
         const profile = objectValue(profileRecord.arguments, 'profile arguments')
           .profile as unknown as BookReaderProfile;
-        const strategyArgs = objectValue(strategyRecord.arguments, 'strategy arguments');
-        const strategyCore = strategyArgs.strategy as unknown as ProposedStrategy;
+        const strategyCore = strategyArgs.strategy as ProposedStrategy;
         const summary = strategyArgs.summary;
         if (typeof summary !== 'string' || !summary.trim()) {
           throw new AgentDrivenReadingSetupError('strategy summary 无效', 409);
@@ -285,8 +293,8 @@ export function createReadingSetupActivationService(options: {
           actions: [
             ...session.agentState.actions,
             {
-              type: 'final_confirmation',
-              offerToolCallId,
+              type: 'trial_confirmation',
+              trialToolCallId,
               submittedAt: now.toISOString(),
               result,
             },

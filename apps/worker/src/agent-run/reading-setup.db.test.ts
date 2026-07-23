@@ -125,6 +125,13 @@ const profile: BookReaderProfile = {
   otherConclusions: [],
 };
 
+const brief = {
+  bookIdentity: '一本讲系统边界的书',
+  arc: '从组件走向协作',
+  assumedKnowledge: '无',
+  readingAdvice: '结合实际项目阅读',
+};
+
 const strategy: ProposedStrategy = {
   goals: ['理解边界'],
   expressionPrinciples: ['简洁'],
@@ -144,6 +151,12 @@ function state(): AgentSessionState {
         content: [
           {
             type: 'toolCall',
+            id: 'brief-call',
+            name: 'publish_brief',
+            arguments: { brief },
+          },
+          {
+            type: 'toolCall',
             id: 'profile-call',
             name: 'publish_book_reader_profile',
             arguments: { profile },
@@ -152,7 +165,12 @@ function state(): AgentSessionState {
             type: 'toolCall',
             id: 'strategy-call',
             name: 'publish_strategy',
-            arguments: { summary: '测试策略', strategy },
+            arguments: {
+              briefToolCallId: 'brief-call',
+              bookReaderProfileToolCallId: 'profile-call',
+              summary: '测试策略',
+              strategy,
+            },
           },
         ],
         api: 'openai-completions',
@@ -168,6 +186,15 @@ function state(): AgentSessionState {
         },
         stopReason: 'toolUse',
         timestamp: 1,
+      },
+      {
+        role: 'toolResult',
+        toolCallId: 'brief-call',
+        toolName: 'publish_brief',
+        content: [{ type: 'text', text: 'ok' }],
+        details: { toolCallId: 'brief-call', brief },
+        isError: false,
+        timestamp: 2,
       },
       {
         role: 'toolResult',
@@ -188,7 +215,11 @@ function state(): AgentSessionState {
         timestamp: 3,
       },
     ],
-    actions: [],
+    actions: [{
+      type: 'strategy_confirmation',
+      strategyToolCallId: 'strategy-call',
+      submittedAt: '2026-07-24T00:00:00.000Z',
+    }],
   };
 }
 
@@ -243,6 +274,7 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
       tailoringModel: { name: 'fake' } as ModelEngine,
       userBookId: graph.userBookId,
       state: state(),
+      input: { type: 'message', text: '继续' },
     }).tools;
 
     const page = await execute(toolByName(all, 'read_book_node'), 'read-call', {
@@ -339,7 +371,12 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
         {
           id: 'strategy-1',
           name: 'publish_strategy',
-          arguments: { summary: '先理解系统边界。', strategy },
+          arguments: {
+            briefToolCallId: 'brief-1',
+            bookReaderProfileToolCallId: 'profile-1',
+            summary: '先理解系统边界。',
+            strategy,
+          },
         },
         {
           id: 'question-2',
@@ -357,6 +394,8 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
           id: 'strategy-2',
           name: 'publish_strategy',
           arguments: {
+            briefToolCallId: 'brief-1',
+            bookReaderProfileToolCallId: 'profile-1',
             summary: '增加工程例子后再解释系统边界。',
             strategy: {
               ...strategy,
@@ -378,17 +417,6 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
               end: { blockIndex: 2, offset: secondText.length },
             },
             reason: '验证调整后的表达方式',
-          },
-        },
-        {
-          id: 'offer-2',
-          name: 'offer_final_confirmation',
-          arguments: {
-            briefToolCallId: 'brief-1',
-            bookReaderProfileToolCallId: 'profile-1',
-            strategyToolCallId: 'strategy-2',
-            trialToolCallId: 'trial-2',
-            summary: '调整后的方案和试读已准备完成。',
           },
         },
       ],
@@ -500,6 +528,10 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
       freeText: '请优先使用软件工程例子',
     });
     await runNext();
+    await setup.submitStrategyConfirmation(graph.userId, session.id, {
+      strategyToolCallId: 'strategy-2',
+    });
+    await runNext();
 
     const committed = await setup.getSession(graph.userId, session.id);
     const successfulToolCallIds = committed.agentState.messages.flatMap((message) =>
@@ -514,12 +546,19 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
         'question-2',
         'strategy-2',
         'trial-2',
-        'offer-2',
       ]),
     );
     expect(modelRequest).toBe(4);
+    expect(committed.agentState.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'strategy_confirmation',
+          strategyToolCallId: 'strategy-2',
+        }),
+      ]),
+    );
 
-    const activated = await setup.confirm(graph.userId, session.id, 'offer-2');
+    const activated = await setup.confirm(graph.userId, session.id, 'trial-2');
     const [book] = await db.select().from(userBooks).where(eq(userBooks.id, graph.userBookId));
     expect(activated).toMatchObject({ workflowStatus: 'active_reading' });
     expect(book).toMatchObject({

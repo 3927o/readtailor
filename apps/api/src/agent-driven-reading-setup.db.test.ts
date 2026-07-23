@@ -108,10 +108,12 @@ const callIds = {
   profile: 'profile-call',
   strategy: 'strategy-call',
   trial: 'trial-call',
-  offer: 'offer-call',
 } as const;
 
-function completedState(trialStrategyToolCallId: string = callIds.strategy): AgentSessionState {
+function completedState(
+  trialStrategyToolCallId: string = callIds.strategy,
+  strategyConfirmed = true,
+): AgentSessionState {
   const calls = [
     { id: callIds.brief, name: 'publish_brief', arguments: { brief } },
     {
@@ -122,7 +124,12 @@ function completedState(trialStrategyToolCallId: string = callIds.strategy): Age
     {
       id: callIds.strategy,
       name: 'publish_strategy',
-      arguments: { summary: '围绕系统主线精读，并把方法迁移到工程实践。', strategy },
+      arguments: {
+        briefToolCallId: callIds.brief,
+        bookReaderProfileToolCallId: callIds.profile,
+        summary: '围绕系统主线精读，并把方法迁移到工程实践。',
+        strategy,
+      },
     },
     {
       id: callIds.trial,
@@ -136,17 +143,6 @@ function completedState(trialStrategyToolCallId: string = callIds.strategy): Age
           end: { blockIndex: 1, offset: 100 },
         },
         reason: '验证策略是否适合用户',
-      },
-    },
-    {
-      id: callIds.offer,
-      name: 'offer_final_confirmation',
-      arguments: {
-        briefToolCallId: callIds.brief,
-        bookReaderProfileToolCallId: callIds.profile,
-        strategyToolCallId: callIds.strategy,
-        trialToolCallId: callIds.trial,
-        summary: '已准备好正式阅读方案。',
       },
     },
   ];
@@ -192,7 +188,13 @@ function completedState(trialStrategyToolCallId: string = callIds.strategy): Age
       },
       ...results,
     ],
-    actions: [],
+    actions: strategyConfirmed
+      ? [{
+          type: 'strategy_confirmation',
+          strategyToolCallId: callIds.strategy,
+          submittedAt: '2026-07-24T00:00:00.000Z',
+        }]
+      : [],
   };
 }
 
@@ -223,7 +225,7 @@ function service(
   });
 }
 
-describePostgres(`Agent-driven reading setup final confirmation${skipReason}`, () => {
+describePostgres(`Agent-driven reading setup trial confirmation${skipReason}`, () => {
   it('allows only one parallel API submission and enqueues the claimed run once', async () => {
     const db = getTestDatabase().db;
     const graph = await onShelfGraph(db);
@@ -356,8 +358,8 @@ describePostgres(`Agent-driven reading setup final confirmation${skipReason}`, (
         .where(eq(bookReaderProfileVersions.userBookId, graph.userBookId)),
     ).toHaveLength(0);
 
-    const first = await setup.confirm(graph.userId, session.id, callIds.offer);
-    const replay = await setup.confirm(graph.userId, session.id, callIds.offer);
+    const first = await setup.confirm(graph.userId, session.id, callIds.trial);
+    const replay = await setup.confirm(graph.userId, session.id, callIds.trial);
 
     expect(replay).toEqual(first);
     const [book] = await db.select().from(userBooks).where(eq(userBooks.id, graph.userBookId));
@@ -411,8 +413,12 @@ describePostgres(`Agent-driven reading setup final confirmation${skipReason}`, (
       .where(eq(readingSetupSessions.id, session.id));
     expect(persistedSession?.agentState.actions).toEqual([
       expect.objectContaining({
-        type: 'final_confirmation',
-        offerToolCallId: callIds.offer,
+        type: 'strategy_confirmation',
+        strategyToolCallId: callIds.strategy,
+      }),
+      expect.objectContaining({
+        type: 'trial_confirmation',
+        trialToolCallId: callIds.trial,
         result: first,
       }),
     ]);
@@ -434,8 +440,8 @@ describePostgres(`Agent-driven reading setup final confirmation${skipReason}`, (
     const setup = service(completedState('different-strategy-call'));
     const session = await setup.getOrCreateSession(graph.userId, graph.userBookId);
 
-    await expect(setup.confirm(graph.userId, session.id, callIds.offer)).rejects.toThrow(
-      '试读使用的 strategy 与确认引用不一致',
+    await expect(setup.confirm(graph.userId, session.id, callIds.trial)).rejects.toThrow(
+      '试读结果引用的 strategy 不一致',
     );
     expect(
       await db
@@ -465,6 +471,19 @@ describePostgres(`Agent-driven reading setup final confirmation${skipReason}`, (
     expect(book?.workflowStatus).toBe('on_shelf');
   });
 
+  it('rejects activation when the trial strategy was not confirmed by the user', async () => {
+    const db = getTestDatabase().db;
+    const graph = await onShelfGraph(db);
+    const setup = service(completedState(callIds.strategy, false));
+    const session = await setup.getOrCreateSession(graph.userId, graph.userBookId);
+
+    await expect(setup.confirm(graph.userId, session.id, callIds.trial)).rejects.toThrow(
+      '尚未由用户确认',
+    );
+    const [book] = await db.select().from(userBooks).where(eq(userBooks.id, graph.userBookId));
+    expect(book?.workflowStatus).toBe('on_shelf');
+  });
+
   it('reuses legacy shells, allocates the next versions and activates pointers readable by Reader', async () => {
     const db = getTestDatabase().db;
     const graph = await strategyReviewGraph(db);
@@ -475,7 +494,7 @@ describePostgres(`Agent-driven reading setup final confirmation${skipReason}`, (
     const setup = service(completedState());
     const session = await setup.getOrCreateSession(graph.userId, graph.userBookId);
 
-    const result = await setup.confirm(graph.userId, session.id, callIds.offer);
+    const result = await setup.confirm(graph.userId, session.id, callIds.trial);
 
     const [book] = await db.select().from(userBooks).where(eq(userBooks.id, graph.userBookId));
     const profiles = await db

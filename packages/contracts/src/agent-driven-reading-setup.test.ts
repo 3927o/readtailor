@@ -1,3 +1,5 @@
+/** Verifies the serializable reading-setup session and generic run event contracts. */
+
 import { describe, expect, it } from 'vitest';
 import { Value } from '@sinclair/typebox/value';
 import {
@@ -54,6 +56,21 @@ describe('Agent-driven reading setup contracts', () => {
           selectedOptionIds: ['a'],
           freeText: null,
           submittedAt: '2026-07-22T00:00:00.000Z',
+        },
+        {
+          type: 'strategy_confirmation',
+          strategyToolCallId: 'strategy-1',
+          submittedAt: '2026-07-23T00:00:00.000Z',
+        },
+        {
+          type: 'trial_confirmation',
+          trialToolCallId: 'trial-1',
+          submittedAt: '2026-07-24T00:00:00.000Z',
+          result: {
+            userBookId: '11111111-1111-4111-8111-111111111111',
+            workflowStatus: 'active_reading',
+            strategyVersionId: '22222222-2222-4222-8222-222222222222',
+          },
         },
       ],
     };

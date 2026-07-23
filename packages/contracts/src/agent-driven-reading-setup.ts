@@ -137,9 +137,15 @@ export const AgentQuestionAnswerActionSchema = Type.Object({
   submittedAt: Type.String(),
 });
 
-export const AgentFinalConfirmationActionSchema = Type.Object({
-  type: Type.Literal('final_confirmation'),
-  offerToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+export const AgentStrategyConfirmationActionSchema = Type.Object({
+  type: Type.Literal('strategy_confirmation'),
+  strategyToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  submittedAt: Type.String(),
+});
+
+export const AgentTrialConfirmationActionSchema = Type.Object({
+  type: Type.Literal('trial_confirmation'),
+  trialToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
   submittedAt: Type.String(),
   result: Type.Object({
     userBookId: AgentUuidSchema,
@@ -150,7 +156,8 @@ export const AgentFinalConfirmationActionSchema = Type.Object({
 
 export const AgentActionSchema = Type.Union([
   AgentQuestionAnswerActionSchema,
-  AgentFinalConfirmationActionSchema,
+  AgentStrategyConfirmationActionSchema,
+  AgentTrialConfirmationActionSchema,
 ]);
 export type AgentAction = Static<typeof AgentActionSchema>;
 
@@ -314,6 +321,10 @@ export const AgentRunInputSchema = Type.Union([
     }),
     freeText: Type.Union([Type.String({ maxLength: 4000 }), Type.Null()]),
   }),
+  Type.Object({
+    type: Type.Literal('strategy_confirmation'),
+    strategyToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  }),
 ]);
 export type AgentRunInput = Static<typeof AgentRunInputSchema>;
 
@@ -341,6 +352,13 @@ export type SubmitAgentQuestionAnswerRequest = Static<
   typeof SubmitAgentQuestionAnswerRequestSchema
 >;
 
+export const SubmitAgentStrategyConfirmationRequestSchema = Type.Object({
+  strategyToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+});
+export type SubmitAgentStrategyConfirmationRequest = Static<
+  typeof SubmitAgentStrategyConfirmationRequestSchema
+>;
+
 export const StartAgentRunResponseSchema = Type.Object({
   runId: AgentUuidSchema,
   accepted: Type.Boolean(),
@@ -348,7 +366,7 @@ export const StartAgentRunResponseSchema = Type.Object({
 export type StartAgentRunResponse = Static<typeof StartAgentRunResponseSchema>;
 
 export const ConfirmReadingSetupRequestSchema = Type.Object({
-  offerToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  trialToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
 });
 export type ConfirmReadingSetupRequest = Static<
   typeof ConfirmReadingSetupRequestSchema
@@ -387,6 +405,8 @@ export type PublishBookReaderProfileArguments = Static<
   typeof PublishBookReaderProfileArgumentsSchema
 >;
 export const PublishStrategyArgumentsSchema = Type.Object({
+  briefToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  bookReaderProfileToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
   summary: Type.String({ minLength: 1, maxLength: 4000 }),
   strategy: ProposedStrategySchema,
 });
@@ -409,14 +429,3 @@ export const GenerateTrialSliceArgumentsSchema = Type.Object({
   reason: Type.String({ minLength: 1, maxLength: 2000 }),
 });
 export type GenerateTrialSliceArguments = Static<typeof GenerateTrialSliceArgumentsSchema>;
-
-export const OfferFinalConfirmationArgumentsSchema = Type.Object({
-  briefToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
-  bookReaderProfileToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
-  strategyToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
-  trialToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
-  summary: Type.String({ minLength: 1, maxLength: 4000 }),
-});
-export type OfferFinalConfirmationArguments = Static<
-  typeof OfferFinalConfirmationArgumentsSchema
->;

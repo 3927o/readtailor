@@ -1,9 +1,12 @@
+/** Provides the legacy verification page's reading-setup HTTP and SSE client boundary. */
+
 import type {
   ReadingSetupSessionSnapshot,
   AgentRunEvent,
   ConfirmReadingSetupResponse,
   StartAgentRunResponse,
   SubmitAgentQuestionAnswerRequest,
+  SubmitAgentStrategyConfirmationRequest,
 } from '@readtailor/contracts';
 import { createParser } from 'eventsource-parser';
 import { apiBaseUrl } from '../library/api';
@@ -48,11 +51,18 @@ export function submitReadingSetupQuestionAnswer(
   return postJson(`${sessionRoot(sessionId)}/question-answers`, input);
 }
 
+export function submitReadingSetupStrategyConfirmation(
+  sessionId: string,
+  input: SubmitAgentStrategyConfirmationRequest,
+): Promise<StartAgentRunResponse> {
+  return postJson(`${sessionRoot(sessionId)}/strategy-confirmations`, input);
+}
+
 export function confirmReadingSetup(
   sessionId: string,
-  offerToolCallId: string,
+  trialToolCallId: string,
 ): Promise<ConfirmReadingSetupResponse> {
-  return postJson(`${sessionRoot(sessionId)}/confirm`, { offerToolCallId });
+  return postJson(`${sessionRoot(sessionId)}/confirm`, { trialToolCallId });
 }
 
 export async function subscribeReadingSetupRun(options: {

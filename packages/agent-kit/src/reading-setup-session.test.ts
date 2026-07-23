@@ -112,8 +112,8 @@ describe('reading setup Agent loop boundary', () => {
             role: 'assistant',
             tool_calls: [
               { index: 0, id: 'read-1', type: 'function', function: { name: 'read_book_node', arguments: '{}' } },
-              { index: 1, id: 'question-1', type: 'function', function: { name: 'present_question', arguments: '{}' } },
-              { index: 2, id: 'offer-1', type: 'function', function: { name: 'offer_final_confirmation', arguments: '{}' } },
+              { index: 1, id: 'strategy-1', type: 'function', function: { name: 'publish_strategy', arguments: '{}' } },
+              { index: 2, id: 'trial-1', type: 'function', function: { name: 'generate_trial_slice', arguments: '{}' } },
             ],
           },
           finish_reason: null,
@@ -151,7 +151,10 @@ describe('reading setup Agent loop boundary', () => {
     });
     const next = await runReadingSetupAgentLoop({
       state,
-      input: { type: 'message', text: 'start' },
+      input: {
+        type: 'strategy_confirmation',
+        strategyToolCallId: 'strategy-0',
+      },
       model: createOpenAiCompatibleAgentModel({
         apiBaseUrl: `http://127.0.0.1:${address.port}/v1`,
         modelName: 'fake-agent-model',
@@ -159,8 +162,8 @@ describe('reading setup Agent loop boundary', () => {
       apiKey: 'test-key',
       tools: [
         makeTool('read_book_node'),
-        makeTool('present_question'),
-        makeTool('offer_final_confirmation'),
+        makeTool('publish_strategy'),
+        makeTool('generate_trial_slice'),
       ],
       emit: (event) => {
         if (event.type === 'message_end') endedMessageRoles.push(event.message.role);
@@ -168,9 +171,15 @@ describe('reading setup Agent loop boundary', () => {
     });
 
     expect(requests).toBe(1);
-    expect(executed).toEqual(expect.arrayContaining(['read-1', 'question-1', 'offer-1']));
+    expect(executed).toEqual(expect.arrayContaining(['read-1', 'strategy-1', 'trial-1']));
     expect(executed).toHaveLength(3);
     expect(next.messages.filter((message) => message.role === 'toolResult')).toHaveLength(3);
     expect(endedMessageRoles.filter((role) => role === 'toolResult')).toHaveLength(3);
+    expect(next.actions).toEqual([
+      expect.objectContaining({
+        type: 'strategy_confirmation',
+        strategyToolCallId: 'strategy-0',
+      }),
+    ]);
   });
 });

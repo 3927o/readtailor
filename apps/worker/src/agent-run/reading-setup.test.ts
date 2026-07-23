@@ -40,8 +40,8 @@ const strategy: ProposedStrategy = {
 };
 
 function state(options?: {
-  trialStrategyToolCallId?: string;
   omitStrategyResult?: boolean;
+  unconfirmedStrategy?: boolean;
 }): AgentSessionState {
   const calls = [
     { id: 'brief-call', name: 'publish_brief', arguments: { brief } },
@@ -53,7 +53,12 @@ function state(options?: {
     {
       id: 'strategy-call',
       name: 'publish_strategy',
-      arguments: { summary: '测试策略', strategy },
+      arguments: {
+        briefToolCallId: 'brief-call',
+        bookReaderProfileToolCallId: 'profile-call',
+        summary: '测试策略',
+        strategy,
+      },
     },
     {
       id: 'trial-call',
@@ -80,7 +85,7 @@ function state(options?: {
       details:
         call.name === 'generate_trial_slice'
           ? {
-              strategyToolCallId: options?.trialStrategyToolCallId ?? 'strategy-call',
+              strategyToolCallId: 'strategy-call',
               source: { sectionId: 'chapter-1', segment: 1 },
             }
           : { toolCallId: call.id },
@@ -111,7 +116,13 @@ function state(options?: {
       },
       ...results,
     ],
-    actions: [],
+    actions: options?.unconfirmedStrategy
+      ? []
+      : [{
+          type: 'strategy_confirmation',
+          strategyToolCallId: 'strategy-call',
+          submittedAt: '2026-07-24T00:00:00.000Z',
+        }],
   };
 }
 
@@ -133,6 +144,7 @@ function tools(
     tailoringModel: { name: 'fake' } as ModelEngine,
     userBookId: '00000000-0000-0000-0000-000000000001',
     state: sessionState,
+    input: { type: 'message', text: '继续' },
     ...(currentRunMessages ? { currentRunMessages } : {}),
   }).tools;
 }
@@ -199,7 +211,12 @@ describe('reading setup Agent tools', () => {
     const publishedStrategy = await execute(
       toolByName(all, 'publish_strategy'),
       'new-strategy-call',
-      { summary: '测试策略', strategy },
+      {
+        briefToolCallId: 'brief-call',
+        bookReaderProfileToolCallId: 'profile-call',
+        summary: '测试策略',
+        strategy,
+      },
     );
 
     expect(question.details).toMatchObject({ toolCallId: 'question-call' });
@@ -214,43 +231,51 @@ describe('reading setup Agent tools', () => {
     });
   });
 
-  it('requires explicit successful references and enforces trial/strategy consistency', async () => {
-    const offerInput = {
+  it('requires explicit artifact references and a confirmed strategy before trial', async () => {
+    const strategyInput = {
       briefToolCallId: 'brief-call',
       bookReaderProfileToolCallId: 'profile-call',
-      strategyToolCallId: 'strategy-call',
-      trialToolCallId: 'trial-call',
-      summary: '确认方案',
+      summary: '测试策略',
+      strategy,
     };
     const valid = await execute(
-      toolByName(tools(), 'offer_final_confirmation'),
-      'offer-call',
-      offerInput,
+      toolByName(tools(), 'publish_strategy'),
+      'strategy-call-2',
+      strategyInput,
     );
-    expect(valid.details).toMatchObject({ toolCallId: 'offer-call', ...offerInput });
+    expect(valid.details).toMatchObject({ toolCallId: 'strategy-call-2', ...strategyInput });
 
     const currentAttemptState = state();
     const committedState = { ...currentAttemptState, messages: [] };
     const validFromCurrentAttempt = await execute(
       toolByName(
         tools(committedState, () => currentAttemptState.messages),
-        'offer_final_confirmation',
+        'publish_strategy',
       ),
-      'offer-call-current-attempt',
-      offerInput,
+      'strategy-call-current-attempt',
+      strategyInput,
     );
     expect(validFromCurrentAttempt.details).toMatchObject({
-      toolCallId: 'offer-call-current-attempt',
-      ...offerInput,
+      toolCallId: 'strategy-call-current-attempt',
+      ...strategyInput,
     });
 
     await expect(
       execute(
-        toolByName(tools(state({ trialStrategyToolCallId: 'older-strategy' })), 'offer_final_confirmation'),
-        'offer-call',
-        offerInput,
+        toolByName(tools(state({ unconfirmedStrategy: true })), 'generate_trial_slice'),
+        'trial-call-2',
+        {
+          strategyToolCallId: 'strategy-call',
+          sectionId: 'chapter-1',
+          segment: 1,
+          range: {
+            start: { blockIndex: 1, offset: 0 },
+            end: { blockIndex: 1, offset: 10 },
+          },
+          reason: '测试',
+        },
       ),
-    ).rejects.toThrow('最终确认 strategy 不一致');
+    ).rejects.toThrow('用户确认');
 
     await expect(
       execute(
@@ -268,5 +293,6 @@ describe('reading setup Agent tools', () => {
         },
       ),
     ).rejects.toThrow('成功的 publish_strategy');
+    expect(tools().some((tool) => tool.name === 'offer_final_confirmation')).toBe(false);
   });
 });

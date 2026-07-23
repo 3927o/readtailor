@@ -2,26 +2,25 @@
 
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import {
-  OfferFinalConfirmationArgumentsSchema,
   PresentQuestionArgumentsSchema,
   PublishBookReaderProfileArgumentsSchema,
   PublishBriefArgumentsSchema,
   PublishStrategyArgumentsSchema,
-  type OfferFinalConfirmationArguments,
   type PresentQuestionArguments,
   type PublishBookReaderProfileArguments,
   type PublishBriefArguments,
   type PublishStrategyArguments,
 } from '@readtailor/contracts';
 import {
-  asObject,
   compatibleSchema,
   defineTool,
   resultText,
   type ReadingSetupToolHistory,
 } from './reading-setup-tool-support';
 
-export function createReadingSetupPresentationTools(): AgentTool[] {
+export function createReadingSetupPresentationTools(options: {
+  history: ReadingSetupToolHistory;
+}): AgentTool[] {
   return [
     defineTool({
       name: 'present_question',
@@ -52,44 +51,17 @@ export function createReadingSetupPresentationTools(): AgentTool[] {
     defineTool({
       name: 'publish_strategy',
       label: '发布阅读策略',
-      description: '只校验并发布 strategy summary/core，不写正式业务数据。',
+      description: '引用明确的 brief/profile，只校验并发布 strategy summary/core，不写正式业务数据。',
       parameters: compatibleSchema<PublishStrategyArguments>(PublishStrategyArgumentsSchema),
-      execute: async (toolCallId, input) =>
-        resultText('阅读策略已发布。', { toolCallId, ...input }),
+      executionMode: 'sequential',
+      execute: async (toolCallId, input) => {
+        options.history.requireSuccessful(input.briefToolCallId, 'publish_brief');
+        options.history.requireSuccessful(
+          input.bookReaderProfileToolCallId,
+          'publish_book_reader_profile',
+        );
+        return resultText('阅读策略已发布，等待用户确认。', { toolCallId, ...input });
+      },
     }),
   ];
-}
-
-export function createReadingSetupConfirmationTool(options: {
-  history: ReadingSetupToolHistory;
-}): AgentTool {
-  return defineTool({
-    name: 'offer_final_confirmation',
-    label: '展示最终确认',
-    description: '显式校验三个发布产物和同 strategy 的试读，只展示确认卡片。',
-    parameters: compatibleSchema<OfferFinalConfirmationArguments>(
-      OfferFinalConfirmationArgumentsSchema,
-    ),
-    executionMode: 'sequential',
-    execute: async (toolCallId, input) => {
-      options.history.requireSuccessful(input.briefToolCallId, 'publish_brief');
-      options.history.requireSuccessful(
-        input.bookReaderProfileToolCallId,
-        'publish_book_reader_profile',
-      );
-      options.history.requireSuccessful(input.strategyToolCallId, 'publish_strategy');
-      const trial = options.history.requireSuccessful(
-        input.trialToolCallId,
-        'generate_trial_slice',
-      );
-      const trialResult = asObject(trial.result!);
-      if (trialResult.strategyToolCallId !== input.strategyToolCallId) {
-        throw new Error('被引用试读使用的 strategy 与最终确认 strategy 不一致');
-      }
-      return resultText('最终确认卡片已展示，等待用户明确确认。', {
-        toolCallId,
-        ...input,
-      });
-    },
-  });
 }

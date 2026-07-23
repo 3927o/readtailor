@@ -3,16 +3,14 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import type {
   AgentMessageDto,
+  AgentRunInput,
   AgentSessionState,
 } from '@readtailor/contracts';
 import type { Database } from '@readtailor/database';
 import type { ModelEngine } from '@readtailor/model';
 import type { ObjectStorage } from '@readtailor/storage';
 import { createReadingSetupBookTools } from './reading-setup-book-tools';
-import {
-  createReadingSetupConfirmationTool,
-  createReadingSetupPresentationTools,
-} from './reading-setup-presentation-tools';
+import { createReadingSetupPresentationTools } from './reading-setup-presentation-tools';
 import {
   loadReadingSetupAgentResources,
   type ReadingSetupAgentResources,
@@ -30,6 +28,7 @@ export function createReadingSetupAgentTools(options: {
   tailoringModel: ModelEngine;
   userBookId: string;
   state: AgentSessionState;
+  input: AgentRunInput;
   currentRunMessages?: () => readonly AgentMessageDto[];
 }): { tools: AgentTool[] } {
   const history = createReadingSetupToolHistory(() => [
@@ -43,17 +42,27 @@ export function createReadingSetupAgentTools(options: {
       storage: options.storage,
       userBookId: options.userBookId,
     }));
+  const isStrategyConfirmed = (strategyToolCallId: string) =>
+    (
+      options.input.type === 'strategy_confirmation' &&
+      options.input.strategyToolCallId === strategyToolCallId
+    ) ||
+    options.state.actions.some(
+      (action) =>
+        action.type === 'strategy_confirmation' &&
+        action.strategyToolCallId === strategyToolCallId,
+    );
 
   return {
     tools: [
       ...createReadingSetupBookTools({ resources }),
-      ...createReadingSetupPresentationTools(),
+      ...createReadingSetupPresentationTools({ history }),
       createReadingSetupTrialTool({
         history,
+        isStrategyConfirmed,
         resources,
         tailoringModel: options.tailoringModel,
       }),
-      createReadingSetupConfirmationTool({ history }),
     ],
   };
 }

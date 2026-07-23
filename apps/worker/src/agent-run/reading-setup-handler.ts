@@ -41,6 +41,12 @@ function readingSetupRunInput(value: AgentJsonValue): AgentRunInput {
   ) {
     return value as AgentRunInput;
   }
+  if (
+    value.type === 'strategy_confirmation' &&
+    typeof value.strategyToolCallId === 'string'
+  ) {
+    return value as AgentRunInput;
+  }
   throw new Error('reading_setup Agent input 无效');
 }
 
@@ -64,6 +70,7 @@ export function createReadingSetupAgentHandler(options: {
       const session = await store.getById(input.sessionId);
       if (!session || session.activeRunId !== input.runId) return 'stale';
 
+      const runInput = readingSetupRunInput(input.input);
       const currentRunMessages: AgentMessageDto[] = [];
       const toolbox = createReadingSetupAgentTools({
         db: options.db,
@@ -71,11 +78,12 @@ export function createReadingSetupAgentHandler(options: {
         tailoringModel: options.tailoringModel,
         userBookId: session.userBookId,
         state: session.agentState,
+        input: runInput,
         currentRunMessages: () => currentRunMessages,
       });
       const nextState = await runReadingSetupAgentLoop({
         state: session.agentState,
-        input: readingSetupRunInput(input.input),
+        input: runInput,
         model,
         apiKey: options.apiKey,
         tools: toolbox.tools,
