@@ -32,7 +32,6 @@ import { FileSystemObjectStorage } from '@readtailor/storage';
 import {
   createAgentDrivenReadingSetupService,
 } from '../../../api/src/agent-driven-reading-setup';
-import type { BookService } from '../../../api/src/books';
 import {
   getTestDatabase,
   hasTestDatabase,
@@ -216,8 +215,9 @@ function state(): AgentSessionState {
       },
     ],
     actions: [{
-      type: 'strategy_confirmation',
-      strategyToolCallId: 'strategy-call',
+      type: 'confirmation',
+      targetToolCallId: 'strategy-call',
+      targetToolName: 'publish_strategy',
       submittedAt: '2026-07-24T00:00:00.000Z',
     }],
   };
@@ -272,6 +272,8 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
       db,
       storage,
       tailoringModel: { name: 'fake' } as ModelEngine,
+      sessionId: '00000000-0000-0000-0000-000000000002',
+      runId: '00000000-0000-0000-0000-000000000003',
       userBookId: graph.userBookId,
       state: state(),
       input: { type: 'message', text: '继续' },
@@ -308,7 +310,7 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
       sectionId: 'chapter-1',
       segment: 1,
       range: {
-        start: { blockIndex: 1, offset: 0 },
+        start: { blockIndex: 1, offset: 1 },
         end: { blockIndex: 2, offset: secondText.length },
       },
       reason: '验证完整策略',
@@ -317,9 +319,18 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
       toolCallId: 'trial-call',
       strategyToolCallId: 'strategy-call',
       source: {
+        titlePath: expect.any(Array),
         sectionId: 'chapter-1',
         segment: 1,
-        text: expect.stringContaining('系统由相互协作'),
+        text: expect.stringContaining('相互协作'),
+        blocks: expect.arrayContaining([
+          expect.objectContaining({
+            blockIndex: 1,
+            kind: expect.any(String),
+            text: expect.stringContaining('相互协作'),
+            sourceOffset: 1,
+          }),
+        ]),
       },
       guide: expect.any(String),
       annotations: [],
@@ -378,16 +389,6 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
             strategy,
           },
         },
-        {
-          id: 'question-2',
-          name: 'present_question',
-          arguments: {
-            prompt: '这个方案还需要怎样调整？',
-            options: [{ id: 'more-examples', label: '增加工程例子' }],
-            selectionMode: 'single',
-            allowFreeText: true,
-          },
-        },
       ],
       [
         {
@@ -417,6 +418,15 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
               end: { blockIndex: 2, offset: secondText.length },
             },
             reason: '验证调整后的表达方式',
+          },
+        },
+      ],
+      [
+        {
+          id: 'complete-2',
+          name: 'complete_reading_setup',
+          arguments: {
+            trialToolCallId: 'trial-2',
           },
         },
       ],
@@ -476,7 +486,6 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
     } as unknown as AgentRunObserver;
     const setup = createAgentDrivenReadingSetupService({
       db,
-      books: { getManifest: async () => manifest } as unknown as BookService,
       queue,
       observer,
       initialState: () => createAgentSessionState({
@@ -514,22 +523,32 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
     };
 
     const session = await setup.getOrCreateSession(graph.userId, graph.userBookId);
-    await setup.submitMessage(graph.userId, session.id, '开始准备');
+    await setup.submitAction(graph.userId, session.id, {
+      type: 'message',
+      text: '开始准备',
+    });
     await runNext();
-    await setup.submitQuestionAnswer(graph.userId, session.id, {
+    await setup.submitAction(graph.userId, session.id, {
+      type: 'question_answer',
       questionToolCallId: 'question-1',
       selectedOptionIds: ['apply'],
       freeText: null,
     });
     await runNext();
-    await setup.submitQuestionAnswer(graph.userId, session.id, {
-      questionToolCallId: 'question-2',
-      selectedOptionIds: ['more-examples'],
-      freeText: '请优先使用软件工程例子',
+    await setup.submitAction(graph.userId, session.id, {
+      type: 'feedback',
+      targetToolCallId: 'strategy-1',
+      message: '请优先使用软件工程例子',
     });
     await runNext();
-    await setup.submitStrategyConfirmation(graph.userId, session.id, {
-      strategyToolCallId: 'strategy-2',
+    await setup.submitAction(graph.userId, session.id, {
+      type: 'confirmation',
+      targetToolCallId: 'strategy-2',
+    });
+    await runNext();
+    await setup.submitAction(graph.userId, session.id, {
+      type: 'confirmation',
+      targetToolCallId: 'trial-2',
     });
     await runNext();
 
@@ -543,27 +562,36 @@ describePostgres(`reading setup Agent resource tools${skipReason}`, () => {
         'brief-1',
         'profile-1',
         'strategy-1',
-        'question-2',
         'strategy-2',
         'trial-2',
+        'complete-2',
       ]),
     );
-    expect(modelRequest).toBe(4);
+    expect(modelRequest).toBe(5);
     expect(committed.agentState.actions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          type: 'strategy_confirmation',
-          strategyToolCallId: 'strategy-2',
+          type: 'feedback',
+          targetToolCallId: 'strategy-1',
+          targetToolName: 'publish_strategy',
+        }),
+        expect.objectContaining({
+          type: 'confirmation',
+          targetToolCallId: 'strategy-2',
+          targetToolName: 'publish_strategy',
+        }),
+        expect.objectContaining({
+          type: 'confirmation',
+          targetToolCallId: 'trial-2',
+          targetToolName: 'generate_trial_slice',
         }),
       ]),
     );
 
-    const activated = await setup.confirm(graph.userId, session.id, 'trial-2');
     const [book] = await db.select().from(userBooks).where(eq(userBooks.id, graph.userBookId));
-    expect(activated).toMatchObject({ workflowStatus: 'active_reading' });
     expect(book).toMatchObject({
       workflowStatus: 'active_reading',
-      currentStrategyVersionId: activated.strategyVersionId,
+      currentStrategyVersionId: expect.any(String),
       currentTrialRevisionId: null,
     });
   });

@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { createFakeModelEngine, parseChatCompletionLine } from './index';
+/** Verifies model stream parsing and OpenAI-compatible request construction. */
+
+import { describe, expect, it, vi } from 'vitest';
+import {
+  createFakeModelEngine,
+  createOpenAiCompatibleEngine,
+  parseChatCompletionLine,
+} from './index';
 
 describe('parseChatCompletionLine', () => {
   it('extracts reasoning and content deltas', () => {
@@ -44,5 +50,38 @@ describe('createFakeModelEngine', () => {
       reply += event.text;
     }
     expect(reply).toBe('（假模型）已收到：测试');
+  });
+});
+
+describe('createOpenAiCompatibleEngine', () => {
+  it('forwards the JSON response format to the provider request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('data: [DONE]\n', {
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const engine = createOpenAiCompatibleEngine({
+        baseUrl: 'https://model.example.test',
+        apiKey: 'test-key',
+        model: 'test-model',
+      });
+      for await (const _event of engine.streamChat('测试', {
+        maxTokens: 4096,
+        responseFormat: 'json',
+      })) {
+        // The mocked stream only emits the completion sentinel.
+      }
+
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(String(init.body))).toMatchObject({
+        max_tokens: 4096,
+        response_format: { type: 'json_object' },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

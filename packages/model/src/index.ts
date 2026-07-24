@@ -1,12 +1,19 @@
+/** Provides streaming model engines for OpenAI-compatible chat-completion endpoints. */
+
 export type ModelStreamEvent =
   | { type: 'reasoning'; text: string }
   | { type: 'content'; text: string };
+
+export interface ModelStreamOptions {
+  maxTokens?: number | undefined;
+  responseFormat?: 'json' | undefined;
+}
 
 export interface ModelEngine {
   name: string;
   streamChat(
     prompt: string,
-    options?: { maxTokens?: number | undefined },
+    options?: ModelStreamOptions,
   ): AsyncIterable<ModelStreamEvent>;
 }
 
@@ -86,6 +93,9 @@ export function createOpenAiCompatibleEngine(options: {
           messages: [{ role: 'user', content: prompt }],
           max_tokens: streamOptions?.maxTokens ?? 2048,
           stream: true,
+          ...(streamOptions?.responseFormat === 'json'
+            ? { response_format: { type: 'json_object' } }
+            : {}),
         }),
         // 注意：这是整条流的总时长上限（fetch 的 signal 覆盖到 body 读完），
         // 推理模型的长回答可能持续数分钟，默认给 10 分钟。

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { Type } from '@earendil-works/pi-ai';
 import type { AgentMessage, AgentTool } from '@earendil-works/pi-agent-core';
 import {
+  READING_SETUP_AGENT_SYSTEM_PROMPT,
   runReadingSetupAgentLoop,
 } from './reading-setup-session';
 import {
@@ -93,6 +94,11 @@ describe('reading setup Agent session codec', () => {
 });
 
 describe('reading setup Agent loop boundary', () => {
+  it('instructs the Agent to publish only single-choice questions', () => {
+    expect(READING_SETUP_AGENT_SYSTEM_PROMPT)
+      .toContain('selectionMode 始终使用 single');
+  });
+
   it('finishes every tool in a mixed turn then stops after successful interaction tools', async () => {
     let requests = 0;
     const server = createServer((_request, response) => {
@@ -152,8 +158,9 @@ describe('reading setup Agent loop boundary', () => {
     const next = await runReadingSetupAgentLoop({
       state,
       input: {
-        type: 'strategy_confirmation',
-        strategyToolCallId: 'strategy-0',
+        type: 'confirmation',
+        targetToolCallId: 'strategy-0',
+        targetToolName: 'publish_strategy',
       },
       model: createOpenAiCompatibleAgentModel({
         apiBaseUrl: `http://127.0.0.1:${address.port}/v1`,
@@ -177,8 +184,9 @@ describe('reading setup Agent loop boundary', () => {
     expect(endedMessageRoles.filter((role) => role === 'toolResult')).toHaveLength(3);
     expect(next.actions).toEqual([
       expect.objectContaining({
-        type: 'strategy_confirmation',
-        strategyToolCallId: 'strategy-0',
+        type: 'confirmation',
+        targetToolCallId: 'strategy-0',
+        targetToolName: 'publish_strategy',
       }),
     ]);
   });

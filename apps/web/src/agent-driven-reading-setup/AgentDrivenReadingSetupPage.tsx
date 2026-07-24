@@ -14,11 +14,8 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { LibraryChrome } from '../library/LibraryChrome';
 import {
   readingSetupKeys,
-  confirmReadingSetup,
   createReadingSetupSession,
-  submitReadingSetupMessage,
-  submitReadingSetupQuestionAnswer,
-  submitReadingSetupStrategyConfirmation,
+  submitReadingSetupAction,
   subscribeReadingSetupRun,
 } from './api';
 import { parsePartialJson } from './partial-json';
@@ -83,6 +80,15 @@ export function AgentDrivenReadingSetupPage() {
             onEvent(event) {
               setActiveRun((current) => reduceAgentRunEvent(current, event));
               setConnectionError(null);
+              if (event.type === 'tool_execution_finished' && !event.isError) {
+                const result = object(realtimeDetails(event.result));
+                if (result?.workflowStatus === 'active_reading') {
+                  void queryClient.invalidateQueries({ queryKey: ['user-books'] });
+                  navigate(`/user-books/${encodeURIComponent(id)}/read`, {
+                    replace: true,
+                  });
+                }
+              }
               if (event.type === 'run_finished') {
                 void queryClient.invalidateQueries({
                   queryKey: readingSetupKeys.sessionByBook(id),
@@ -103,14 +109,17 @@ export function AgentDrivenReadingSetupPage() {
       stopped = true;
       controller.abort();
     };
-  }, [activeRun?.runId, activeRun?.status, id, queryClient, session?.id]);
+  }, [activeRun?.runId, activeRun?.status, id, navigate, queryClient, session?.id]);
 
   const sendMessage = async (message = composer) => {
     if (!session || !message.trim() || submitting) return;
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const started = await submitReadingSetupMessage(session.id, message.trim());
+      const started = await submitReadingSetupAction(session.id, {
+        type: 'message',
+        text: message.trim(),
+      });
       setComposer('');
       setActiveRun({
         runId: started.runId,
@@ -136,7 +145,8 @@ export function AgentDrivenReadingSetupPage() {
     if (!session) return;
     setSubmitError(null);
     try {
-      const started = await submitReadingSetupQuestionAnswer(session.id, {
+      const started = await submitReadingSetupAction(session.id, {
+        type: 'question_answer',
         questionToolCallId,
         selectedOptionIds,
         freeText,
@@ -159,8 +169,9 @@ export function AgentDrivenReadingSetupPage() {
     if (!session) return;
     setSubmitError(null);
     try {
-      const started = await submitReadingSetupStrategyConfirmation(session.id, {
-        strategyToolCallId,
+      const started = await submitReadingSetupAction(session.id, {
+        type: 'confirmation',
+        targetToolCallId: strategyToolCallId,
       });
       setActiveRun({
         runId: started.runId,
@@ -180,9 +191,19 @@ export function AgentDrivenReadingSetupPage() {
     if (!session) return;
     setSubmitError(null);
     try {
-      await confirmReadingSetup(session.id, trialToolCallId);
-      await queryClient.invalidateQueries({ queryKey: ['user-books'] });
-      navigate(`/user-books/${encodeURIComponent(id)}/read`, { replace: true });
+      const started = await submitReadingSetupAction(session.id, {
+        type: 'confirmation',
+        targetToolCallId: trialToolCallId,
+      });
+      setActiveRun({
+        runId: started.runId,
+        lastSequence: 0,
+        status: 'queued',
+        assistantText: '',
+        assistantMessage: null,
+        tools: [],
+        error: null,
+      });
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : '最终确认失败');
     }
@@ -352,6 +373,7 @@ export function ToolCard(props: {
     publish_book_reader_profile: '这本书与你',
     publish_strategy: '建议的阅读方式',
     generate_trial_slice: '片段试读',
+    complete_reading_setup: '完成阅读准备',
   };
   if (props.toolName === 'present_question' && args) {
     return (

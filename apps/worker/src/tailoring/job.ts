@@ -79,7 +79,10 @@ function createModelClient(
       const started = performance.now();
       let content = '';
       try {
-        for await (const event of engine.streamChat(request.prompt, { maxTokens: 4096 })) {
+        for await (const event of engine.streamChat(request.prompt, {
+          maxTokens: 4096,
+          responseFormat: request.responseFormat,
+        })) {
           if (event.type === 'content') content += event.text;
         }
         telemetry?.perfSink?.recordAgentCall({

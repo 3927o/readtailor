@@ -8,7 +8,30 @@ describe('parsePartialJson', () => {
     });
   });
 
-  it('returns undefined for prefixes that cannot yet form a field', () => {
-    expect(parsePartialJson('{"brief":')).toBeUndefined();
+  it('preserves the containing object before its first field value arrives', () => {
+    expect(parsePartialJson('{"brief":')).toEqual({});
+  });
+
+  it('keeps completed fields while the next object key is still streaming', () => {
+    const prompt = '你希望怎么读？';
+    const prefixes = [
+      `{"prompt":"${prompt}"`,
+      `{"prompt":"${prompt}",`,
+      `{"prompt":"${prompt}","`,
+      `{"prompt":"${prompt}","opt`,
+      `{"prompt":"${prompt}","options"`,
+      `{"prompt":"${prompt}","options":`,
+      `{"prompt":"${prompt}","options":[`,
+    ];
+
+    expect(prefixes.map((source) => parsePartialJson(source))).toEqual([
+      { prompt },
+      { prompt },
+      { prompt },
+      { prompt },
+      { prompt },
+      { prompt },
+      { prompt, options: [] },
+    ]);
   });
 });

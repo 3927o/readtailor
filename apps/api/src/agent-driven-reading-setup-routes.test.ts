@@ -11,7 +11,6 @@ const userId = '11111111-1111-4111-8111-111111111111';
 const userBookId = '22222222-2222-4222-8222-222222222222';
 const sessionId = '33333333-3333-4333-8333-333333333333';
 const runId = '44444444-4444-4444-8444-444444444444';
-const strategyVersionId = '55555555-5555-4555-8555-555555555555';
 
 const auth: AuthService = {
   async authenticateSession() {
@@ -51,20 +50,12 @@ const snapshot: ReadingSetupSessionSnapshot = {
 };
 
 describe('Reading setup routes', () => {
-  it('wires session, run subscription and explicit confirmation to the independent service', async () => {
+  it('wires the unified user-action endpoint and run subscription', async () => {
     const getOrCreateSession = vi.fn(async () => snapshot);
-    const submitMessage = vi.fn(async () => ({ runId, accepted: true }));
-    const submitStrategyConfirmation = vi.fn(async () => ({ runId, accepted: true }));
-    const confirm = vi.fn(async () => ({
-      userBookId,
-      workflowStatus: 'active_reading' as const,
-      strategyVersionId,
-    }));
+    const submitAction = vi.fn(async () => ({ runId, accepted: true }));
     const service = {
       getOrCreateSession,
-      submitMessage,
-      submitStrategyConfirmation,
-      confirm,
+      submitAction,
       async *subscribeRun() {
         yield {
           type: 'run_snapshot' as const,
@@ -97,24 +88,45 @@ describe('Reading setup routes', () => {
 
     const started = await app.inject({
       method: 'POST',
-      url: `/v1/reading-setup/sessions/${sessionId}/messages`,
+      url: `/v1/reading-setup/sessions/${sessionId}/actions`,
       headers: { origin: 'http://localhost:5173', 'content-type': 'application/json' },
-      payload: { message: '开始准备' },
+      payload: { type: 'message', text: '开始准备' },
     });
     expect(started.statusCode).toBe(202);
     expect(started.json()).toEqual({ runId, accepted: true });
-    expect(submitMessage).toHaveBeenCalledWith(userId, sessionId, '开始准备');
+    expect(submitAction).toHaveBeenCalledWith(userId, sessionId, {
+      type: 'message',
+      text: '开始准备',
+    });
 
     const strategyConfirmed = await app.inject({
       method: 'POST',
-      url: `/v1/reading-setup/sessions/${sessionId}/strategy-confirmations`,
+      url: `/v1/reading-setup/sessions/${sessionId}/actions`,
       headers: { origin: 'http://localhost:5173', 'content-type': 'application/json' },
-      payload: { strategyToolCallId: 'strategy-1' },
+      payload: { type: 'confirmation', targetToolCallId: 'strategy-1' },
     });
     expect(strategyConfirmed.statusCode).toBe(202);
     expect(strategyConfirmed.json()).toEqual({ runId, accepted: true });
-    expect(submitStrategyConfirmation).toHaveBeenCalledWith(userId, sessionId, {
-      strategyToolCallId: 'strategy-1',
+    expect(submitAction).toHaveBeenCalledWith(userId, sessionId, {
+      type: 'confirmation',
+      targetToolCallId: 'strategy-1',
+    });
+
+    const feedback = await app.inject({
+      method: 'POST',
+      url: `/v1/reading-setup/sessions/${sessionId}/actions`,
+      headers: { origin: 'http://localhost:5173', 'content-type': 'application/json' },
+      payload: {
+        type: 'feedback',
+        targetToolCallId: 'strategy-1',
+        message: '请增加工程例子',
+      },
+    });
+    expect(feedback.statusCode).toBe(202);
+    expect(submitAction).toHaveBeenCalledWith(userId, sessionId, {
+      type: 'feedback',
+      targetToolCallId: 'strategy-1',
+      message: '请增加工程例子',
     });
 
     const events = await app.inject({
@@ -126,18 +138,49 @@ describe('Reading setup routes', () => {
     expect(events.body).toContain('"type":"run_snapshot"');
     expect(events.body).toContain('"status":"completed"');
 
-    const activated = await app.inject({
+    const removedConfirm = await app.inject({
       method: 'POST',
       url: `/v1/reading-setup/sessions/${sessionId}/confirm`,
       headers: { origin: 'http://localhost:5173', 'content-type': 'application/json' },
       payload: { trialToolCallId: 'trial-1' },
     });
-    expect(activated.statusCode).toBe(200);
-    expect(activated.json()).toEqual({
-      userBookId,
-      workflowStatus: 'active_reading',
-      strategyVersionId,
+    expect(removedConfirm.statusCode).toBe(404);
+  });
+
+  it('rejects unknown and legacy user-action request shapes at the HTTP boundary', async () => {
+    const submitAction = vi.fn(async () => ({ runId, accepted: true }));
+    const service = { submitAction } as unknown as AgentDrivenReadingSetupService;
+    const app = await buildApp(loadApiConfig({ LOG_LEVEL: 'silent' }), {
+      auth,
+      agentDrivenReadingSetup: service,
     });
-    expect(confirm).toHaveBeenCalledWith(userId, sessionId, 'trial-1');
+
+    const unknownAction = await app.inject({
+      method: 'POST',
+      url: `/v1/reading-setup/sessions/${sessionId}/actions`,
+      headers: { origin: 'http://localhost:5173', 'content-type': 'application/json' },
+      payload: { type: 'session_start' },
+    });
+    expect(unknownAction.statusCode).toBe(400);
+
+    const legacyConfirmation = await app.inject({
+      method: 'POST',
+      url: `/v1/reading-setup/sessions/${sessionId}/actions`,
+      headers: { origin: 'http://localhost:5173', 'content-type': 'application/json' },
+      payload: {
+        type: 'strategy_confirmation',
+        strategyToolCallId: 'strategy-1',
+      },
+    });
+    expect(legacyConfirmation.statusCode).toBe(400);
+
+    const legacyRoute = await app.inject({
+      method: 'POST',
+      url: `/v1/reading-setup/sessions/${sessionId}/messages`,
+      headers: { origin: 'http://localhost:5173', 'content-type': 'application/json' },
+      payload: { message: '开始准备' },
+    });
+    expect(legacyRoute.statusCode).toBe(404);
+    expect(submitAction).not.toHaveBeenCalled();
   });
 });

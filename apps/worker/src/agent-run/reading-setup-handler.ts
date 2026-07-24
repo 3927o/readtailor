@@ -42,8 +42,19 @@ function readingSetupRunInput(value: AgentJsonValue): AgentRunInput {
     return value as AgentRunInput;
   }
   if (
-    value.type === 'strategy_confirmation' &&
-    typeof value.strategyToolCallId === 'string'
+    value.type === 'feedback' &&
+    typeof value.targetToolCallId === 'string' &&
+    (value.targetToolName === 'publish_strategy' ||
+      value.targetToolName === 'generate_trial_slice') &&
+    typeof value.message === 'string'
+  ) {
+    return value as AgentRunInput;
+  }
+  if (
+    value.type === 'confirmation' &&
+    typeof value.targetToolCallId === 'string' &&
+    (value.targetToolName === 'publish_strategy' ||
+      value.targetToolName === 'generate_trial_slice')
   ) {
     return value as AgentRunInput;
   }
@@ -76,6 +87,8 @@ export function createReadingSetupAgentHandler(options: {
         db: options.db,
         storage: options.storage,
         tailoringModel: options.tailoringModel,
+        sessionId: session.id,
+        runId: input.runId,
         userBookId: session.userBookId,
         state: session.agentState,
         input: runInput,

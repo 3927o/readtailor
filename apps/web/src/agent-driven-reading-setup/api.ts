@@ -3,10 +3,8 @@
 import type {
   ReadingSetupSessionSnapshot,
   AgentRunEvent,
-  ConfirmReadingSetupResponse,
   StartAgentRunResponse,
-  SubmitAgentQuestionAnswerRequest,
-  SubmitAgentStrategyConfirmationRequest,
+  SubmitReadingSetupActionRequest,
 } from '@readtailor/contracts';
 import { createParser } from 'eventsource-parser';
 import { apiBaseUrl } from '../library/api';
@@ -37,32 +35,11 @@ export function getReadingSetupSession(
   return getJson(sessionRoot(sessionId));
 }
 
-export function submitReadingSetupMessage(
+export function submitReadingSetupAction(
   sessionId: string,
-  message: string,
+  action: SubmitReadingSetupActionRequest,
 ): Promise<StartAgentRunResponse> {
-  return postJson(`${sessionRoot(sessionId)}/messages`, { message });
-}
-
-export function submitReadingSetupQuestionAnswer(
-  sessionId: string,
-  input: SubmitAgentQuestionAnswerRequest,
-): Promise<StartAgentRunResponse> {
-  return postJson(`${sessionRoot(sessionId)}/question-answers`, input);
-}
-
-export function submitReadingSetupStrategyConfirmation(
-  sessionId: string,
-  input: SubmitAgentStrategyConfirmationRequest,
-): Promise<StartAgentRunResponse> {
-  return postJson(`${sessionRoot(sessionId)}/strategy-confirmations`, input);
-}
-
-export function confirmReadingSetup(
-  sessionId: string,
-  trialToolCallId: string,
-): Promise<ConfirmReadingSetupResponse> {
-  return postJson(`${sessionRoot(sessionId)}/confirm`, { trialToolCallId });
+  return postJson(`${sessionRoot(sessionId)}/actions`, action);
 }
 
 export async function subscribeReadingSetupRun(options: {

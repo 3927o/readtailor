@@ -37,7 +37,14 @@ export async function loadReadingSetupAgentResources(options: {
     .innerJoin(bookPackages, eq(bookPackages.id, sharedBooks.currentPackageId))
     .where(and(eq(userBooks.id, options.userBookId), eq(sharedBooks.status, 'ready')))
     .limit(1);
-  if (!row || row.userBook.deletedAt || row.userBook.workflowStatus !== 'on_shelf') {
+  if (
+    !row ||
+    row.userBook.deletedAt ||
+    (
+      row.userBook.workflowStatus !== 'on_shelf' &&
+      row.userBook.workflowStatus !== 'active_reading'
+    )
+  ) {
     throw new Error('阅读准备资源当前不可用');
   }
 

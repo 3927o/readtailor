@@ -6,10 +6,10 @@ import type {
   AgentRunInput,
   AgentSessionState,
   PresentQuestionArguments,
+  ReadingSetupConfirmableToolName,
   ReadingSetupSessionSnapshot,
   StartAgentRunResponse,
-  SubmitAgentQuestionAnswerRequest,
-  SubmitAgentStrategyConfirmationRequest,
+  SubmitReadingSetupActionRequest,
 } from '@readtailor/contracts';
 import { indexAgentTranscript } from '@readtailor/agent-state';
 import {
@@ -20,9 +20,7 @@ import {
 } from '@readtailor/database';
 import type { AgentRunObserver, AgentRunQueue } from '@readtailor/queue';
 import { createAgentRunObservation } from './agent-run-observation';
-import { createReadingSetupActivationService } from './agent-driven-reading-setup-activation';
 import { AgentDrivenReadingSetupError } from './agent-driven-reading-setup-error';
-import type { BookService } from './books';
 
 export { AgentDrivenReadingSetupError } from './agent-driven-reading-setup-error';
 
@@ -49,7 +47,6 @@ function requireQuestionArguments(
 
 export function createAgentDrivenReadingSetupService(options: {
   db: Database;
-  books: BookService;
   queue: AgentRunQueue;
   observer: AgentRunObserver;
   initialState(): AgentSessionState;
@@ -177,11 +174,113 @@ export function createAgentDrivenReadingSetupService(options: {
     },
     runNotFound: () => new AgentDrivenReadingSetupError('Agent run 不存在', 404),
   });
-  const activation = createReadingSetupActivationService({
-    db: options.db,
-    books: options.books,
-    requireOwnedSession,
-  });
+  const submitMessage = (
+    userId: string,
+    sessionId: string,
+    input: Extract<SubmitReadingSetupActionRequest, { type: 'message' }>,
+  ) => {
+    const text = input.text.trim();
+    if (!text) throw new AgentDrivenReadingSetupError('消息不能为空', 400);
+    return startRun(userId, sessionId, { type: 'message', text });
+  };
+
+  const submitQuestionAnswer = async (
+    userId: string,
+    sessionId: string,
+    input: Extract<SubmitReadingSetupActionRequest, { type: 'question_answer' }>,
+  ): Promise<StartAgentRunResponse> => {
+    const session = await requireOwnedSession(userId, sessionId);
+    const args = requireQuestionArguments(session.agentState, input.questionToolCallId);
+    const optionIds = new Set(args.options.map((option) => option.id));
+    if (input.selectedOptionIds.some((id) => !optionIds.has(id))) {
+      throw new AgentDrivenReadingSetupError('问题回答包含无效选项', 400);
+    }
+    if (args.selectionMode === 'single' && input.selectedOptionIds.length > 1) {
+      throw new AgentDrivenReadingSetupError('该问题只允许单选', 400);
+    }
+    if (!args.allowFreeText && input.freeText?.trim()) {
+      throw new AgentDrivenReadingSetupError('该问题不允许自由文本', 400);
+    }
+    if (input.selectedOptionIds.length === 0 && !input.freeText?.trim()) {
+      throw new AgentDrivenReadingSetupError('问题回答不能为空', 400);
+    }
+    return startRun(userId, sessionId, {
+      type: 'question_answer',
+      questionToolCallId: input.questionToolCallId,
+      selectedOptionIds: input.selectedOptionIds,
+      freeText: input.freeText?.trim() || null,
+    });
+  };
+
+  const requireActionTarget = (
+    state: AgentSessionState,
+    targetToolCallId: string,
+  ): ReadingSetupConfirmableToolName => {
+    const target = indexAgentTranscript(state.messages).get(targetToolCallId);
+    if (
+      target?.status !== 'succeeded' ||
+      (target.toolName !== 'publish_strategy' &&
+        target.toolName !== 'generate_trial_slice')
+    ) {
+      throw new AgentDrivenReadingSetupError(
+        `${targetToolCallId} 不是当前 session 中可操作的成功 Tool 调用`,
+        409,
+      );
+    }
+    return target.toolName;
+  };
+
+  const submitFeedback = async (
+    userId: string,
+    sessionId: string,
+    input: Extract<
+      SubmitReadingSetupActionRequest,
+      { type: 'feedback' }
+    >,
+  ): Promise<StartAgentRunResponse> => {
+    const session = await requireOwnedSession(userId, sessionId);
+    const message = input.message.trim();
+    if (!message) throw new AgentDrivenReadingSetupError('反馈不能为空', 400);
+    const targetToolName = requireActionTarget(
+      session.agentState,
+      input.targetToolCallId,
+    );
+    return startRun(userId, sessionId, {
+      type: 'feedback',
+      targetToolCallId: input.targetToolCallId,
+      targetToolName,
+      message,
+    });
+  };
+
+  const submitConfirmation = async (
+    userId: string,
+    sessionId: string,
+    input: Extract<
+      SubmitReadingSetupActionRequest,
+      { type: 'confirmation' }
+    >,
+  ): Promise<StartAgentRunResponse> => {
+    const session = await requireOwnedSession(userId, sessionId);
+    const targetToolName = requireActionTarget(
+      session.agentState,
+      input.targetToolCallId,
+    );
+    if (
+      session.agentState.actions.some(
+        (action) =>
+          action.type === 'confirmation' &&
+          action.targetToolCallId === input.targetToolCallId,
+      )
+    ) {
+      throw new AgentDrivenReadingSetupError('该产物已经确认', 409);
+    }
+    return startRun(userId, sessionId, {
+      type: 'confirmation',
+      targetToolCallId: input.targetToolCallId,
+      targetToolName,
+    });
+  };
 
   return {
     async getOrCreateSession(
@@ -207,74 +306,25 @@ export function createAgentDrivenReadingSetupService(options: {
       return snapshot(session);
     },
 
-    submitMessage(userId: string, sessionId: string, message: string) {
-      const text = message.trim();
-      if (!text) throw new AgentDrivenReadingSetupError('消息不能为空', 400);
-      return startRun(userId, sessionId, { type: 'message', text });
-    },
-
-    async submitQuestionAnswer(
+    submitAction(
       userId: string,
       sessionId: string,
-      input: SubmitAgentQuestionAnswerRequest,
+      input: SubmitReadingSetupActionRequest,
     ): Promise<StartAgentRunResponse> {
-      const session = await requireOwnedSession(userId, sessionId);
-      const args = requireQuestionArguments(session.agentState, input.questionToolCallId);
-      const optionIds = new Set(args.options.map((option) => option.id));
-      if (input.selectedOptionIds.some((id) => !optionIds.has(id))) {
-        throw new AgentDrivenReadingSetupError('问题回答包含无效选项', 400);
+      switch (input.type) {
+        case 'message':
+          return submitMessage(userId, sessionId, input);
+        case 'question_answer':
+          return submitQuestionAnswer(userId, sessionId, input);
+        case 'feedback':
+          return submitFeedback(userId, sessionId, input);
+        case 'confirmation':
+          return submitConfirmation(userId, sessionId, input);
       }
-      if (args.selectionMode === 'single' && input.selectedOptionIds.length > 1) {
-        throw new AgentDrivenReadingSetupError('该问题只允许单选', 400);
-      }
-      if (!args.allowFreeText && input.freeText?.trim()) {
-        throw new AgentDrivenReadingSetupError('该问题不允许自由文本', 400);
-      }
-      if (input.selectedOptionIds.length === 0 && !input.freeText?.trim()) {
-        throw new AgentDrivenReadingSetupError('问题回答不能为空', 400);
-      }
-      return startRun(userId, sessionId, {
-        type: 'question_answer',
-        questionToolCallId: input.questionToolCallId,
-        selectedOptionIds: input.selectedOptionIds,
-        freeText: input.freeText?.trim() || null,
-      });
-    },
-
-    async submitStrategyConfirmation(
-      userId: string,
-      sessionId: string,
-      input: SubmitAgentStrategyConfirmationRequest,
-    ): Promise<StartAgentRunResponse> {
-      const session = await requireOwnedSession(userId, sessionId);
-      const strategy = indexAgentTranscript(session.agentState.messages).getSuccessful(
-        input.strategyToolCallId,
-        'publish_strategy',
-      );
-      if (!strategy) {
-        throw new AgentDrivenReadingSetupError(
-          `${input.strategyToolCallId} 不是当前 session 中成功的 publish_strategy 调用`,
-          409,
-        );
-      }
-      if (
-        session.agentState.actions.some(
-          (action) =>
-            action.type === 'strategy_confirmation' &&
-            action.strategyToolCallId === input.strategyToolCallId,
-        )
-      ) {
-        throw new AgentDrivenReadingSetupError('该阅读策略已经确认', 409);
-      }
-      return startRun(userId, sessionId, {
-        type: 'strategy_confirmation',
-        strategyToolCallId: input.strategyToolCallId,
-      });
     },
 
     getRunSnapshot: runObservation.getSnapshot,
     subscribeRun: runObservation.subscribe,
-    confirm: activation.confirm,
   };
 }
 

@@ -189,10 +189,9 @@ const userBooks =
     : undefined;
 
 const agentDrivenReadingSetup =
-  database && books && agentRunQueue && agentRunObserver && readingSetupEndpoint
+  database && agentRunQueue && agentRunObserver && readingSetupEndpoint
     ? createAgentDrivenReadingSetupService({
         db: database.db,
-        books,
         queue: agentRunQueue,
         observer: agentRunObserver,
         initialState: () =>

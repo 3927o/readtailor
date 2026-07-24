@@ -1,6 +1,9 @@
 /** Executes generic queued Agent runs and publishes their canonical display progress. */
 
-import { createAgentRunProjector } from '@readtailor/agent-kit/runtime';
+import {
+  createAgentRunProjector,
+  createCoalescingAgentEventSink,
+} from '@readtailor/agent-kit/runtime';
 import type { AgentRunQueueJob, AgentRunJobProgress } from '@readtailor/queue';
 import type { AgentRunDisplaySnapshot } from '@readtailor/contracts';
 import type { AgentHandlerRegistry } from './registry';
@@ -21,19 +24,50 @@ export async function executeAgentRun(options: {
     ...(snapshot ? { initialSnapshot: snapshot } : {}),
     publish: (progress) => options.job.updateProgress(progress),
   });
+  const eventSink = createCoalescingAgentEventSink({
+    sink: (event) => projector.accept(event),
+  });
   let startAttempt: Promise<void> | undefined;
   const ensureAttemptStarted = () =>
     (startAttempt ??= projector.startAttempt());
 
-  const outcome = await handler.execute({
-    sessionId: options.job.data.sessionId,
-    runId: options.job.data.runId,
-    input: options.job.data.input,
-    emit: async (event) => {
-      await ensureAttemptStarted();
-      await projector.accept(event);
-    },
-  });
+  let outcome: Awaited<ReturnType<typeof handler.execute>> | undefined;
+  let handlerFailed = false;
+  let handlerError: unknown;
+  try {
+    outcome = await handler.execute({
+      sessionId: options.job.data.sessionId,
+      runId: options.job.data.runId,
+      input: options.job.data.input,
+      emit: async (event) => {
+        await ensureAttemptStarted();
+        await eventSink.accept(event);
+      },
+    });
+  } catch (error) {
+    handlerFailed = true;
+    handlerError = error;
+  }
+
+  let flushFailed = false;
+  let flushError: unknown;
+  try {
+    await eventSink.flush();
+  } catch (error) {
+    flushFailed = true;
+    flushError = error;
+  }
+
+  if (handlerFailed && flushFailed) {
+    if (handlerError === flushError) throw handlerError;
+    throw new AggregateError(
+      [handlerError, flushError],
+      'Agent handler 与 progress 发布同时失败',
+    );
+  }
+  if (handlerFailed) throw handlerError;
+  if (flushFailed) throw flushError;
+
   if (outcome !== 'committed') return;
   await ensureAttemptStarted();
   await projector.completed();

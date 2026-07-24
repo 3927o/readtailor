@@ -3,13 +3,9 @@
 import { Readable } from 'node:stream';
 import { Type, type FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox';
 import {
-  ConfirmReadingSetupRequestSchema,
-  ConfirmReadingSetupResponseSchema,
   ErrorResponseSchema,
   StartAgentRunResponseSchema,
-  SubmitAgentMessageRequestSchema,
-  SubmitAgentQuestionAnswerRequestSchema,
-  SubmitAgentStrategyConfirmationRequestSchema,
+  SubmitReadingSetupActionRequestSchema,
 } from '@readtailor/contracts';
 import {
   AgentDrivenReadingSetupError,
@@ -135,11 +131,11 @@ export const agentDrivenReadingSetupRoutes: FastifyPluginAsyncTypebox<{
   );
 
   app.post(
-    '/v1/reading-setup/sessions/:sessionId/strategy-confirmations',
+    '/v1/reading-setup/sessions/:sessionId/actions',
     {
       schema: {
         params: readingSetupSessionParams,
-        body: SubmitAgentStrategyConfirmationRequestSchema,
+        body: SubmitReadingSetupActionRequestSchema,
         response: {
           202: StartAgentRunResponseSchema,
           400: ErrorResponseSchema,
@@ -152,67 +148,7 @@ export const agentDrivenReadingSetupRoutes: FastifyPluginAsyncTypebox<{
     async (request, reply) => {
       if (!options.service) return reply.code(503).send({ error: '阅读准备未配置' });
       try {
-        const result = await options.service.submitStrategyConfirmation(
-          request.authUser!.id,
-          request.params.sessionId,
-          request.body,
-        );
-        return reply.code(202).send(result);
-      } catch (error) {
-        return readingSetupFailure(error, reply);
-      }
-    },
-  );
-
-  app.post(
-    '/v1/reading-setup/sessions/:sessionId/messages',
-    {
-      schema: {
-        params: readingSetupSessionParams,
-        body: SubmitAgentMessageRequestSchema,
-        response: {
-          202: StartAgentRunResponseSchema,
-          400: ErrorResponseSchema,
-          404: ErrorResponseSchema,
-          409: ErrorResponseSchema,
-          503: ErrorResponseSchema,
-        },
-      },
-    },
-    async (request, reply) => {
-      if (!options.service) return reply.code(503).send({ error: '阅读准备未配置' });
-      try {
-        const result = await options.service.submitMessage(
-          request.authUser!.id,
-          request.params.sessionId,
-          request.body.message,
-        );
-        return reply.code(202).send(result);
-      } catch (error) {
-        return readingSetupFailure(error, reply);
-      }
-    },
-  );
-
-  app.post(
-    '/v1/reading-setup/sessions/:sessionId/question-answers',
-    {
-      schema: {
-        params: readingSetupSessionParams,
-        body: SubmitAgentQuestionAnswerRequestSchema,
-        response: {
-          202: StartAgentRunResponseSchema,
-          400: ErrorResponseSchema,
-          404: ErrorResponseSchema,
-          409: ErrorResponseSchema,
-          503: ErrorResponseSchema,
-        },
-      },
-    },
-    async (request, reply) => {
-      if (!options.service) return reply.code(503).send({ error: '阅读准备未配置' });
-      try {
-        const result = await options.service.submitQuestionAnswer(
+        const result = await options.service.submitAction(
           request.authUser!.id,
           request.params.sessionId,
           request.body,
@@ -279,32 +215,4 @@ export const agentDrivenReadingSetupRoutes: FastifyPluginAsyncTypebox<{
     },
   );
 
-  app.post(
-    '/v1/reading-setup/sessions/:sessionId/confirm',
-    {
-      schema: {
-        params: readingSetupSessionParams,
-        body: ConfirmReadingSetupRequestSchema,
-        response: {
-          200: ConfirmReadingSetupResponseSchema,
-          400: ErrorResponseSchema,
-          404: ErrorResponseSchema,
-          409: ErrorResponseSchema,
-          503: ErrorResponseSchema,
-        },
-      },
-    },
-    async (request, reply) => {
-      if (!options.service) return reply.code(503).send({ error: '阅读准备未配置' });
-      try {
-        return await options.service.confirm(
-          request.authUser!.id,
-          request.params.sessionId,
-          request.body.trialToolCallId,
-        );
-      } catch (error) {
-        return readingSetupFailure(error, reply);
-      }
-    },
-  );
 };

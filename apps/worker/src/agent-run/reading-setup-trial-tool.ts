@@ -5,6 +5,7 @@ import {
   GenerateTrialSliceArgumentsSchema,
   type BookReaderProfile,
   type GenerateTrialSliceArguments,
+  type GenerateTrialSliceResult,
   type ProposedStrategy,
 } from '@readtailor/contracts';
 import type { ModelEngine } from '@readtailor/model';
@@ -44,7 +45,10 @@ function createTailoringClient(engine: ModelEngine): TailoringModelClient {
         });
       }
       let content = '';
-      for await (const event of engine.streamChat(request.prompt, { maxTokens: 4096 })) {
+      for await (const event of engine.streamChat(request.prompt, {
+        maxTokens: 4096,
+        responseFormat: request.responseFormat,
+      })) {
         if (event.type === 'content') content += event.text;
       }
       return content;
@@ -97,6 +101,7 @@ export function createReadingSetupTrialTool(options: {
       const profileArgs = asObject(profileRecord.arguments);
       const strategy = strategyArgs.strategy as unknown as ProposedStrategy;
       const bookReaderProfile = profileArgs.profile as unknown as BookReaderProfile;
+      const sourceTitlePath = titlePath(node, loaded.manifest);
       const generated = await generateTailoredContent(
         {
           generationScope: 'trial',
@@ -120,7 +125,7 @@ export function createReadingSetupTrialTool(options: {
             segment: node.segment,
             nodeOrder: node.order,
             title: node.title || null,
-            ancestorTitles: titlePath(node, loaded.manifest),
+            ancestorTitles: sourceTitlePath,
             range,
             structuredHtml: selected.structuredHtml,
             blocks: selected.blocks,
@@ -141,19 +146,27 @@ export function createReadingSetupTrialTool(options: {
         },
         createTailoringClient(options.tailoringModel),
       );
-      return resultText('试读切片已生成。', {
+      const result: GenerateTrialSliceResult = {
         toolCallId,
         strategyToolCallId: strategyRecord.toolCallId,
         source: {
+          titlePath: sourceTitlePath,
           sectionId: node.sectionId,
           segment: node.segment,
           range,
           text: sourceText,
+          blocks: selected.blocks.map((block) => ({
+            blockIndex: block.blockIndex,
+            kind: block.kind,
+            text: block.text,
+            sourceOffset: block.sourceOffset ?? 0,
+          })),
         },
         guide: generated.guide,
         annotations: generated.annotations,
         afterReading: generated.afterReading,
-      });
+      };
+      return resultText('试读切片已生成。', result);
     },
   });
 }

@@ -105,20 +105,56 @@ function renderInline(tokens: InlineToken[]): ReactNode[] {
   });
 }
 
-function renderBlock(block: MarkdownBlock, index: number): ReactNode {
+function renderBlock(
+  block: MarkdownBlock,
+  index: number,
+  trailing?: ReactNode,
+): ReactNode {
   switch (block.type) {
     // `#` starts at h3 so body headings sit below the surrounding card's h2/h3 chrome.
-    case 'heading': return createElement(`h${Math.min(6, block.level + 2)}`, { key: index }, renderInline(block.content));
+    case 'heading': return createElement(
+      `h${Math.min(6, block.level + 2)}`,
+      { key: index },
+      renderInline(block.content),
+      trailing,
+    );
     case 'list': {
-      const items = block.items.map((item, i) => <li key={i}>{renderInline(item)}</li>);
+      const items = block.items.map((item, i) => (
+        <li key={i}>
+          {renderInline(item)}
+          {i === block.items.length - 1 ? trailing : null}
+        </li>
+      ));
       return block.ordered ? <ol key={index}>{items}</ol> : <ul key={index}>{items}</ul>;
     }
-    case 'paragraph': return <p key={index}>{renderInline(block.content)}</p>;
+    case 'paragraph': return (
+      <p key={index}>
+        {renderInline(block.content)}
+        {trailing}
+      </p>
+    );
   }
 }
 
-export function AssistanceContent({ content }: { content: string }) {
-  return <div className="assistance-content">{parseMarkdown(content).map(renderBlock)}</div>;
+export function AssistanceContent({
+  content,
+  trailing,
+}: {
+  content: string;
+  trailing?: ReactNode;
+}) {
+  const blocks = parseMarkdown(content);
+  return (
+    <div className="assistance-content">
+      {blocks.length > 0
+        ? blocks.map((block, index) => renderBlock(
+            block,
+            index,
+            index === blocks.length - 1 ? trailing : undefined,
+          ))
+        : trailing}
+    </div>
+  );
 }
 
 export function AdjustmentForm({

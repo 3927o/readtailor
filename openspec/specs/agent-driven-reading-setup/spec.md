@@ -93,14 +93,14 @@
 - **THEN** 系统仅在完整 Agent session 已成功提交后发送 `run_finished(status=completed)`
 
 ### Requirement: Agent 自主编排会话
-系统 SHALL 在每次 run 中向 Agent 暴露相同的书籍读取、问题展示、独立产物发布和试读切片生成 Tool，且 SHALL NOT 暴露独立的最终确认或 finish Tool。宿主 MUST NOT 根据旧 workflow 状态或显式 phase 决定 Agent 下一步。Tool SHALL 立即完成自身执行；若一个 assistant turn 中存在成功的 `present_question`、`publish_strategy` 或 `generate_trial_slice`，Runner MUST 等该 turn 的全部 Tool 完成后结束 run，且 MUST NOT 要求该等待用户动作的 Tool 是 turn 中唯一的 Tool。
+系统 SHALL 在每次 run 中向 Agent 暴露相同的书籍读取、问题展示、独立产物发布、试读切片生成和 `complete_reading_setup` Tool。宿主 MUST NOT 根据旧 workflow 状态或显式 phase 决定 Agent 下一步。Tool SHALL 立即完成自身执行；若一个 assistant turn 中存在成功的 `present_question`、`publish_strategy`、`generate_trial_slice` 或 `complete_reading_setup`，Runner MUST 等该 turn 的全部 Tool 完成后结束 run，且 MUST NOT 要求该 Tool 是 turn 中唯一的 Tool。系统 SHALL NOT 强制收到 Trial confirmation 的 run 必须调用 complete。
 
 #### Scenario: Agent 决定继续追问
 - **WHEN** Agent 根据完整 session 和书籍上下文判断信息不足
 - **THEN** Agent 可以调用 `present_question`，当前 turn 的全部 Tool 正常结束后 run 停止等待用户，而无需宿主进入 interviewing 状态
 
-#### Scenario: Agent 根据反馈重做产物
-- **WHEN** 用户对简报、策略或试读给出反馈
+#### Scenario: Agent 根据结构化反馈重做产物
+- **WHEN** 用户提交引用成功 `publish_strategy` 或 `generate_trial_slice` 的 `feedback` action
 - **THEN** Agent 可以自行选择继续追问、重新发布单个产物或重新生成试读，而无需修改业务阶段或 supersede 旧工具结果
 
 #### Scenario: 交互 Tool 与其他 Tool 共存
@@ -111,9 +111,13 @@
 - **WHEN** 已提交 run 中的 question 卡片可操作，用户提交 `questionToolCallId`、selected option ids 和 free text
 - **THEN** 系统保存该结构化 action 并以它作为下一次 Agent run 输入，而不是让前一个 Tool 跨进程等待
 
-#### Scenario: 用户确认策略启动下一 run
-- **WHEN** 已提交 run 中的 strategy 可操作，用户提交属于当前 session 成功 `publish_strategy` 的 `strategyToolCallId`
-- **THEN** 系统保存 `strategy_confirmation` action，并以该精确引用作为下一次 Agent run 输入，而不是由前端或宿主推断当前策略
+#### Scenario: 统一用户确认启动下一 run
+- **WHEN** 用户提交 `{ type: 'confirmation', targetToolCallId }`，且目标是当前 session 中成功的 `publish_strategy` 或 `generate_trial_slice`
+- **THEN** 服务端根据真实 Tool call 补充 `targetToolName`，以统一 confirmation 作为下一次 Agent run 输入，并在 run 成功后保存同一结构化 action
+
+#### Scenario: 用户动作使用单一入口
+- **WHEN** 用户提交 message、question answer、feedback 或 confirmation
+- **THEN** 客户端统一调用 session actions 接口；`session_start` 仅可由宿主内部生成，旧 message、question answer、strategy confirmation 和 trial confirm 路由不可用
 
 ### Requirement: 有界且可继续读取的书籍 Tool
 系统 SHALL 分离语义目录和 reading node 元数据：`get_book_outline` SHALL 只返回分页 outline，`list_reading_nodes` SHALL 返回分页节点元数据。正文读取与搜索 Tool MUST 设置服务端硬上限，并 MUST 返回足以继续读取的游标或截断信息。
@@ -158,14 +162,14 @@
 - **THEN** 系统只在成功 run 提交时保存 Agent session，不创建 book reader profile、strategy draft 或 formal strategy 业务行
 
 ### Requirement: 单 reading node 连续切片试读
-`generate_trial_slice` 每次调用 SHALL 只生成一个试读单元，入参 MUST 显式包含 `strategyToolCallId`、`sectionId`、`segment`、连续 `BlockRange` 和 reason。Tool MUST 使用被引用的同 session 成功 `publish_strategy`，并 MUST 验证 session 已保存该精确 Tool call 的 `strategy_confirmation` action，或当前 run 的有效输入正是该精确 strategy confirmation。Tool SHALL 沿 strategy 的明确引用取得 book reader profile，且 SHALL NOT 自动选择最新 strategy 或 profile。
+`generate_trial_slice` 每次调用 SHALL 只生成一个试读单元，入参 MUST 显式包含 `strategyToolCallId`、`sectionId`、`segment`、连续 `BlockRange` 和 reason。Tool MUST 使用被引用的同 session 成功 `publish_strategy`，并 MUST 验证 session 已保存引用该 Tool call 且 `targetToolName=publish_strategy` 的 confirmation action，或当前 run 的有效输入正是该 confirmation。Tool SHALL 沿 strategy 的明确引用取得 book reader profile，且 SHALL NOT 自动选择最新 strategy 或 profile。
 
 #### Scenario: 成功生成一个试读切片
 - **WHEN** Agent 引用用户已明确确认的成功 strategy call，并选择有效 `tailoringEligible` reading node 内的连续非空 range
 - **THEN** Tool 对该 range 调用一次裁读生成，返回 source location/range、切片原文及完整 guide、annotations 和 afterReading，并把结果保存到成功 run 的 Agent session
 
 #### Scenario: 未确认策略不能生成试读
-- **WHEN** Agent 调用 `generate_trial_slice` 时引用的 strategy 尚无对应 `strategy_confirmation`
+- **WHEN** Agent 调用 `generate_trial_slice` 时引用的 strategy 尚无对应 confirmation
 - **THEN** Tool 返回明确错误，不读取 latest strategy 代替、不生成试读，也不修改正式阅读数据
 
 #### Scenario: 无效试读位置
@@ -176,12 +180,12 @@
 - **WHEN** `generate_trial_slice` 成功完成
 - **THEN** 系统不创建 trial revision、trial segment、trial generation 或 reading setup operation 记录
 
-### Requirement: 试读承担最终确认界面
-成功的 `generate_trial_slice` SHALL 同时提供试读内容和最终用户确认入口。系统 SHALL NOT 要求 Agent 在试读后再调用独立的 confirmation 或 finish Tool。Agent、Tool 执行和通用 `run_finished` 事件均 SHALL NOT 代替用户确认，也 SHALL NOT 写入正式业务数据或激活 user-book。
+### Requirement: 试读承担唯一用户确认界面
+成功的 `generate_trial_slice` SHALL 同时提供试读内容和唯一一次用户确认入口。用户确认 SHALL 只保存对精确 Trial Tool call 的授权并启动下一次 Agent run；此时 MUST NOT 写入正式业务数据或激活 user-book。Agent 随后可调用无需用户再次操作的 `complete_reading_setup`。
 
 #### Scenario: 试读完成后等待用户
 - **WHEN** `generate_trial_slice` 成功并随 Agent run 一起提交
-- **THEN** 客户端在同一 trial 组件内允许用户反馈或提交该 `trialToolCallId`，而不渲染额外的最终确认事件
+- **THEN** 客户端在同一 trial 组件内允许用户反馈或提交引用该 `trialToolCallId` 的 confirmation，而不渲染额外确认界面
 
 #### Scenario: 未确认试读不激活
 - **WHEN** 试读已经生成但用户尚未提交对应 `trialToolCallId`
@@ -191,12 +195,24 @@
 - **WHEN** 生成试读的 Agent run 发送 `run_finished(status=completed)`
 - **THEN** 该事件只表示本次 run 已提交，系统仍等待用户试读确认，不据此激活 user-book
 
-### Requirement: 用户确认后写入正式数据并激活
-系统 SHALL 仅在用户明确提交有效 `trialToolCallId` 后，在一个幂等事务中解析该 trial 明确引用的 strategy，再沿 strategy 的明确引用解析 brief 和 book reader profile。事务 MUST 验证 strategy 已由用户确认，且 trial 成功结果引用的 strategy 与 trial arguments 一致，然后写入真实 brief、book reader profile 和 strategy，并将 user-book 激活。被引用 trial SHALL 只作为确认前置证据，不写入 trial 业务表。为满足当前不可空外键与 `StrategySchema`，事务 SHALL 只补充必要结构外壳；新 Agent 会话 MUST NOT 使用这些外壳恢复对话或判断下一步。
+### Requirement: Agent 完成 Reading Setup 并激活
+`complete_reading_setup({ trialToolCallId })` SHALL 显式使用当前 session 中成功的 `generate_trial_slice`，并验证该精确 Trial 已由用户 confirmation、其 strategy 已由用户 confirmation、Trial result 与 arguments 引用同一 strategy，以及 strategy 显式引用成功的 brief 和 book reader profile。Tool SHALL 复用现有幂等激活事务写入正式数据并激活 user-book。被引用 trial SHALL 只作为确认前置证据，不写入 trial 业务表。为满足当前不可空外键与 `StrategySchema`，事务 SHALL 只补充必要结构外壳。
 
-#### Scenario: 用户确认后激活
-- **WHEN** 当前用户提交属于其 session 的成功 trial，trial 精确引用用户已确认的 strategy，session 没有 active run，shared book 可用，且 user-book 仍为 `on_shelf`
-- **THEN** 一个事务写入该引用图中的真实 profile、brief、strategy summary/core，创建 confirmed draft 与 formal strategy，更新 user-book 的 interview/profile/draft/strategy pointers 与 `workflowStatus=active_reading`，保持 trial pointer 为空，并把 `trial_confirmation` action/result 加入 Agent session
+#### Scenario: Trial confirmation 不直接激活
+- **WHEN** 用户确认成功的 Trial Tool call
+- **THEN** 系统启动 Agent run，并仅在该 run 成功时保存 confirmation action；提交 action 本身不创建正式数据、不改变 user-book workflow
+
+#### Scenario: Agent 调用 complete 后激活
+- **WHEN** Agent 对已确认 Trial 调用 `complete_reading_setup`，Trial 引用链完整，shared book 可用且 user-book 仍为 `on_shelf`
+- **THEN** 激活事务写入该引用图中的真实 profile、brief、strategy summary/core，创建 confirmed draft 与 formal strategy，更新 user-book pointers 与 `workflowStatus=active_reading`，保持 trial pointer 为空，并由成功 Tool result 保存完成结果
+
+#### Scenario: 未确认 Trial 不能 complete
+- **WHEN** `complete_reading_setup` 引用的 Trial 没有已保存 confirmation，且当前 run 输入也不是该 Trial 的有效 confirmation
+- **THEN** Tool 返回明确错误，不自动选择其他 Trial，且不写入正式数据
+
+#### Scenario: Agent 本轮未 complete
+- **WHEN** Trial confirmation 触发的 Agent run 没有调用 `complete_reading_setup`
+- **THEN** run 可以正常结束并保存 confirmation，user-book 保持 `on_shelf`，后续 run 仍可引用同一 Trial 完成 setup
 
 #### Scenario: on_shelf 书存在旧结构残留
 - **WHEN** 确认事务发现该 user-book 已有唯一 interview session 或既有 profile/draft/strategy versions
@@ -210,12 +226,12 @@
 - **WHEN** 用户确认并成功激活
 - **THEN** 系统不创建 interview message、interview answer、trial revision、trial segment、trial generation、reading setup operation 或 formal generation 记录
 
-#### Scenario: 确认重放
-- **WHEN** 相同 `trialToolCallId` 在该 session 已成功激活 user-book 后再次提交
+#### Scenario: Complete 重放
+- **WHEN** 相同 `trialToolCallId` 已成功完成 Reading Setup 后再次用于 complete
 - **THEN** 系统返回既有激活结果，不重复插入正式数据或结构外壳
 
 ### Requirement: 极简单页验证 UI
-首版 Web SHALL 在一个独立会话页面中渲染持久 session、可选 active run snapshot 和通用 SSE 事件，并 SHALL 按 Tool 名称选择 question、brief、book reader profile、strategy 和 trial slice renderer。Web MUST NOT 根据 Tool 顺序推断业务阶段或在旧 interview、strategy 和 trial 页面间跳转，也 MUST NOT 为已删除的最终确认 Tool 保留独立 renderer；正式产品级 UI SHALL 留待后续 change。
+首版 Web SHALL 在一个独立会话页面中渲染持久 session、可选 active run snapshot 和通用 SSE 事件，并 SHALL 按 Tool 名称选择 question、brief、book reader profile、strategy 和 trial slice renderer。Web MUST NOT 根据 Tool 顺序推断业务阶段或在旧 interview、strategy 和 trial 页面间跳转；`complete_reading_setup` 不提供第二个用户确认界面。
 
 #### Scenario: 刷新已完成会话
 - **WHEN** 用户刷新包含问题、独立产物和试读 Tool 结果的会话页
@@ -223,12 +239,12 @@
 
 #### Scenario: 验证实时卡片与交互
 - **WHEN** Agent 流式生成 question、publish 或 trial 参数
-- **THEN** 页面渐进显示字段，并在 run 成功提交后允许回答问题、确认 strategy 或在 trial 内触发最终确认
+- **THEN** 页面渐进显示字段，并在 run 成功提交后允许回答问题、反馈、确认 strategy 或在 trial 内提交唯一一次用户确认
 
 #### Scenario: 未知工具安全降级
 - **WHEN** session 或 SSE 包含当前 Web 未识别的工具名称
 - **THEN** 页面显示通用工具状态/结果组件，且其余会话内容继续可用
 
 #### Scenario: 激活后进入阅读器
-- **WHEN** `trial_confirmation` action 返回 `active_reading`
+- **WHEN** `complete_reading_setup` 成功且刷新后的 user-book 为 `active_reading`
 - **THEN** 页面导航到现有 Reader，并由现有 Reader 按正式 profile/strategy pointers 加载原文与裁读生成窗口

@@ -25,7 +25,7 @@ export function createReadingSetupPresentationTools(options: {
     defineTool({
       name: 'present_question',
       label: '向用户提问',
-      description: '展示支持单选、多选和自由文本的当前问题；立即完成，不等待用户回答。',
+      description: '展示支持单选选项和自由文本的当前问题；立即完成，不等待用户回答。',
       parameters: compatibleSchema<PresentQuestionArguments>(PresentQuestionArgumentsSchema),
       execute: async (toolCallId, input) =>
         resultText('问题已展示，等待用户在下一次运行中回答。', { toolCallId, ...input }),

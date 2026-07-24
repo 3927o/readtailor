@@ -3,3 +3,4 @@
 export * from './model';
 export * from './session';
 export * from './agent-run-projector';
+export * from './coalescing-agent-event-sink';

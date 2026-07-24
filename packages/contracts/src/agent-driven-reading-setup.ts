@@ -1,5 +1,6 @@
 /** Defines agent-driven reading-setup wire contracts and generic Agent run transport DTOs. */
 
+import { BlockRangeSchema } from '@readtailor/reader-core';
 import { type Static, Type } from '@sinclair/typebox';
 import {
   BookReaderProfileSchema,
@@ -137,27 +138,33 @@ export const AgentQuestionAnswerActionSchema = Type.Object({
   submittedAt: Type.String(),
 });
 
-export const AgentStrategyConfirmationActionSchema = Type.Object({
-  type: Type.Literal('strategy_confirmation'),
-  strategyToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+export const ReadingSetupConfirmableToolNameSchema = Type.Union([
+  Type.Literal('publish_strategy'),
+  Type.Literal('generate_trial_slice'),
+]);
+export type ReadingSetupConfirmableToolName = Static<
+  typeof ReadingSetupConfirmableToolNameSchema
+>;
+
+export const AgentFeedbackActionSchema = Type.Object({
+  type: Type.Literal('feedback'),
+  targetToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  targetToolName: ReadingSetupConfirmableToolNameSchema,
+  message: Type.String({ minLength: 1, maxLength: 4000 }),
   submittedAt: Type.String(),
 });
 
-export const AgentTrialConfirmationActionSchema = Type.Object({
-  type: Type.Literal('trial_confirmation'),
-  trialToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+export const AgentConfirmationActionSchema = Type.Object({
+  type: Type.Literal('confirmation'),
+  targetToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  targetToolName: ReadingSetupConfirmableToolNameSchema,
   submittedAt: Type.String(),
-  result: Type.Object({
-    userBookId: AgentUuidSchema,
-    workflowStatus: Type.Literal('active_reading'),
-    strategyVersionId: AgentUuidSchema,
-  }),
 });
 
 export const AgentActionSchema = Type.Union([
   AgentQuestionAnswerActionSchema,
-  AgentStrategyConfirmationActionSchema,
-  AgentTrialConfirmationActionSchema,
+  AgentFeedbackActionSchema,
+  AgentConfirmationActionSchema,
 ]);
 export type AgentAction = Static<typeof AgentActionSchema>;
 
@@ -305,26 +312,64 @@ export const AgentRunEventSchema = Type.Union([
 export type AgentRunEvent = Static<typeof AgentRunEventSchema>;
 export type AgentSequencedRunEvent = Exclude<AgentRunEvent, { type: 'run_snapshot' }>;
 
+const AgentSessionStartRunInputSchema = Type.Object({
+  type: Type.Literal('session_start'),
+});
+
+const AgentMessageRunInputSchema = Type.Object({
+  type: Type.Literal('message'),
+  text: Type.String({ minLength: 1, maxLength: 8000 }),
+});
+
+const AgentQuestionAnswerRunInputSchema = Type.Object({
+  type: Type.Literal('question_answer'),
+  questionToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  selectedOptionIds: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), {
+    maxItems: 20,
+  }),
+  freeText: Type.Union([Type.String({ maxLength: 4000 }), Type.Null()]),
+});
+
+const AgentFeedbackRunInputSchema = Type.Object({
+  type: Type.Literal('feedback'),
+  targetToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  targetToolName: ReadingSetupConfirmableToolNameSchema,
+  message: Type.String({ minLength: 1, maxLength: 4000 }),
+});
+
+const AgentConfirmationRunInputSchema = Type.Object({
+  type: Type.Literal('confirmation'),
+  targetToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  targetToolName: ReadingSetupConfirmableToolNameSchema,
+});
+
+const SubmitReadingSetupFeedbackRequestSchema = Type.Object({
+  type: Type.Literal('feedback'),
+  targetToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  message: Type.String({ minLength: 1, maxLength: 4000 }),
+});
+
+const SubmitReadingSetupConfirmationRequestSchema = Type.Object({
+  type: Type.Literal('confirmation'),
+  targetToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+});
+
+export const SubmitReadingSetupActionRequestSchema = Type.Union([
+  AgentMessageRunInputSchema,
+  AgentQuestionAnswerRunInputSchema,
+  SubmitReadingSetupFeedbackRequestSchema,
+  SubmitReadingSetupConfirmationRequestSchema,
+]);
+export type SubmitReadingSetupActionRequest = Static<
+  typeof SubmitReadingSetupActionRequestSchema
+>;
+
 export const AgentRunInputSchema = Type.Union([
-  Type.Object({
-    type: Type.Literal('session_start'),
-  }),
-  Type.Object({
-    type: Type.Literal('message'),
-    text: Type.String({ minLength: 1, maxLength: 8000 }),
-  }),
-  Type.Object({
-    type: Type.Literal('question_answer'),
-    questionToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
-    selectedOptionIds: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), {
-      maxItems: 20,
-    }),
-    freeText: Type.Union([Type.String({ maxLength: 4000 }), Type.Null()]),
-  }),
-  Type.Object({
-    type: Type.Literal('strategy_confirmation'),
-    strategyToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
-  }),
+  AgentSessionStartRunInputSchema,
+  AgentMessageRunInputSchema,
+  AgentQuestionAnswerRunInputSchema,
+  AgentFeedbackRunInputSchema,
+  AgentConfirmationRunInputSchema,
 ]);
 export type AgentRunInput = Static<typeof AgentRunInputSchema>;
 
@@ -336,49 +381,28 @@ export const AgentRunJobPayloadSchema = Type.Object({
 });
 export type AgentRunJobPayload = Static<typeof AgentRunJobPayloadSchema>;
 
-export const SubmitAgentMessageRequestSchema = Type.Object({
-  message: Type.String({ minLength: 1, maxLength: 8000 }),
-});
-export type SubmitAgentMessageRequest = Static<typeof SubmitAgentMessageRequestSchema>;
-
-export const SubmitAgentQuestionAnswerRequestSchema = Type.Object({
-  questionToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
-  selectedOptionIds: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), {
-    maxItems: 20,
-  }),
-  freeText: Type.Union([Type.String({ maxLength: 4000 }), Type.Null()]),
-});
-export type SubmitAgentQuestionAnswerRequest = Static<
-  typeof SubmitAgentQuestionAnswerRequestSchema
->;
-
-export const SubmitAgentStrategyConfirmationRequestSchema = Type.Object({
-  strategyToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
-});
-export type SubmitAgentStrategyConfirmationRequest = Static<
-  typeof SubmitAgentStrategyConfirmationRequestSchema
->;
-
 export const StartAgentRunResponseSchema = Type.Object({
   runId: AgentUuidSchema,
   accepted: Type.Boolean(),
 });
 export type StartAgentRunResponse = Static<typeof StartAgentRunResponseSchema>;
 
-export const ConfirmReadingSetupRequestSchema = Type.Object({
+export const CompleteReadingSetupArgumentsSchema = Type.Object({
   trialToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
 });
-export type ConfirmReadingSetupRequest = Static<
-  typeof ConfirmReadingSetupRequestSchema
+export type CompleteReadingSetupArguments = Static<
+  typeof CompleteReadingSetupArgumentsSchema
 >;
 
-export const ConfirmReadingSetupResponseSchema = Type.Object({
+export const CompleteReadingSetupResultSchema = Type.Object({
+  toolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  trialToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
   userBookId: AgentUuidSchema,
   workflowStatus: Type.Literal('active_reading'),
   strategyVersionId: AgentUuidSchema,
 });
-export type ConfirmReadingSetupResponse = Static<
-  typeof ConfirmReadingSetupResponseSchema
+export type CompleteReadingSetupResult = Static<
+  typeof CompleteReadingSetupResultSchema
 >;
 
 export const PresentQuestionArgumentsSchema = Type.Object({
@@ -416,16 +440,34 @@ export const GenerateTrialSliceArgumentsSchema = Type.Object({
   strategyToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
   sectionId: Type.String({ minLength: 1, maxLength: 500 }),
   segment: Type.Integer({ minimum: 1 }),
-  range: Type.Object({
-    start: Type.Object({
-      blockIndex: Type.Integer({ minimum: 1 }),
-      offset: Type.Integer({ minimum: 0 }),
-    }),
-    end: Type.Object({
-      blockIndex: Type.Integer({ minimum: 1 }),
-      offset: Type.Integer({ minimum: 0 }),
-    }),
-  }),
+  range: BlockRangeSchema,
   reason: Type.String({ minLength: 1, maxLength: 2000 }),
 });
 export type GenerateTrialSliceArguments = Static<typeof GenerateTrialSliceArgumentsSchema>;
+
+export const GenerateTrialSliceResultSchema = Type.Object({
+  toolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  strategyToolCallId: Type.String({ minLength: 1, maxLength: 200 }),
+  source: Type.Object({
+    titlePath: Type.Array(Type.String()),
+    sectionId: Type.String({ minLength: 1, maxLength: 500 }),
+    segment: Type.Integer({ minimum: 1 }),
+    range: BlockRangeSchema,
+    text: Type.String(),
+    blocks: Type.Array(Type.Object({
+      blockIndex: Type.Integer({ minimum: 1 }),
+      kind: Type.String({ minLength: 1 }),
+      text: Type.String(),
+      sourceOffset: Type.Integer({ minimum: 0 }),
+    })),
+  }),
+  guide: Type.Union([Type.String(), Type.Null()]),
+  annotations: Type.Array(Type.Object({
+    range: BlockRangeSchema,
+    content: Type.String({ minLength: 1 }),
+  })),
+  afterReading: Type.Union([Type.String(), Type.Null()]),
+});
+export type GenerateTrialSliceResult = Static<
+  typeof GenerateTrialSliceResultSchema
+>;

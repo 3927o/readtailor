@@ -119,8 +119,9 @@ function state(options?: {
     actions: options?.unconfirmedStrategy
       ? []
       : [{
-          type: 'strategy_confirmation',
-          strategyToolCallId: 'strategy-call',
+          type: 'confirmation',
+          targetToolCallId: 'strategy-call',
+          targetToolName: 'publish_strategy',
           submittedAt: '2026-07-24T00:00:00.000Z',
         }],
   };
@@ -142,6 +143,8 @@ function tools(
     db: forbiddenInfrastructure as Database,
     storage: forbiddenInfrastructure as ObjectStorage,
     tailoringModel: { name: 'fake' } as ModelEngine,
+    sessionId: '00000000-0000-0000-0000-000000000002',
+    runId: '00000000-0000-0000-0000-000000000003',
     userBookId: '00000000-0000-0000-0000-000000000001',
     state: sessionState,
     input: { type: 'message', text: '继续' },
@@ -188,6 +191,8 @@ describe('reading setup Agent tools', () => {
     expect(maximum(nodes.properties.limit)).toBe(200);
     expect(maximum(read.properties.maxCharacters)).toBe(12_000);
     expect(maximum(search.properties.limit)).toBe(50);
+    expect(toolByName(all, 'present_question').description).toContain('单选');
+    expect(toolByName(all, 'present_question').description).not.toContain('多选');
     expect(toolByName(all, 'get_book_outline').description).toContain('不返回 reading nodes 或正文');
     expect(toolByName(all, 'list_reading_nodes').description).toContain('不返回正文');
   });
@@ -294,5 +299,6 @@ describe('reading setup Agent tools', () => {
       ),
     ).rejects.toThrow('成功的 publish_strategy');
     expect(tools().some((tool) => tool.name === 'offer_final_confirmation')).toBe(false);
+    expect(tools().some((tool) => tool.name === 'complete_reading_setup')).toBe(true);
   });
 });

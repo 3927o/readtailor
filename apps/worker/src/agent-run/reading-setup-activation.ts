@@ -1,17 +1,17 @@
-/** Validates a confirmed trial's artifact graph and atomically activates formal reading data. */
+/** Validates a confirmed trial graph and performs the existing formal-data activation transaction. */
 
-import { and, eq, isNull, sql } from 'drizzle-orm';
-import {
-  AGENT_SESSION_STATE_MAX_BYTES,
-  type AgentJsonValue,
-  type AgentSessionState,
-  type BookReaderProfile,
-  type Briefing,
-  type ConfirmReadingSetupResponse,
-  type GenerateTrialSliceArguments,
-  type PublishStrategyArguments,
-  type ProposedStrategy,
-  type Strategy,
+import { and, eq, sql } from 'drizzle-orm';
+import type {
+  AgentJsonValue,
+  AgentRunInput,
+  AgentSessionState,
+  BookReaderProfile,
+  Briefing,
+  CompleteReadingSetupResult,
+  GenerateTrialSliceArguments,
+  PublishStrategyArguments,
+  ProposedStrategy,
+  Strategy,
 } from '@readtailor/contracts';
 import {
   indexAgentTranscript,
@@ -19,17 +19,16 @@ import {
   type SuccessfulAgentToolCall,
 } from '@readtailor/agent-state';
 import {
-  readingSetupSessions,
   bookReaderProfileVersions,
   interviewSessions,
+  readingSetupSessions,
   sharedBooks,
   strategyDraftVersions,
   strategyVersions,
   userBooks,
   type Database,
 } from '@readtailor/database';
-import type { BookService } from './books';
-import { AgentDrivenReadingSetupError } from './agent-driven-reading-setup-error';
+import type { ReadingManifest } from '@readtailor/reader-core';
 
 function requireSuccessfulTool(
   transcript: AgentTranscriptIndex,
@@ -38,106 +37,91 @@ function requireSuccessfulTool(
 ): SuccessfulAgentToolCall {
   const record = transcript.getSuccessful(toolCallId, toolName);
   if (!record) {
-    throw new AgentDrivenReadingSetupError(
-      `${toolCallId} 不是当前 session 中成功的 ${toolName} 调用`,
-      409,
-    );
+    throw new Error(`${toolCallId} 不是当前 session 中成功的 ${toolName} 调用`);
   }
   return record;
 }
 
 function objectValue(value: AgentJsonValue, label: string): Record<string, AgentJsonValue> {
   if (!value || Array.isArray(value) || typeof value !== 'object') {
-    throw new AgentDrivenReadingSetupError(`${label} 不是有效 object`, 409);
+    throw new Error(`${label} 不是有效 object`);
   }
   return value;
 }
 
-function assertStateSize(state: AgentSessionState): void {
-  if (Buffer.byteLength(JSON.stringify(state), 'utf8') > AGENT_SESSION_STATE_MAX_BYTES) {
-    throw new AgentDrivenReadingSetupError('Agent session state 已达到大小上限', 409);
-  }
+function hasConfirmation(
+  state: AgentSessionState,
+  input: AgentRunInput,
+  targetToolCallId: string,
+  targetToolName: 'publish_strategy' | 'generate_trial_slice',
+): boolean {
+  return (
+    (
+      input.type === 'confirmation' &&
+      input.targetToolCallId === targetToolCallId &&
+      input.targetToolName === targetToolName
+    ) ||
+    state.actions.some(
+      (action) =>
+        action.type === 'confirmation' &&
+        action.targetToolCallId === targetToolCallId &&
+        action.targetToolName === targetToolName,
+    )
+  );
 }
 
 export function createReadingSetupActivationService(options: {
   db: Database;
-  books: BookService;
-  requireOwnedSession(userId: string, sessionId: string): Promise<{
-    userBookId: string;
-    agentState: AgentSessionState;
-  }>;
+  manifest: ReadingManifest;
+  sessionId: string;
+  runId: string;
+  state: AgentSessionState;
+  input: AgentRunInput;
 }) {
   return {
-    async confirm(
-      userId: string,
-      sessionId: string,
+    async complete(
+      toolCallId: string,
       trialToolCallId: string,
-    ): Promise<ConfirmReadingSetupResponse> {
-      const initialSession = await options.requireOwnedSession(userId, sessionId);
-      const initialReplay = initialSession.agentState.actions.find(
-        (action) =>
-          action.type === 'trial_confirmation' &&
-          action.trialToolCallId === trialToolCallId,
-      );
-      if (initialReplay?.type === 'trial_confirmation') return initialReplay.result;
-      const [initialBook] = await options.db
-        .select({ sharedBookId: userBooks.sharedBookId })
-        .from(userBooks)
-        .where(eq(userBooks.id, initialSession.userBookId))
-        .limit(1);
-      if (!initialBook) throw new AgentDrivenReadingSetupError('用户书籍不存在', 404);
-      const manifest = await options.books.getManifest(initialBook.sharedBookId);
-      const placeholderNode = manifest?.nodes
+    ): Promise<CompleteReadingSetupResult> {
+      const placeholderNode = options.manifest.nodes
         .filter((node) => node.tailoringEligible)
         .sort((left, right) => left.order - right.order)[0];
-      if (!placeholderNode) throw new AgentDrivenReadingSetupError('书籍没有可裁读节点', 409);
+      if (!placeholderNode) throw new Error('书籍没有可裁读节点');
 
       return options.db.transaction(async (tx) => {
         const [session] = await tx
           .select()
           .from(readingSetupSessions)
-          .where(eq(readingSetupSessions.id, sessionId))
+          .where(eq(readingSetupSessions.id, options.sessionId))
           .for('update')
           .limit(1);
-        const [book] = session
-          ? await tx
-              .select()
-              .from(userBooks)
-              .where(
-                and(
-                  eq(userBooks.id, session.userBookId),
-                  eq(userBooks.userId, userId),
-                  isNull(userBooks.deletedAt),
-                ),
-              )
-              .for('update')
-              .limit(1)
-          : [];
-        if (!session || !book) throw new AgentDrivenReadingSetupError('阅读准备会话不存在', 404);
-
-        const replay = session.agentState.actions.find(
-          (action) =>
-            action.type === 'trial_confirmation' &&
-            action.trialToolCallId === trialToolCallId,
-        );
-        if (replay?.type === 'trial_confirmation') return replay.result;
-        if (session.activeRunId) throw new AgentDrivenReadingSetupError('Agent run 仍在进行中', 409);
-        if (book.workflowStatus !== 'on_shelf') {
-          throw new AgentDrivenReadingSetupError('用户书籍状态已经变化', 409);
+        if (!session || session.activeRunId !== options.runId) {
+          throw new Error('Reading Setup run 已失效');
         }
-        const [readySharedBook] = await tx
-          .select({ id: sharedBooks.id })
-          .from(sharedBooks)
-          .where(and(eq(sharedBooks.id, book.sharedBookId), eq(sharedBooks.status, 'ready')))
+        const [book] = await tx
+          .select()
+          .from(userBooks)
+          .where(eq(userBooks.id, session.userBookId))
+          .for('update')
           .limit(1);
-        if (!readySharedBook) throw new AgentDrivenReadingSetupError('共享书籍尚未就绪', 409);
+        if (!book || book.deletedAt) throw new Error('用户书籍不存在');
 
-        const records = indexAgentTranscript(session.agentState.messages);
+        const records = indexAgentTranscript(options.state.messages);
         const trialRecord = requireSuccessfulTool(
           records,
           trialToolCallId,
           'generate_trial_slice',
         );
+        if (
+          !hasConfirmation(
+            options.state,
+            options.input,
+            trialToolCallId,
+            'generate_trial_slice',
+          )
+        ) {
+          throw new Error('试读尚未由用户确认');
+        }
         const trialArgs = objectValue(
           trialRecord.arguments,
           'trial arguments',
@@ -148,13 +132,14 @@ export function createReadingSetupActivationService(options: {
           'publish_strategy',
         );
         if (
-          !session.agentState.actions.some(
-            (action) =>
-              action.type === 'strategy_confirmation' &&
-              action.strategyToolCallId === strategyRecord.toolCallId,
+          !hasConfirmation(
+            options.state,
+            options.input,
+            strategyRecord.toolCallId,
+            'publish_strategy',
           )
         ) {
-          throw new AgentDrivenReadingSetupError('试读使用的 strategy 尚未由用户确认', 409);
+          throw new Error('试读使用的 strategy 尚未由用户确认');
         }
         const strategyArgs = objectValue(
           strategyRecord.arguments,
@@ -170,10 +155,29 @@ export function createReadingSetupActivationService(options: {
           strategyArgs.bookReaderProfileToolCallId,
           'publish_book_reader_profile',
         );
-        const trialResult = objectValue(trialRecord.result!, 'trial result');
+        const trialResult = objectValue(trialRecord.result, 'trial result');
         if (trialResult.strategyToolCallId !== strategyRecord.toolCallId) {
-          throw new AgentDrivenReadingSetupError('试读结果引用的 strategy 不一致', 409);
+          throw new Error('试读结果引用的 strategy 不一致');
         }
+        if (book.workflowStatus === 'active_reading' && book.currentStrategyVersionId) {
+          return {
+            toolCallId,
+            trialToolCallId,
+            userBookId: book.id,
+            workflowStatus: 'active_reading' as const,
+            strategyVersionId: book.currentStrategyVersionId,
+          };
+        }
+        if (book.workflowStatus !== 'on_shelf') {
+          throw new Error('用户书籍状态已经变化');
+        }
+        const [readySharedBook] = await tx
+          .select({ id: sharedBooks.id })
+          .from(sharedBooks)
+          .where(and(eq(sharedBooks.id, book.sharedBookId), eq(sharedBooks.status, 'ready')))
+          .limit(1);
+        if (!readySharedBook) throw new Error('共享书籍尚未就绪');
+
         const brief = objectValue(briefRecord.arguments, 'brief arguments')
           .brief as unknown as Briefing;
         const profile = objectValue(profileRecord.arguments, 'profile arguments')
@@ -181,7 +185,7 @@ export function createReadingSetupActivationService(options: {
         const strategyCore = strategyArgs.strategy as ProposedStrategy;
         const summary = strategyArgs.summary;
         if (typeof summary !== 'string' || !summary.trim()) {
-          throw new AgentDrivenReadingSetupError('strategy summary 无效', 409);
+          throw new Error('strategy summary 无效');
         }
         const placeholder = {
           sectionId: placeholderNode.sectionId,
@@ -228,21 +232,27 @@ export function createReadingSetupActivationService(options: {
             })
             .returning();
         }
-        if (!interview) throw new AgentDrivenReadingSetupError('访谈结构外壳创建失败', 503);
+        if (!interview) throw new Error('访谈结构外壳创建失败');
 
         const [profileVersionRow, draftVersionRow, strategyVersionRow] = await Promise.all([
           tx
-            .select({ next: sql<number>`coalesce(max(${bookReaderProfileVersions.version}), 0)::int + 1` })
+            .select({
+              next: sql<number>`coalesce(max(${bookReaderProfileVersions.version}), 0)::int + 1`,
+            })
             .from(bookReaderProfileVersions)
             .where(eq(bookReaderProfileVersions.userBookId, book.id))
             .then((rows) => rows[0]),
           tx
-            .select({ next: sql<number>`coalesce(max(${strategyDraftVersions.version}), 0)::int + 1` })
+            .select({
+              next: sql<number>`coalesce(max(${strategyDraftVersions.version}), 0)::int + 1`,
+            })
             .from(strategyDraftVersions)
             .where(eq(strategyDraftVersions.userBookId, book.id))
             .then((rows) => rows[0]),
           tx
-            .select({ next: sql<number>`coalesce(max(${strategyVersions.version}), 0)::int + 1` })
+            .select({
+              next: sql<number>`coalesce(max(${strategyVersions.version}), 0)::int + 1`,
+            })
             .from(strategyVersions)
             .where(eq(strategyVersions.userBookId, book.id))
             .then((rows) => rows[0]),
@@ -256,7 +266,7 @@ export function createReadingSetupActivationService(options: {
             profile,
           })
           .returning();
-        if (!savedProfile) throw new AgentDrivenReadingSetupError('书籍读者画像创建失败', 503);
+        if (!savedProfile) throw new Error('书籍读者画像创建失败');
         const [draft] = await tx
           .insert(strategyDraftVersions)
           .values({
@@ -270,7 +280,7 @@ export function createReadingSetupActivationService(options: {
             confirmedAt: now,
           })
           .returning();
-        if (!draft) throw new AgentDrivenReadingSetupError('阅读策略草稿创建失败', 503);
+        if (!draft) throw new Error('阅读策略草稿创建失败');
         const [formalStrategy] = await tx
           .insert(strategyVersions)
           .values({
@@ -281,26 +291,7 @@ export function createReadingSetupActivationService(options: {
             strategy,
           })
           .returning();
-        if (!formalStrategy) throw new AgentDrivenReadingSetupError('正式阅读策略创建失败', 503);
-
-        const result: ConfirmReadingSetupResponse = {
-          userBookId: book.id,
-          workflowStatus: 'active_reading',
-          strategyVersionId: formalStrategy.id,
-        };
-        const nextState: AgentSessionState = {
-          ...session.agentState,
-          actions: [
-            ...session.agentState.actions,
-            {
-              type: 'trial_confirmation',
-              trialToolCallId,
-              submittedAt: now.toISOString(),
-              result,
-            },
-          ],
-        };
-        assertStateSize(nextState);
+        if (!formalStrategy) throw new Error('正式阅读策略创建失败');
 
         const [activated] = await tx
           .update(userBooks)
@@ -315,12 +306,15 @@ export function createReadingSetupActivationService(options: {
           })
           .where(and(eq(userBooks.id, book.id), eq(userBooks.workflowStatus, 'on_shelf')))
           .returning({ id: userBooks.id });
-        if (!activated) throw new AgentDrivenReadingSetupError('用户书籍状态已经变化', 409);
-        await tx
-          .update(readingSetupSessions)
-          .set({ agentState: nextState, updatedAt: now })
-          .where(and(eq(readingSetupSessions.id, session.id), isNull(readingSetupSessions.activeRunId)));
-        return result;
+        if (!activated) throw new Error('用户书籍状态已经变化');
+
+        return {
+          toolCallId,
+          trialToolCallId,
+          userBookId: book.id,
+          workflowStatus: 'active_reading' as const,
+          strategyVersionId: formalStrategy.id,
+        };
       });
     },
   };

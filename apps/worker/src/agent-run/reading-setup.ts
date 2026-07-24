@@ -9,7 +9,9 @@ import type {
 import type { Database } from '@readtailor/database';
 import type { ModelEngine } from '@readtailor/model';
 import type { ObjectStorage } from '@readtailor/storage';
+import { createReadingSetupActivationService } from './reading-setup-activation';
 import { createReadingSetupBookTools } from './reading-setup-book-tools';
+import { createReadingSetupCompletionTool } from './reading-setup-completion-tool';
 import { createReadingSetupPresentationTools } from './reading-setup-presentation-tools';
 import {
   loadReadingSetupAgentResources,
@@ -26,6 +28,8 @@ export function createReadingSetupAgentTools(options: {
   db: Database;
   storage: ObjectStorage;
   tailoringModel: ModelEngine;
+  sessionId: string;
+  runId: string;
   userBookId: string;
   state: AgentSessionState;
   input: AgentRunInput;
@@ -44,13 +48,15 @@ export function createReadingSetupAgentTools(options: {
     }));
   const isStrategyConfirmed = (strategyToolCallId: string) =>
     (
-      options.input.type === 'strategy_confirmation' &&
-      options.input.strategyToolCallId === strategyToolCallId
+      options.input.type === 'confirmation' &&
+      options.input.targetToolName === 'publish_strategy' &&
+      options.input.targetToolCallId === strategyToolCallId
     ) ||
     options.state.actions.some(
       (action) =>
-        action.type === 'strategy_confirmation' &&
-        action.strategyToolCallId === strategyToolCallId,
+        action.type === 'confirmation' &&
+        action.targetToolName === 'publish_strategy' &&
+        action.targetToolCallId === strategyToolCallId,
     );
 
   return {
@@ -62,6 +68,20 @@ export function createReadingSetupAgentTools(options: {
         isStrategyConfirmed,
         resources,
         tailoringModel: options.tailoringModel,
+      }),
+      createReadingSetupCompletionTool({
+        history,
+        complete: async (toolCallId, trialToolCallId) => {
+          const loaded = await resources();
+          return createReadingSetupActivationService({
+            db: options.db,
+            manifest: loaded.manifest,
+            sessionId: options.sessionId,
+            runId: options.runId,
+            state: options.state,
+            input: options.input,
+          }).complete(toolCallId, trialToolCallId);
+        },
       }),
     ],
   };
