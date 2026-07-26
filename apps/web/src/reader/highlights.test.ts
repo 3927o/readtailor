@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { Highlight } from './api';
-import type { TailoredAnnotation } from '../user-books/api';
+import type { TailoredAnnotation } from './api';
 import {
   applyReaderMarks,
   domRangeForReaderRange,
@@ -217,3 +217,4 @@ describe('question-context quote projection', () => {
     root.remove();
   });
 });
+/** Verifies Reader highlight projection and interaction helpers. */

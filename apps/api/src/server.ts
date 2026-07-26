@@ -24,10 +24,6 @@ import { loadApiConfig } from './config';
 import { createProfileService } from './profiles';
 import { createSystemChatService } from './system-chat';
 import { createSystemJobService } from './system-jobs';
-import {
-  createAgentReadingSetupEngine,
-  createFakeReadingSetupEngine,
-} from './reading-setup-engine';
 import { createAgentAskAiEngine } from './ask-ai-engine';
 import { createUserBookService } from './user-books';
 import {
@@ -126,14 +122,6 @@ const readingSetupEndpoint = requireCompleteModelEndpoint(
   config.readingSetupModel,
   'reading-setup',
 );
-const readingSetupEngine = readingSetupEndpoint
-  ? createAgentReadingSetupEngine({
-      apiBaseUrl: readingSetupEndpoint.baseUrl,
-      apiKey: readingSetupEndpoint.apiKey,
-      modelName: readingSetupEndpoint.modelName,
-      ...(perfSink ? { perfSink } : {}),
-    })
-  : createFakeReadingSetupEngine();
 const askAiEndpoint = requireCompleteModelEndpoint(config.askAiModel, 'ask-ai');
 if (!askAiEndpoint) {
   throw new Error(
@@ -151,7 +139,6 @@ const userBooks =
     ? createUserBookService({
         db: database.db,
         books,
-        setupEngine: readingSetupEngine,
         askAiEngine,
         generations: {
           async enqueue(input) {
@@ -174,7 +161,6 @@ const userBooks =
                 kind: 'content.generate',
                 generationId: input.generationId,
                 userBookId: input.userBookId,
-                scope: input.scope,
                 requestedAt: new Date().toISOString(),
               },
               {

@@ -373,9 +373,13 @@ describe('ReadingSetupTranscript artifact entries', () => {
     expect(container.querySelector('.rss-reading-guide strong')?.textContent)
       .toBe('规则');
     expect(container.querySelectorAll('.rss-after-reading li')).toHaveLength(2);
+    const annotationAnchor = container.querySelector<HTMLElement>('.rss-annotation-anchor')!;
+    expect(annotationAnchor.tagName).toBe('MARK');
+    expect(annotationAnchor.getAttribute('role')).toBe('button');
+    expect(annotationAnchor.tabIndex).toBe(0);
 
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('.rss-annotation-anchor')!.click();
+      annotationAnchor.click();
     });
     expect(container.querySelector('.rss-annotation-note')).toBeNull();
     expect(container.querySelector('.note-dialog')).not.toBeNull();
@@ -390,6 +394,17 @@ describe('ReadingSetupTranscript artifact entries', () => {
     expect(container.querySelector('.note-dialog')).toBeNull();
     expect(container.querySelector('.rss-annotation-anchor')?.getAttribute('aria-expanded'))
       .toBe('false');
+
+    await act(async () => {
+      annotationAnchor.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+      );
+    });
+    expect(container.querySelector('.note-dialog')).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>('.rss-primary-action')!.click();

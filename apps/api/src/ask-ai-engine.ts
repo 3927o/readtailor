@@ -1,3 +1,5 @@
+/** Adapts the model runtime to the persisted Ask AI conversation workflow. */
+
 import {
   runAskAiAgent,
   type AskAiOutcome,
@@ -11,8 +13,8 @@ import {
   type PerfSink,
 } from '@readtailor/observability';
 
-// Per-request seam for the 问 AI turn (mirrors ReadingSetupEngine). The host builds a
-// per-request `toolbox` (bound to the user_book, its manifest and reader profile) and passes
+// Per-request seam for the 问 AI turn. The host builds a per-request `toolbox`
+// bound to the user_book, its manifest and reader profile, and passes
 // it in with the reconstructed `context`; `onAnswerDelta` streams answer text while all
 // side effects remain staged in AskAiOutcome until the host commits the answer.
 export interface AskAiEngine {

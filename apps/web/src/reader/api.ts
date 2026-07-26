@@ -1,3 +1,5 @@
+/** Defines Reader contracts and HTTP operations independently from retired Setup clients. */
+
 import type {
   AskQuestionRequest,
   Briefing,
@@ -9,6 +11,8 @@ import type {
   QaStreamEvent,
   ReaderPosition,
   ReaderResumePosition,
+  TextRange,
+  UserBookWorkflowStatus,
 } from '@readtailor/contracts';
 import type {
   ReadingManifest,
@@ -24,8 +28,22 @@ export type {
   QaSessionResponse,
   StrategyChangeProposalStatus,
 } from '@readtailor/contracts';
-import type { TailoredContent, TextRange, WorkflowStatus } from '../user-books/api';
 import type { ActivitySlicePayload, HeartbeatPayload } from './session';
+
+export type { TextPosition, TextRange } from '@readtailor/contracts';
+export type WorkflowStatus = UserBookWorkflowStatus;
+
+export interface TailoredAnnotation {
+  id: string;
+  range: TextRange;
+  content: string;
+}
+
+export interface TailoredContent {
+  guide: string | null;
+  annotations: TailoredAnnotation[];
+  afterReading: string | null;
+}
 
 export interface ReaderBook {
   id: string;

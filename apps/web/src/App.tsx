@@ -9,10 +9,6 @@ import { ShelfPage } from './library/ShelfPage';
 import { ReaderPage } from './reader/ReaderPage';
 import { ReadingSetupPage } from './reading-setup/ReadingSetupPage';
 import { StatsPage } from './reading-stats/StatsPage';
-import { InterviewPage } from './user-books/InterviewPage';
-import { ReadingSetupRoute } from './user-books/ReadingSetupRoute';
-import { StrategyPage } from './user-books/StrategyPage';
-import { TrialPage } from './user-books/TrialPage';
 
 export function App() {
   return (
@@ -28,12 +24,7 @@ export function App() {
         <Route path="/books/import" element={<ImportPage />} />
         <Route path="/books/:bookId/processing" element={<ProcessingPage />} />
         <Route path="/user-books/:id/reading-setup" element={<ReadingSetupPage />} />
-        <Route path="/user-books/:id" element={<ReadingSetupRoute />}>
-          <Route path="interview" element={<InterviewPage />} />
-          <Route path="strategy" element={<StrategyPage />} />
-          <Route path="trial" element={<TrialPage />} />
-          <Route path="read" element={<ReaderPage />} />
-        </Route>
+        <Route path="/user-books/:id/read" element={<ReaderPage />} />
       </Route>
       <Route path="*" element={<Navigate replace to="/" />} />
     </Routes>

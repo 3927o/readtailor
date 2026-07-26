@@ -1,5 +1,7 @@
+/** Owns the Reader-side Ask AI conversation panel and proposal interactions. */
+
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AssistanceContent } from '../user-books/components';
+import { AssistanceContent } from '../components/reading/ReadingAssistance';
 import {
   confirmQaProposal,
   feedbackQaProposal,

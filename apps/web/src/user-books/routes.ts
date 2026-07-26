@@ -1,3 +1,5 @@
+/** Maps persisted workflow states onto the supported Setup, Reader, or shelf destinations. */
+
 import type { UserBookWorkflowStatus } from '@readtailor/contracts';
 import type { UserBookSummary } from './api/http';
 
@@ -6,16 +8,14 @@ export function routeForWorkflow(userBookId: string, workflowStatus: UserBookWor
   switch (workflowStatus) {
     case 'on_shelf':
       return `${root}/reading-setup`;
+    case 'active_reading':
+      return `${root}/read`;
     case 'interviewing':
-      return `${root}/interview`;
     case 'strategy_review':
-      return `${root}/strategy`;
     case 'trial_generating':
     case 'trial_generation_failed':
     case 'trial_review':
-      return `${root}/trial`;
-    case 'active_reading':
-      return `${root}/read`;
+      return '/';
   }
 }
 

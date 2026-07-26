@@ -1,3 +1,5 @@
+/** Creates typed BullMQ queues and workers for the platform's asynchronous jobs. */
+
 import { Queue, QueueEvents, Worker } from 'bullmq';
 import type { Job, RedisOptions } from 'bullmq';
 import type IORedis from 'ioredis';
@@ -237,7 +239,7 @@ export function createContentGenerationWorker(options: {
     CONTENT_GENERATION_QUEUE_NAME,
     async (job) => {
       options.logger.info(
-        { jobId: job.id, generationId: job.data.generationId, scope: job.data.scope },
+        { jobId: job.id, generationId: job.data.generationId },
         'processing content generation job',
       );
       await options.handler(job);

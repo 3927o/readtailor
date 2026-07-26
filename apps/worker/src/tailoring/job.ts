@@ -1,10 +1,11 @@
+/** Executes database-backed formal tailoring generations and fences stale results. */
+
 import { and, eq, inArray } from 'drizzle-orm';
 import type { JsonValue, TailoringGenerationInput, TailoringModelClient } from '@readtailor/tailoring';
 import {
   createTailoringCacheKey,
   extractNodeSourceFromHtml,
   generateTailoredContent,
-  sliceNodeSource,
 } from '@readtailor/tailoring';
 import {
   createManifestIndex,
@@ -21,10 +22,7 @@ import {
   readerReadNodes,
   readerStates,
   sharedBooks,
-  strategyDraftVersions,
   strategyVersions,
-  trialRevisions,
-  trialSegments,
   userBooks,
   type Database,
 } from '@readtailor/database';
@@ -122,190 +120,8 @@ type FormalGeneration = {
   segment: number;
 };
 
-type TrialGenerationIdentity = {
-  id: string;
-  userBookId: string;
-  generationScope: string;
-  trialSegmentId: string | null;
-  strategyDraftVersionId: string | null;
-  sectionId: string;
-  segment: number;
-};
-
-type TrialSegmentHint = {
-  id: string;
-  trialRevisionId: string;
-};
-
-export type TrialGenerationGraphCheck = {
-  generation: {
-    userBookId: string;
-    generationScope: string;
-    trialSegmentId: string | null;
-    strategyDraftVersionId: string | null;
-    sectionId: string;
-    segment: number;
-  };
-  segment: {
-    id: string;
-    trialRevisionId: string;
-    sectionId: string;
-    segment: number;
-  };
-  revision: {
-    id: string;
-    userBookId: string;
-    strategyDraftVersionId: string;
-    status: string;
-  };
-  draft: {
-    id: string;
-    status: string;
-  };
-  userBook: {
-    id: string;
-    workflowStatus: string;
-    currentStrategyDraftVersionId: string | null;
-    currentTrialRevisionId: string | null;
-  };
-};
-
-export function isCurrentTrialGenerationGraph(graph: TrialGenerationGraphCheck): boolean {
-  return graph.generation.generationScope === 'trial'
-    && graph.generation.userBookId === graph.userBook.id
-    && graph.generation.trialSegmentId === graph.segment.id
-    && graph.generation.strategyDraftVersionId === graph.draft.id
-    && graph.generation.strategyDraftVersionId === graph.revision.strategyDraftVersionId
-    && graph.generation.sectionId === graph.segment.sectionId
-    && graph.generation.segment === graph.segment.segment
-    && graph.segment.trialRevisionId === graph.revision.id
-    && graph.revision.userBookId === graph.userBook.id
-    && graph.revision.status === 'generating'
-    && graph.draft.status === 'approved_for_trial'
-    && graph.userBook.workflowStatus === 'trial_generating'
-    && graph.userBook.currentStrategyDraftVersionId === graph.draft.id
-    && graph.userBook.currentTrialRevisionId === graph.revision.id;
-}
-
 export function nextGenerationAttempt(attemptCount: number, maxAttempts: number): number | null {
   return attemptCount >= maxAttempts ? null : attemptCount + 1;
-}
-
-export function shouldPublishTrialRevision(
-  segments: Array<{ ordinal: number; status: string }>,
-): boolean {
-  return segments.length === 3
-    && new Set(segments.map((segment) => segment.ordinal)).size === 3
-    && segments.every((segment) => segment.status === 'ready');
-}
-
-export function trialSegmentIdsToFail(
-  segments: Array<{ id: string; status: string }>,
-): string[] {
-  return segments
-    .filter((segment) => segment.status === 'pending' || segment.status === 'generating')
-    .map((segment) => segment.id);
-}
-
-type LockedTrialGenerationGraph = {
-  generation: typeof nodeGenerations.$inferSelect | undefined;
-  segment: typeof trialSegments.$inferSelect | undefined;
-  revision: typeof trialRevisions.$inferSelect | undefined;
-  draft: typeof strategyDraftVersions.$inferSelect | undefined;
-  userBook: typeof userBooks.$inferSelect | undefined;
-};
-
-async function lockTrialGenerationGraph(
-  db: Pick<Database, 'select'>,
-  identity: TrialGenerationIdentity,
-  segmentHint: TrialSegmentHint,
-): Promise<LockedTrialGenerationGraph> {
-  // Every trial writer uses this lock order so completion, terminal failure and retry can fence
-  // each other without publishing or mutating an obsolete revision.
-  const userBook = await db
-    .select()
-    .from(userBooks)
-    .where(eq(userBooks.id, identity.userBookId))
-    .limit(1)
-    .for('update')
-    .then((rows) => rows[0]);
-  const revision = await db
-    .select()
-    .from(trialRevisions)
-    .where(eq(trialRevisions.id, segmentHint.trialRevisionId))
-    .limit(1)
-    .for('update')
-    .then((rows) => rows[0]);
-  const draft = identity.strategyDraftVersionId
-    ? await db
-        .select()
-        .from(strategyDraftVersions)
-        .where(eq(strategyDraftVersions.id, identity.strategyDraftVersionId))
-        .limit(1)
-        .for('update')
-        .then((rows) => rows[0])
-    : undefined;
-  const segment = await db
-    .select()
-    .from(trialSegments)
-    .where(eq(trialSegments.id, segmentHint.id))
-    .limit(1)
-    .for('update')
-    .then((rows) => rows[0]);
-  const generation = await db
-    .select()
-    .from(nodeGenerations)
-    .where(eq(nodeGenerations.id, identity.id))
-    .limit(1)
-    .for('update')
-    .then((rows) => rows[0]);
-  return { generation, segment, revision, draft, userBook };
-}
-
-function graphIsCurrent(graph: LockedTrialGenerationGraph): graph is {
-  generation: typeof nodeGenerations.$inferSelect;
-  segment: typeof trialSegments.$inferSelect;
-  revision: typeof trialRevisions.$inferSelect;
-  draft: typeof strategyDraftVersions.$inferSelect;
-  userBook: typeof userBooks.$inferSelect;
-} {
-  return Boolean(
-    graph.generation
-    && graph.segment
-    && graph.revision
-    && graph.draft
-    && graph.userBook
-    && isCurrentTrialGenerationGraph({
-      generation: graph.generation,
-      segment: graph.segment,
-      revision: graph.revision,
-      draft: graph.draft,
-      userBook: graph.userBook,
-    }),
-  );
-}
-
-async function supersedeStaleTrialGeneration(
-  db: Pick<Database, 'update'>,
-  generationId: string,
-  expectedAttemptCount?: number,
-): Promise<void> {
-  const now = new Date();
-  await db
-    .update(nodeGenerations)
-    .set({
-      status: 'superseded',
-      result: null,
-      completedAt: now,
-      updatedAt: now,
-    })
-    .where(and(
-      eq(nodeGenerations.id, generationId),
-      inArray(nodeGenerations.status, ['queued', 'retrying', 'generating']),
-      expectedAttemptCount === undefined
-        ? undefined
-        : eq(nodeGenerations.attemptCount, expectedAttemptCount),
-    ));
 }
 
 const GENERATION_ATTEMPT_FIELD = 'readtailorGenerationAttempt';
@@ -383,48 +199,15 @@ type ReadyGenerationResult = NonNullable<(typeof nodeGenerations.$inferSelect)['
 export async function finalizeContentGeneration(options: {
   db: Database;
   generation: typeof nodeGenerations.$inferSelect;
-  trialSegment?: typeof trialSegments.$inferSelect;
   claimedAttempt: number;
   result: ReadyGenerationResult;
 }): Promise<void> {
+  if (options.generation.generationScope !== 'formal') {
+    throw new Error('content generation worker only supports formal generations');
+  }
   await options.db.transaction(async (tx) => {
-    if (options.generation.generationScope === 'formal') {
-      if (await discardUnexpectedFormalGeneration(tx, options.generation)) return;
-      await tx
-        .update(nodeGenerations)
-        .set({
-          status: 'ready',
-          result: options.result,
-          completedAt: new Date(),
-          errorSummary: null,
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(nodeGenerations.id, options.generation.id),
-          eq(nodeGenerations.status, 'generating'),
-          eq(nodeGenerations.attemptCount, options.claimedAttempt),
-        ));
-      return;
-    }
-    if (!options.trialSegment) return;
-    const graph = await lockTrialGenerationGraph(tx, options.generation, {
-      id: options.trialSegment.id,
-      trialRevisionId: options.trialSegment.trialRevisionId,
-    });
-    if (!graphIsCurrent(graph)) {
-      await supersedeStaleTrialGeneration(
-        tx,
-        options.generation.id,
-        options.claimedAttempt,
-      );
-      return;
-    }
-    if (
-      graph.generation.status !== 'generating'
-      || graph.generation.attemptCount !== options.claimedAttempt
-      || graph.segment.status !== 'generating'
-    ) return;
-    const [current] = await tx
+    if (await discardUnexpectedFormalGeneration(tx, options.generation)) return;
+    await tx
       .update(nodeGenerations)
       .set({
         status: 'ready',
@@ -434,46 +217,10 @@ export async function finalizeContentGeneration(options: {
         updatedAt: new Date(),
       })
       .where(and(
-        eq(nodeGenerations.id, graph.generation.id),
+        eq(nodeGenerations.id, options.generation.id),
         eq(nodeGenerations.status, 'generating'),
         eq(nodeGenerations.attemptCount, options.claimedAttempt),
-      ))
-      .returning({ id: nodeGenerations.id });
-    if (!current) return;
-    const [changedSegment] = await tx
-      .update(trialSegments)
-      .set({ status: 'ready', updatedAt: new Date() })
-      .where(and(
-        eq(trialSegments.id, graph.segment.id),
-        eq(trialSegments.status, 'generating'),
-      ))
-      .returning({ id: trialSegments.id });
-    if (!changedSegment) throw new Error('trial segment completion lost its generation claim');
-    const siblings = await tx
-      .select({ ordinal: trialSegments.ordinal, status: trialSegments.status })
-      .from(trialSegments)
-      .where(eq(trialSegments.trialRevisionId, graph.revision.id));
-    if (!shouldPublishTrialRevision(siblings)) return;
-    const [revision] = await tx
-      .update(trialRevisions)
-      .set({ status: 'published', publishedAt: new Date(), updatedAt: new Date() })
-      .where(and(
-        eq(trialRevisions.id, graph.revision.id),
-        eq(trialRevisions.status, 'generating'),
-      ))
-      .returning({ id: trialRevisions.id });
-    if (!revision) return;
-    const [advanced] = await tx
-      .update(userBooks)
-      .set({ workflowStatus: 'trial_review', updatedAt: new Date() })
-      .where(and(
-        eq(userBooks.id, graph.userBook.id),
-        eq(userBooks.currentStrategyDraftVersionId, graph.draft.id),
-        eq(userBooks.currentTrialRevisionId, graph.revision.id),
-        eq(userBooks.workflowStatus, 'trial_generating'),
-      ))
-      .returning({ id: userBooks.id });
-    if (!advanced) throw new Error('trial revision published after its current pointer changed');
+      ));
   });
 }
 
@@ -503,12 +250,14 @@ export async function executeContentGeneration(options: {
     || row.generation.status === 'failed'
     || row.generation.status === 'superseded'
   ) return;
-  if (
-    row.generation.generationScope === 'formal'
-    && await options.db.transaction((tx) => discardUnexpectedFormalGeneration(tx, row.generation))
-  ) return;
+  if (row.generation.generationScope !== 'formal') {
+    throw new Error('content generation worker only supports formal generations');
+  }
+  if (await options.db.transaction((tx) => discardUnexpectedFormalGeneration(tx, row.generation))) {
+    return;
+  }
 
-  const [reader, bookReader, draft, formalStrategy, segment] = await Promise.all([
+  const [reader, bookReader, formalStrategy] = await Promise.all([
     options.db
       .select({ version: readerProfileVersions })
       .from(readerProfiles)
@@ -524,17 +273,12 @@ export async function executeContentGeneration(options: {
           .limit(1)
           .then((rows) => rows[0])
       : Promise.resolve(undefined),
-    row.generation.strategyDraftVersionId
-      ? options.db.select().from(strategyDraftVersions).where(eq(strategyDraftVersions.id, row.generation.strategyDraftVersionId)).limit(1).then((rows) => rows[0])
-      : Promise.resolve(undefined),
     row.generation.strategyVersionId
       ? options.db.select().from(strategyVersions).where(eq(strategyVersions.id, row.generation.strategyVersionId)).limit(1).then((rows) => rows[0])
       : Promise.resolve(undefined),
-    row.generation.trialSegmentId
-      ? options.db.select().from(trialSegments).where(eq(trialSegments.id, row.generation.trialSegmentId)).limit(1).then((rows) => rows[0])
-      : Promise.resolve(undefined),
   ]);
   if (!reader || !bookReader) throw new Error('generation profiles are incomplete');
+  if (!formalStrategy) throw new Error('formal generation strategy is missing');
 
   const [htmlBytes, manifestBytes, bookProfileBytes] = await Promise.all([
     options.storage.get(`${row.package.objectPrefix}/book.normalized.html`),
@@ -555,21 +299,14 @@ export async function executeContentGeneration(options: {
     (item) => item.sectionId === node.sectionId && item.segment === node.segment,
   );
   const fullSource = extractNodeSourceFromHtml(rawHtml, node.sectionId, node.segment);
-  let source = fullSource;
-  let range = {
+  const source = fullSource;
+  const range = {
     start: { blockIndex: fullSource.blocks[0]?.blockIndex ?? 1, offset: 0 },
     end: {
       blockIndex: fullSource.blocks.at(-1)?.blockIndex ?? 1,
       offset: fullSource.blocks.at(-1)?.text.length ?? 0,
     },
   };
-  if (segment) {
-    range = {
-      start: { blockIndex: segment.startBlockIndex, offset: segment.startOffset },
-      end: { blockIndex: segment.endBlockIndex, offset: segment.endOffset },
-    };
-    source = sliceNodeSource(fullSource, range);
-  }
   const base = {
     userId: row.userBook.userId,
     packageId: row.package.id,
@@ -597,34 +334,16 @@ export async function executeContentGeneration(options: {
       configVersion: row.generation.modelConfigId,
     },
   };
-  const input: TailoringGenerationInput = row.generation.generationScope === 'trial'
-    ? {
-        ...base,
-        generationScope: 'trial',
-        fragmentRange: range,
-        strategy: {
-          kind: 'strategy_draft',
-          version: draft?.id ?? '',
-          status: 'approved_for_trial',
-          value: jsonValue(draft?.strategy),
-        },
-      }
-    : {
-        ...base,
-        generationScope: 'formal',
-        strategy: {
-          kind: 'strategy',
-          version: formalStrategy?.id ?? '',
-          status: 'active',
-          value: jsonValue(formalStrategy?.strategy),
-        },
-      };
-  if (input.generationScope === 'trial' && draft?.status !== 'approved_for_trial') {
-    throw new Error('trial generation draft is no longer approved');
-  }
-  if (input.generationScope === 'formal' && !formalStrategy) {
-    throw new Error('formal generation strategy is missing');
-  }
+  const input: TailoringGenerationInput = {
+    ...base,
+    generationScope: 'formal',
+    strategy: {
+      kind: 'strategy',
+      version: formalStrategy.id,
+      status: 'active',
+      value: jsonValue(formalStrategy.strategy),
+    },
+  };
 
   const cacheKey = createTailoringCacheKey(input);
   const [cached] = await options.db
@@ -633,60 +352,6 @@ export async function executeContentGeneration(options: {
     .where(and(eq(nodeGenerations.cacheKey, cacheKey), eq(nodeGenerations.status, 'ready')))
     .limit(1);
   const claimedAttempt = await options.db.transaction(async (tx) => {
-    if (row.generation.generationScope === 'trial') {
-      if (!segment || !row.generation.trialSegmentId || !row.generation.strategyDraftVersionId) {
-        throw new Error('trial generation references are incomplete');
-      }
-      const graph = await lockTrialGenerationGraph(tx, row.generation, {
-        id: segment.id,
-        trialRevisionId: segment.trialRevisionId,
-      });
-      if (!graphIsCurrent(graph)) {
-        await supersedeStaleTrialGeneration(tx, row.generation.id);
-        return null;
-      }
-      if (!['queued', 'retrying', 'generating'].includes(graph.generation.status)) return null;
-      if (!['pending', 'generating'].includes(graph.segment.status)) return null;
-      const attemptCount = nextGenerationAttempt(
-        graph.generation.attemptCount,
-        graph.generation.maxAttempts,
-      );
-      if (!attemptCount) {
-        throw errorForGenerationAttempt(
-          new Error('content generation attempts are exhausted'),
-          graph.generation.attemptCount,
-        );
-      }
-      const [started] = await tx
-        .update(nodeGenerations)
-        .set({
-          status: 'generating',
-          attemptCount,
-          cacheKey,
-          startedAt: new Date(),
-          completedAt: null,
-          errorSummary: null,
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(nodeGenerations.id, graph.generation.id),
-          eq(nodeGenerations.attemptCount, graph.generation.attemptCount),
-          inArray(nodeGenerations.status, ['queued', 'retrying', 'generating']),
-        ))
-        .returning({ id: nodeGenerations.id });
-      if (!started) return null;
-      const [startedSegment] = await tx
-        .update(trialSegments)
-        .set({ status: 'generating', updatedAt: new Date() })
-        .where(and(
-          eq(trialSegments.id, graph.segment.id),
-          inArray(trialSegments.status, ['pending', 'generating']),
-        ))
-        .returning({ id: trialSegments.id });
-      if (!startedSegment) throw new Error('trial segment could not enter generating');
-      return attemptCount;
-    }
-
     const attemptCount = nextGenerationAttempt(
       row.generation.attemptCount,
       row.generation.maxAttempts,
@@ -750,7 +415,6 @@ export async function executeContentGeneration(options: {
     await finalizeContentGeneration({
       db: options.db,
       generation: row.generation,
-      ...(segment ? { trialSegment: segment } : {}),
       claimedAttempt,
       result,
     });
@@ -765,104 +429,21 @@ export async function failContentGeneration(options: {
   error: Error;
 }) {
   const expectedAttemptCount = generationAttemptFromError(options.error);
-  const [initialGeneration] = await options.db
-    .select()
-    .from(nodeGenerations)
-    .where(eq(nodeGenerations.id, options.generationId))
-    .limit(1);
-  if (!initialGeneration) return;
-  const initialSegment = initialGeneration.trialSegmentId
-    ? await options.db
-        .select()
-        .from(trialSegments)
-        .where(eq(trialSegments.id, initialGeneration.trialSegmentId))
-        .limit(1)
-        .then((rows) => rows[0])
-    : undefined;
-  await options.db.transaction(async (tx) => {
-    if (initialGeneration.generationScope !== 'trial' || !initialSegment) {
-      await tx
-        .update(nodeGenerations)
-        .set({
-          status: 'failed',
-          result: null,
-          errorSummary: options.error.message.slice(0, 1000),
-          completedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(and(
-          eq(nodeGenerations.id, options.generationId),
-          inArray(nodeGenerations.status, ['queued', 'generating', 'retrying']),
-          expectedAttemptCount === undefined
-            ? undefined
-            : eq(nodeGenerations.attemptCount, expectedAttemptCount),
-        ));
-      return;
-    }
-
-    const graph = await lockTrialGenerationGraph(tx, initialGeneration, {
-      id: initialSegment.id,
-      trialRevisionId: initialSegment.trialRevisionId,
-    });
-    if (!graphIsCurrent(graph)) {
-      await supersedeStaleTrialGeneration(tx, options.generationId, expectedAttemptCount);
-      return;
-    }
-    if (
-      expectedAttemptCount !== undefined
-      && graph.generation.attemptCount !== expectedAttemptCount
-    ) return;
-    if (!['queued', 'generating', 'retrying'].includes(graph.generation.status)) return;
-
-    const siblingSegments = await tx
-      .select({ id: trialSegments.id, status: trialSegments.status })
-      .from(trialSegments)
-      .where(eq(trialSegments.trialRevisionId, graph.revision.id));
-    const siblingIds = trialSegmentIdsToFail(siblingSegments);
-    const now = new Date();
-    if (siblingIds.length > 0) {
-      await tx
-        .update(nodeGenerations)
-        .set({
-          status: 'failed',
-          result: null,
-          errorSummary: options.error.message.slice(0, 1000),
-          completedAt: now,
-          updatedAt: now,
-        })
-        .where(and(
-          inArray(nodeGenerations.trialSegmentId, siblingIds),
-          inArray(nodeGenerations.status, ['queued', 'generating', 'retrying']),
-        ));
-      await tx
-        .update(trialSegments)
-        .set({ status: 'failed', updatedAt: now })
-        .where(inArray(trialSegments.id, siblingIds));
-    }
-    const [failed] = await tx
-      .update(trialRevisions)
-      .set({
-        status: 'failed',
-        failureSummary: '试读内容生成失败，请重试当前版本。',
-        failedAt: now,
-        updatedAt: now,
-      })
-      .where(and(
-        eq(trialRevisions.id, graph.revision.id),
-        eq(trialRevisions.status, 'generating'),
-      ))
-      .returning({ id: trialRevisions.id });
-    if (!failed) return;
-    const [advanced] = await tx
-      .update(userBooks)
-      .set({ workflowStatus: 'trial_generation_failed', updatedAt: now })
-      .where(and(
-        eq(userBooks.id, graph.userBook.id),
-        eq(userBooks.currentStrategyDraftVersionId, graph.draft.id),
-        eq(userBooks.currentTrialRevisionId, graph.revision.id),
-        eq(userBooks.workflowStatus, 'trial_generating'),
-      ))
-      .returning({ id: userBooks.id });
-    if (!advanced) throw new Error('trial generation failed after its current pointer changed');
-  });
+  await options.db
+    .update(nodeGenerations)
+    .set({
+      status: 'failed',
+      result: null,
+      errorSummary: options.error.message.slice(0, 1000),
+      completedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(nodeGenerations.id, options.generationId),
+      eq(nodeGenerations.generationScope, 'formal'),
+      inArray(nodeGenerations.status, ['queued', 'generating', 'retrying']),
+      expectedAttemptCount === undefined
+        ? undefined
+        : eq(nodeGenerations.attemptCount, expectedAttemptCount),
+    ));
 }

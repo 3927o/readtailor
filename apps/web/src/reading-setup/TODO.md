@@ -21,7 +21,7 @@ UI/UX 与真实数据链路。
 ## 已确认的产品与交互原则
 
 - 旧静态原型已删除；正式实现位于 `apps/web/src/reading-setup/`。
-- `apps/web/src/agent-driven-reading-setup/` 是旧 API 验证页，也不能作为正式 UI 组件层继续扩写。
+- 旧 API 验证页已删除；正式 Reading Setup 前端能力只归属 `apps/web/src/reading-setup/`。
 - 前端不维护 `interview / brief / strategy / trial` 业务状态机，不推断 Agent 下一步应该做什么。
 - Agent 消息、Tool 调用、Action 和当前 Run 是事实来源；前端只把它们投影成有序 UI 条目。
 - 前端可以维护必要的短期界面状态：选项、输入内容、裁读注展开、请求 pending、SSE 展示快照和提交后的乐观回显。这些不是业务流程状态。

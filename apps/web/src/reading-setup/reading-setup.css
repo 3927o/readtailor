@@ -631,28 +631,9 @@
   text-indent: 2em;
 }
 
-.rss-annotation-anchor {
-  display: inline;
-  padding: 0;
-  border: 0;
-  border-bottom: 2px dotted var(--rt-green);
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  line-height: inherit;
-  text-align: inherit;
-}
-
-.rss-annotation-anchor:hover,
 .rss-annotation-anchor[aria-expanded='true'] {
   background: var(--rt-green-soft);
   color: var(--rt-green-deep);
-}
-
-.rss-annotation-anchor:focus-visible {
-  outline: 2px solid var(--rt-green);
-  outline-offset: 2px;
 }
 
 .rss-after-reading {

@@ -21,4 +21,5 @@ describe('loadApiConfig', () => {
     expect(loadApiConfig({ OBJECT_STORAGE_FORCE_PATH_STYLE: 'false' }).objectStorageForcePathStyle)
       .toBe(false);
   });
+
 });

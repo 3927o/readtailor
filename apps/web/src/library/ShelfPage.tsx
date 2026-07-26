@@ -1,3 +1,5 @@
+/** Displays the user's books and routes each supported workflow to its active entry point. */
+
 import { useQuery } from '@tanstack/react-query';
 import type { SharedBookStatus } from '@readtailor/contracts';
 import { Link } from 'react-router';
@@ -21,11 +23,11 @@ const statusCopy: Record<SharedBookStatus, { label: string; meta: string }> = {
 
 const workflowCopy: Record<WorkflowStatus, { label: string; meta: string }> = {
   on_shelf: { label: '阅读准备', meta: '在一段对话里准备读法和片段试读' },
-  interviewing: { label: '继续访谈', meta: '上次的回答已经保存' },
-  strategy_review: { label: '确认处理方式', meta: '读前简报和草稿等你确认' },
-  trial_generating: { label: '正在生成试读', meta: '三个片段会完整生成后一起出现' },
-  trial_generation_failed: { label: '试读生成失败', meta: '可以重试整轮生成' },
-  trial_review: { label: '查看试读', meta: '三个片段等你逐个确认' },
+  interviewing: { label: '准备记录已过期', meta: '旧版准备进度不再恢复' },
+  strategy_review: { label: '准备记录已过期', meta: '旧版准备进度不再恢复' },
+  trial_generating: { label: '准备记录已过期', meta: '旧版准备进度不再恢复' },
+  trial_generation_failed: { label: '准备记录已过期', meta: '旧版准备进度不再恢复' },
+  trial_review: { label: '准备记录已过期', meta: '旧版准备进度不再恢复' },
   active_reading: { label: '继续阅读', meta: '回到上次读到的位置' },
 };
 
@@ -36,7 +38,6 @@ export function ShelfPage() {
     queryFn: getUserBooks,
     refetchInterval: (query) => query.state.data?.userBooks.some((book) => (
       !['ready', 'failed'].includes(book.sharedBook.status)
-      || ['trial_generating', 'interviewing'].includes(book.workflowStatus)
     ))
       ? 3500
       : false,

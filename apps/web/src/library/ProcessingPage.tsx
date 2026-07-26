@@ -1,3 +1,5 @@
+/** Displays normalization progress before a book becomes available on the shelf. */
+
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   BookNormalizationStatus,
@@ -124,7 +126,7 @@ function ProcessingContent({ status, bookId }: { status: BookNormalizationStatus
         <section className="processing-result" data-result="ready">
           <h2>这本书已经准备好了。</h2>
           <p>回到书架，先聊几句你的阅读目标，再开始阅读。</p>
-          <div><Link className="button button-primary" to="/">回到书架，开始访谈</Link></div>
+          <div><Link className="button button-primary" to="/">回到书架，开始阅读准备</Link></div>
         </section>
       ) : null}
       {failed ? (

@@ -1,3 +1,5 @@
+/** Implements the active shelf, Reader, reading telemetry, and Ask AI user-book capabilities. */
+
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
@@ -32,9 +34,7 @@ import type {
   ReadingStatsGlobal,
   ReadingStatsPerBook,
   ReadingStatsQuery,
-  ReadingNodePreview,
   Strategy,
-  StrategyReviewResponse,
   TextPosition,
   TextRange,
   UpdateHighlightNoteRequest,
@@ -56,7 +56,6 @@ import {
   readerProfileVersions,
   readerReadNodes,
   readerStates,
-  readingSetupOperations,
   readingActivitySlices,
   readingDailyBookStats,
   readingSessions,
@@ -66,8 +65,6 @@ import {
   strategyChangeProposalRevisions,
   strategyDraftVersions,
   strategyVersions,
-  trialRevisions,
-  trialSegments,
   userBooks,
   userReadingSettings,
   type Database,
@@ -93,29 +90,12 @@ import {
   type ManifestIndex,
   type ReadingManifest,
   type ReadingManifestNode,
-  type ReadingManifestOutlineItem,
 } from '@readtailor/reader-core';
 import type { AskAiEngine } from './ask-ai-engine';
 import type { BookService } from './books';
-import type { ReadingSetupEngine } from './reading-setup-engine';
-import { ADJUSTMENT_LIMIT } from './user-books/domain/reading-setup-state';
 import { UserBookError } from './user-books/errors';
-import { createSetupContextStore } from './user-books/context/setup-context';
-import { createInterviewService } from './user-books/interview/service';
-import { createStrategyAdoptionService } from './user-books/strategy/adoption-service';
-import { createStrategyRevisionService } from './user-books/strategy/revision-service';
-import { createTrialService } from './user-books/trial/service';
-import {
-  createSetupOperationStore,
-} from './user-books/operations/setup-operation-store';
-import { projectStrategyReview } from './user-books/projections/strategy-review';
-
-export { readingSetupOperationRequestHash } from './user-books/domain/reading-setup-operation';
+import { createReadingContextStore } from './user-books/reading-context';
 export { UserBookError } from './user-books/errors';
-export {
-  buildTrialRetryPlan,
-  resolveTrialFragmentRanges,
-} from './user-books/trial/domain';
 
 // §6.2 / PRD §11.3 reading window: the current tailoring-eligible node plus the next 3.
 const FORMAL_WINDOW_SIZE = 4;
@@ -412,7 +392,7 @@ export function computeStreakDays(activeDays: Set<string>, today: string): numbe
 export interface ContentGenerationEnqueuer {
   // `priority` maps to BullMQ job priority (lower = more urgent; omitted → background).
   // Re-enqueuing an id that is still waiting bumps its priority (§6.2 jump提权).
-  enqueue(input: { generationId: string; userBookId: string; scope: 'trial' | 'formal'; priority?: number }): Promise<void>;
+  enqueue(input: { generationId: string; userBookId: string; priority?: number }): Promise<void>;
 }
 
 // ReaderBootstrap is now a formal contract (ReaderBootstrapSchema); re-exported so existing
@@ -550,43 +530,8 @@ async function getManifestMeta(books: BookService, sharedBookId: string): Promis
   return meta;
 }
 
-function mapStrategy(value: {
-  goals: string[];
-  expression_principles: string[];
-  guide: { enabled: boolean; objectives: string[] };
-  annotations: { enabled: boolean; focuses: string[]; exclusions: string[] };
-  after_reading: { enabled: boolean; objectives: string[] };
-  trial_candidates: Array<{ section_id: string; segment: number; reason: string }>;
-}): Strategy {
-  // Lossless snake_case → camelCase projection of the agent's structured strategy.
-  // The agent now produces goals / expression_principles / per-section enabled
-  // directly (agent-kit ReadingStrategySchema), so the host no longer fabricates
-  // expressionPrinciples or forces enabled=true — the faithful strategy reaches
-  // the generator (§3.6).
-  return {
-    goals: value.goals,
-    expressionPrinciples: value.expression_principles,
-    guide: { enabled: value.guide.enabled, objectives: value.guide.objectives },
-    annotations: {
-      enabled: value.annotations.enabled,
-      focuses: value.annotations.focuses,
-      exclusions: value.annotations.exclusions,
-    },
-    afterReading: {
-      enabled: value.after_reading.enabled,
-      objectives: value.after_reading.objectives,
-    },
-    trialCandidates: value.trial_candidates.map((candidate) => ({
-      sectionId: candidate.section_id,
-      segment: candidate.segment,
-      reason: candidate.reason,
-    })),
-  };
-}
-
-// The 问 AI strategy-change proposal (§8.2) is the tailoring core without trial_candidates — a
-// mid-reading adjustment has no trial phase. Same snake_case → camelCase projection as
-// mapStrategy, minus that field. Persisted as strategy_change_proposals.proposed_strategy.
+// The 问 AI strategy-change proposal (§8.2) is the tailoring core without trial candidates.
+// Persisted as strategy_change_proposals.proposed_strategy.
 function mapProposedStrategy(value: {
   goals: string[];
   expression_principles: string[];
@@ -763,20 +708,6 @@ function normalizeQaQuestionContext(
   };
 }
 
-function chapterPath(
-  node: ReadingManifestNode,
-  outline: ReadingManifestOutlineItem[],
-): string[] {
-  const byId = new Map(outline.map((item) => [item.sectionId, item]));
-  const path: string[] = [];
-  let current = byId.get(node.sectionId);
-  while (current) {
-    if (current.title.trim()) path.unshift(current.title.trim());
-    current = current.parentSectionId ? byId.get(current.parentSectionId) : undefined;
-  }
-  return path.length > 0 ? path : [node.title.trim() || '未命名章节'];
-}
-
 // non-empty. `label` names the caller so the rejection reads sensibly ('试读片段' / '划线').
 function assertRangeWithinBlocks(
   blocks: Array<{ blockIndex: number; kind: string; text: string; utf16Length: number }>,
@@ -836,7 +767,6 @@ function createStreamBridge<T>() {
 type UserBookServiceOptions = {
   db: Database;
   books: BookService;
-  setupEngine: ReadingSetupEngine;
   askAiEngine: AskAiEngine;
   generations: ContentGenerationEnqueuer;
   modelConfigId: string;
@@ -844,10 +774,6 @@ type UserBookServiceOptions = {
 
 type RequestContext = {
   requestId?: string;
-  onUnexpectedStrategyRevisionFinalizationError?(
-    error: unknown,
-    source: 'strategy_feedback' | 'trial_feedback',
-  ): void;
 };
 
 export function createUserBookService(options: UserBookServiceOptions) {
@@ -876,18 +802,10 @@ function createUserBookServiceForUser(
     return row;
   };
 
-  const setupOperationStore = createSetupOperationStore({ db, getOwnedBook });
-  const {
-    readById: readOperationById,
-    observeById: observeOperationById,
-    project: projectReadingSetupOperation,
-    current: currentReadingSetupOperation,
-  } = setupOperationStore;
-  const { getReaderProfile, getSetupContext } = createSetupContextStore({
+  const { getReaderProfile, getManifestAndHtml } = createReadingContextStore({
     db,
     books: options.books,
     userId,
-    getOwnedBook,
   });
 
   const shelfItem = (row: { userBook: typeof userBooks.$inferSelect; sharedBook: typeof sharedBooks.$inferSelect }): UserBookShelfItem => ({
@@ -903,165 +821,6 @@ function createUserBookServiceForUser(
     progress: null,
     lastActivityAt: row.userBook.updatedAt.toISOString(),
   });
-
-  const createReadingNodeProjector = (
-    manifest: ReadingManifest,
-    bookProfileValue: unknown,
-  ) => {
-    const manifestIndex = createManifestIndex(manifest);
-    const allowedCandidates = new Set(
-      ((bookProfileValue as { trial_candidates?: Array<{ section_id: string; segment: number }> } | null)
-        ?.trial_candidates ?? [])
-        .map((candidate) => `${candidate.section_id}:${candidate.segment}`),
-    );
-    return (
-      candidate: { ordinal: number; sectionId: string; segment: number; reason: string },
-      seen: Set<string>,
-    ): ReadingNodePreview => {
-      const key = `${candidate.sectionId}:${candidate.segment}`;
-      const node = findNode(manifestIndex, candidate.sectionId, candidate.segment);
-      if (
-        candidate.ordinal < 1
-        || candidate.ordinal > 3
-        || !node?.tailoringEligible
-        || !allowedCandidates.has(key)
-        || seen.has(key)
-      ) {
-        throw new UserBookError('访谈生成了无效的试读候选', 409);
-      }
-      seen.add(key);
-      return {
-        ordinal: candidate.ordinal,
-        sectionId: candidate.sectionId,
-        segment: candidate.segment,
-        chapterPath: chapterPath(node, manifest.outline),
-        reason: candidate.reason,
-      };
-    };
-  };
-
-  const strategyStateByDraftId = async (
-    userBookId: string,
-    draftId: string,
-  ): Promise<StrategyReviewResponse> => {
-    const owned = await getOwnedBook(userBookId);
-    const [draft, manifestValue] = await Promise.all([
-      db
-        .select()
-        .from(strategyDraftVersions)
-        .where(and(
-          eq(strategyDraftVersions.id, draftId),
-          eq(strategyDraftVersions.userBookId, userBookId),
-        ))
-        .limit(1)
-        .then((rows) => rows[0]),
-      options.books.getManifest(owned.sharedBook.id),
-    ]);
-    if (!draft) throw new UserBookError('处理方式版本不存在', 404);
-    if (!manifestValue) throw new UserBookError('书籍阅读索引不存在', 409);
-    const manifest = manifestValue;
-    const manifestIndex = createManifestIndex(manifest);
-    const trialCandidatePreviews = draft.strategy.trialCandidates.map((candidate, index) => {
-      const node = findNode(manifestIndex, candidate.sectionId, candidate.segment);
-      if (!node) throw new UserBookError('处理方式引用的试读候选不存在', 409);
-      return {
-        ordinal: index + 1,
-        sectionId: candidate.sectionId,
-        segment: candidate.segment,
-        chapterPath: chapterPath(node, manifest.outline),
-        reason: candidate.reason,
-      };
-    });
-    return projectStrategyReview({
-      userBookId,
-      workflowStatus: owned.userBook.workflowStatus,
-      currentStrategyDraftVersionId: owned.userBook.currentStrategyDraftVersionId,
-      draft,
-      trialCandidatePreviews,
-      adjustmentCount: owned.userBook.adjustmentCount,
-      adjustmentLimit: ADJUSTMENT_LIMIT,
-    });
-  };
-
-  const strategyState = async (userBookId: string): Promise<StrategyReviewResponse> => {
-    const owned = await getOwnedBook(userBookId);
-    const draftId = owned.userBook.currentStrategyDraftVersionId;
-    if (!draftId) throw new UserBookError('当前处理方式不存在', 409);
-    return strategyStateByDraftId(userBookId, draftId);
-  };
-
-  const interviewService = createInterviewService({
-    db,
-    books: options.books,
-    setupEngine: options.setupEngine,
-    getOwnedBook,
-    getSetupContext,
-    createReadingNodeProjector: (manifestValue, bookProfile) => (
-      createReadingNodeProjector(manifestValue, bookProfile)
-    ),
-    mapStrategy,
-    applyReaderProfilePatch,
-    loadStrategyState: strategyStateByDraftId,
-    ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
-  });
-
-  const strategyRevisionService = createStrategyRevisionService({
-    db,
-    books: options.books,
-    setupEngine: options.setupEngine,
-    operationStore: setupOperationStore,
-    getOwnedBook,
-    getSetupContext,
-    createReadingNodeProjector: (manifestValue, bookProfile) => (
-      createReadingNodeProjector(manifestValue, bookProfile)
-    ),
-    mapStrategy,
-    loadStrategyState: strategyStateByDraftId,
-    ...(requestContext.onUnexpectedStrategyRevisionFinalizationError ? {
-      onUnexpectedFinalizationError:
-        requestContext.onUnexpectedStrategyRevisionFinalizationError,
-    } : {}),
-    ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
-  });
-
-  const trialService = createTrialService({
-    db,
-    books: options.books,
-    setupEngine: options.setupEngine,
-    generations: options.generations,
-    operationStore: setupOperationStore,
-    userId,
-    modelConfigId: options.modelConfigId,
-    getOwnedBook,
-    getSetupContext,
-    chapterPath,
-    assertRangeWithinBlocks,
-    loadStrategyState: strategyStateByDraftId,
-    ...(requestContext.requestId ? { requestId: requestContext.requestId } : {}),
-  });
-  const {
-    getManifestAndHtml,
-    state: trialState,
-    stateByRevisionId: trialStateByRevisionId,
-  } = trialService;
-
-
-  const resumeReadingSetupOperation = async (
-    userBookId: string,
-    operationId: string,
-  ) => {
-    await getOwnedBook(userBookId);
-    const operation = await readOperationById(userBookId, operationId);
-    if (!operation) throw new UserBookError('阅读准备操作不存在', 404);
-    if (operation.kind === 'strategy_revision') {
-      await strategyRevisionService.executeOperation(operation);
-    } else {
-      await trialService.executeOperation(operation);
-    }
-    const latest = await observeOperationById(userBookId, operationId);
-    if (!latest) throw new UserBookError('阅读准备操作不存在', 404);
-    return projectReadingSetupOperation(latest.operation, latest.leaseExpired);
-  };
 
   const enqueuePendingFormalGenerations = async (userBookId: string) => {
     const [book, resume, readRows, candidates] = await Promise.all([
@@ -1097,7 +856,6 @@ function createUserBookServiceForUser(
       await Promise.all(pending.map((generation) => options.generations.enqueue({
         generationId: generation.id,
         userBookId,
-        scope: 'formal',
         // Recovery re-enqueue has no reading focus: keep it in the background band so the
         // position-driven window (priority 1..N) always wins.
         priority: FORMAL_BACKGROUND_PRIORITY,
@@ -1167,7 +925,6 @@ function createUserBookServiceForUser(
       enqueues.push(options.generations.enqueue({
         generationId: row.id,
         userBookId,
-        scope: 'formal',
         priority: index + 1,
       }));
     });
@@ -1180,21 +937,6 @@ function createUserBookServiceForUser(
       );
     }
   };
-
-  const strategyAdoptionService = createStrategyAdoptionService({
-    db,
-    userId,
-    modelConfigId: options.modelConfigId,
-    formalWindowSize: FORMAL_WINDOW_SIZE,
-    getOwnedBook,
-    loadManifest: async (sharedBookId) => {
-      const manifestValue = await options.books.getManifest(sharedBookId);
-      if (!manifestValue) throw new UserBookError('书籍阅读索引不存在', 409);
-      return manifestValue;
-    },
-    ensureFormalWindow,
-    enqueuePendingFormalGenerations,
-  });
 
   // §11.5 — persist the reader's anchor. The anchor's node is the focus node (`order`). Two guards
   // make a bad or stale event a no-op instead of a corruption (fix §2.2/§2.3/§4.3):
@@ -1516,14 +1258,14 @@ function createUserBookServiceForUser(
   // Resolve-or-create the thread and append the user's question (idempotent on idempotencyKey
   // within the thread). A new thread requires `context` (the anchor); a follow-up reuses the
   // thread's stored anchor. The question lands before any agent turn so a stream that dies later
-  // is recoverable — a retry re-runs the turn (§8, mirrors commitInterviewAnswer).
+  // is recoverable — a retry re-runs the turn from the persisted question (§8).
   const commitQaQuestion = async (userBookId: string, input: AskQuestionRequest) => {
     const owned = await getOwnedBook(userBookId);
     if (owned.userBook.workflowStatus !== 'active_reading') {
       throw new UserBookError('尚未开始阅读，暂不能提问', 409);
     }
     // Trim before persisting so a whitespace-only body (which passes the schema's minLength:1)
-    // can't hit the content non-empty CHECK as a raw 500 (mirrors the interview answer path).
+    // can't hit the content non-empty CHECK as a raw 500.
     const question = input.question.trim();
     if (!question) throw new UserBookError('问题不能为空', 400);
     let session: typeof qaSessions.$inferSelect;
@@ -2062,39 +1804,6 @@ function createUserBookServiceForUser(
         updatedAt: owned.userBook.updatedAt.toISOString(),
       };
     },
-
-    currentReadingSetupOperation,
-
-    async readingSetupOperation(userBookId: string, operationId: string) {
-      await getOwnedBook(userBookId);
-      const observed = await observeOperationById(userBookId, operationId);
-      if (!observed) throw new UserBookError('阅读准备操作不存在', 404);
-      return projectReadingSetupOperation(observed.operation, observed.leaseExpired);
-    },
-
-    resumeReadingSetupOperation,
-
-    interviewState: interviewService.state,
-    startInterview: interviewService.start,
-    resumeInterview: interviewService.resume,
-    streamResumeInterview: interviewService.streamResume,
-    streamInterviewAnswer: interviewService.streamAnswer,
-
-    strategyState,
-    strategyStateByDraftId,
-
-    streamStrategyFeedback: strategyRevisionService.streamStrategyFeedback,
-
-    streamApproveStrategy: trialService.streamApprove,
-
-    trialState,
-    trialStateByRevisionId,
-    retryTrial: trialService.retry,
-    markTrialViewed: trialService.markViewed,
-
-    streamTrialFeedback: strategyRevisionService.streamTrialFeedback,
-
-    adoptTrial: strategyAdoptionService.confirmStrategyAndStartReading,
 
     async reader(userBookId: string): Promise<ReaderBootstrap> {
       const owned = await getOwnedBook(userBookId);
@@ -3039,7 +2748,6 @@ function createUserBookServiceForUser(
         options.generations.enqueue({
           generationId: generation.id,
           userBookId,
-          scope: 'formal',
           priority: generation.priority,
         }),
       ));

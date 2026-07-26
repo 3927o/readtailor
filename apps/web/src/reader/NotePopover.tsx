@@ -1,5 +1,7 @@
+/** Renders anchored tailored notes inside the Reader. */
+
 import type { CSSProperties } from 'react';
-import { AssistanceContent } from '../user-books/components';
+import { AssistanceContent } from '../components/reading/ReadingAssistance';
 
 // One anchored dialog serves both reader surfaces: the original book note (raw HTML,
 // preserved verbatim) and the tailored 裁读注 (a markdown-ish content string rendered

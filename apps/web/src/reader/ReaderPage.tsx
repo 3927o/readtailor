@@ -1,3 +1,5 @@
+/** Composes the active reading experience and its supporting panels. */
+
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { flushSync } from 'react-dom';
@@ -15,7 +17,7 @@ import { Slider } from '../components/core/Slider';
 import { getBookReadingStats } from '../reading-stats/api';
 import { estimateReadingSeconds, readingSecondsPerCharacter } from '../reading-stats/estimate';
 import { formatReadingDuration, formatRemaining } from '../reading-stats/format';
-import { AssistanceContent, BriefCard } from '../user-books/components';
+import { AssistanceContent, BriefCard } from '../components/reading/ReadingAssistance';
 import {
   createHighlight,
   defaultReadingSettings,

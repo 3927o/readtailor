@@ -1,6 +1,6 @@
 /** Renders an Assistant transcript turn as part of the continuous preparation document. */
 
-import { AssistanceContent } from '../../../user-books/components';
+import { AssistanceContent } from '../../../components/reading/ReadingAssistance';
 import type { AssistantTranscriptEntry } from '../../transcript/types';
 import { StreamingCursor } from '../primitives/StreamingCursor';
 

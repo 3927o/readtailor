@@ -4,7 +4,7 @@ import type {
   AgentRunToolDisplay,
   AgentSessionState,
 } from '@readtailor/contracts';
-import { parsePartialJson } from '../../agent-driven-reading-setup/partial-json';
+import { parsePartialJson } from './partialJson';
 import type {
   QuestionAnswerView,
   ReadingSetupActionState,

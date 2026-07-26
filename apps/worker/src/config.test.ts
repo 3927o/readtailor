@@ -117,4 +117,5 @@ describe('loadWorkerConfig', () => {
       loadWorkerConfig({ OBJECT_STORAGE_FORCE_PATH_STYLE: 'false' }).objectStorageForcePathStyle,
     ).toBe(false);
   });
+
 });

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { NotePopover, popoverPlacement } from '../../../reader/NotePopover';
 import type { ActivePopover } from '../../../reader/NotePopover';
-import { AssistanceContent } from '../../../user-books/components';
+import { AssistanceContent } from '../../../components/reading/ReadingAssistance';
 import type { ReadingSetupCommands } from '../../session/types';
 import type { TrialTranscriptEntry } from '../../transcript/types';
 import { InlineFeedback } from '../primitives/InlineFeedback';
@@ -99,18 +99,25 @@ export function TrialEntry({
             <p key={paragraph.id}>
               {paragraph.segments.map((segment, index) => (
                 segment.annotationId ? (
-                  <button
+                  <mark
                     key={`${paragraph.id}-${index}`}
-                    className="rss-annotation-anchor"
-                    type="button"
+                    className="tailored-text-anchor rss-annotation-anchor"
+                    role="button"
+                    tabIndex={0}
+                    aria-label="打开对应裁读注"
                     aria-expanded={activeAnnotationId === segment.annotationId}
                     onClick={(event) => openAnnotation(
                       segment.annotationId!,
                       event.currentTarget,
                     )}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter' && event.key !== ' ') return;
+                      event.preventDefault();
+                      openAnnotation(segment.annotationId!, event.currentTarget);
+                    }}
                   >
                     {segment.text}
-                  </button>
+                  </mark>
                 ) : segment.text
               ))}
             </p>

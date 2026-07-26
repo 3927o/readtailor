@@ -1,5 +1,12 @@
-import type { Highlight, ReaderNode, ReaderOutlineItem } from './api';
-import type { TailoredAnnotation, TextRange } from '../user-books/api';
+/** Projects canonical Reader content, annotations, and highlights into renderable blocks. */
+
+import type {
+  Highlight,
+  ReaderNode,
+  ReaderOutlineItem,
+  TailoredAnnotation,
+  TextRange,
+} from './api';
 import {
   blockPointsEqual,
   normalizeBlockRange,
