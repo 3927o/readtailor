@@ -12,6 +12,8 @@ import {
   authPasswordCredentials,
   authSessions,
   readerProfiles,
+  sharedBooks,
+  userBooks,
   users,
   type Database,
 } from '@readtailor/database';
@@ -327,6 +329,28 @@ function authUser(row: typeof users.$inferSelect, email: string | null): AuthUse
   };
 }
 
+type AuthTransaction = Parameters<Parameters<Database['transaction']>[0]>[0];
+
+/**
+ * 新用户创建事务中的唯一书架初始化：只插入当下 ready 的 preset，保持 user_books 默认 on_shelf。
+ */
+async function insertReadyPresetBooksForNewUser(
+  tx: AuthTransaction,
+  userId: string,
+): Promise<void> {
+  const presetSelection = tx
+    .select({
+      userId: sql<string>`${userId}::uuid`.as('user_id'),
+      sharedBookId: sharedBooks.id,
+    })
+    .from(sharedBooks)
+    .where(and(eq(sharedBooks.isPreset, true), eq(sharedBooks.status, 'ready')));
+  await tx
+    .insert(userBooks)
+    .select(presetSelection)
+    .onConflictDoNothing({ target: [userBooks.userId, userBooks.sharedBookId] });
+}
+
 export function createDatabaseAuthRepository(db: Database): AuthRepository {
   return {
     async upsertIdentity(input, now) {
@@ -409,6 +433,7 @@ export function createDatabaseAuthRepository(db: Database): AuthRepository {
           .insert(readerProfiles)
           .values({ userId: created.id, createdAt: now, updatedAt: now })
           .onConflictDoNothing({ target: readerProfiles.userId });
+        await insertReadyPresetBooksForNewUser(tx, created.id);
         return { ...authUser(created, input.email), disabledAt: created.disabledAt };
       });
     },
@@ -472,6 +497,7 @@ export function createDatabaseAuthRepository(db: Database): AuthRepository {
             .values({ userId: created.id, createdAt: now, updatedAt: now })
             .onConflictDoNothing({ target: readerProfiles.userId }),
         ]);
+        await insertReadyPresetBooksForNewUser(tx, created.id);
         return { ...authUser(created, input.email), disabledAt: created.disabledAt };
       });
     },
