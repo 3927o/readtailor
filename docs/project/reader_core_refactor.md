@@ -120,8 +120,7 @@ apps/worker/src/normalization/publication.ts
 ```text
 apps/worker/src/tailoring/job.ts
 apps/worker/src/normalization/book-analysis.ts
-apps/worker/src/ingest-preset.ts
-apps/worker/src/ingest-fixture.ts
+tools/preset-import/importer.ts
 ```
 
 常见读取方式是：
@@ -702,8 +701,7 @@ pnpm vitest run packages/reader-core
 
 ```text
 apps/worker/src/normalization/publication.ts
-apps/worker/src/ingest-preset.ts
-apps/worker/src/ingest-fixture.ts
+tools/preset-import/importer.ts
 apps/worker/package.json
 packages/normalized-book/package.json
 packages/normalized-book/src/*
@@ -715,7 +713,7 @@ pnpm-lock.yaml
 
 - 所有发布路径在 Manifest 确定性生成后调用同一个 `parseReadingManifestJson` 门禁。
 - 正式规范化在进入 book analysis 前完成校验。
-- preset 和 fixture 在生成 package manifest、上传对象和写入成功状态前完成校验。
+- preset 导入在上传对象和写入成功状态前完成校验。
 - 检查 Manifest 内版本与 package manifest 中的 `manifestVersion` 一致。
 - 发布失败时报告具体字段路径。
 
@@ -799,8 +797,6 @@ packages/tailoring/package.json
 ```text
 apps/worker/src/normalization/book-analysis.ts
 apps/worker/src/tailoring/job.ts
-apps/worker/src/ingest-preset.ts
-apps/worker/src/ingest-fixture.ts
 ```
 
 每迁一个文件：
@@ -1006,7 +1002,7 @@ Reader Core 重构完成时应满足：
 - `packages/reader-core` 是 Manifest 类型的唯一权威来源。
 - Reader Core 所有权范围内的 Manifest、位置和 Tailoring 跨模块契约统一使用 camelCase，不保留 snake_case 双写或双读。
 - 所有生产 Manifest 在发布前经过运行时校验。
-- 正式规范化、preset 和 fixture 发布路径都不能绕过同一个 Manifest 门禁。
+- 正式规范化和 preset 导入路径都不能绕过同一个 Manifest 门禁。
 - API、Worker、Web 不再定义局部 Manifest 类型，且不重复执行完整 Manifest 语义校验。
 - contracts 的 point/range schema 来源于 reader-core。
 - Tailoring 不再维护独立的 point/range 比较算法。

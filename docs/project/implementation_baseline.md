@@ -55,9 +55,10 @@
 
 ### 阶段 2：第一本 EPUB 到 ready package
 
-当前没有可复用的 ready package，因此先从 handoff 的 `fixtures/fixed_input.epub` 开始：
+Preset 书籍的源 EPUB 和最终 package 保存在 Git ignore 的 `preset-books/<bookname>/`，通过
+`pnpm preset:import [directory]` 写入共享书籍；正式规范化则必须显式传入 EPUB：
 
-- 上传或管理脚本写入源 EPUB，计算 SHA-256。
+- 导入或管理脚本读取源 EPUB，计算 SHA-256。
 - 解包并运行最小规范化流程。
 - 生成 `book.normalized.html`、assets 和校验报告。
 - 补齐完整 `reading_manifest.json`，包括 outline、nodes、blocks、裁读资格和全书位置。
@@ -65,8 +66,8 @@
 - 生成最小 `book_profile.json`。
 - 发布不可变 package，并创建正式 shared book 记录。
 
-Coding Agent 和 E2B 可以在此阶段逐步接入。为了先验证数据链路，允许先为第一本 fixture 编写人工
-确定的 `normalize.py`，但产物必须走与未来 Agent 相同的校验和发布接口，不能手工伪造 ready 状态。
+Coding Agent 和 E2B 可以在此阶段逐步接入。Preset package 是已经完成规范化和审核的本地输入，
+导入前仍必须通过完整的 manifest、profile、资源、源 EPUB SHA 和阻断错误校验，不能手工伪造 ready 状态。
 
 完成条件：第一本书可以从对象存储和数据库通过正式 API 读取，且能确定性重建 manifest。
 

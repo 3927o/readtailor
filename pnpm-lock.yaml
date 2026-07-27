@@ -332,6 +332,40 @@ importers:
         specifier: ^5.0.3
         version: 5.0.3
 
+  tools:
+    dependencies:
+      '@readtailor/config':
+        specifier: workspace:*
+        version: link:../packages/config
+      '@readtailor/database':
+        specifier: workspace:*
+        version: link:../packages/database
+      '@readtailor/normalized-book':
+        specifier: workspace:*
+        version: link:../packages/normalized-book
+      '@readtailor/reader-core':
+        specifier: workspace:*
+        version: link:../packages/reader-core
+      '@readtailor/storage':
+        specifier: workspace:*
+        version: link:../packages/storage
+      drizzle-orm:
+        specifier: ^0.44.0
+        version: 0.44.7(@opentelemetry/api@1.9.0)(postgres@3.4.9)
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
+      tsx:
+        specifier: ^4.20.0
+        version: 4.23.0
+      typescript:
+        specifier: ^5.8.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.0
+        version: 3.2.7(@types/node@24.13.3)(happy-dom@20.10.6)(tsx@4.23.0)(yaml@2.9.0)
+
 packages:
 
   '@anthropic-ai/sdk@0.91.1':

@@ -43,7 +43,11 @@ function integer(name: string, fallback: number, min: number): number {
 }
 
 async function main(): Promise<void> {
-  const sourcePath = resolve(REPO_ROOT, process.argv[2] ?? 'fixtures/fixed_input.epub');
+  const sourceArgument = process.argv[2]?.trim();
+  if (!sourceArgument) {
+    throw new Error('usage: pnpm book:ingest:agent <book.epub>');
+  }
+  const sourcePath = resolve(REPO_ROOT, sourceArgument);
   const source = await readFile(sourcePath);
   if (source.byteLength > 100 * 1024 * 1024) {
     throw new Error('source EPUB exceeds the 100 MB limit');

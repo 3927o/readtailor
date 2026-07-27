@@ -1,0 +1,24 @@
+{
+  "name": "@readtailor/tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "preset:import": "tsx --env-file-if-exists=../.env preset-import/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false"
+  },
+  "dependencies": {
+    "@readtailor/config": "workspace:*",
+    "@readtailor/database": "workspace:*",
+    "@readtailor/normalized-book": "workspace:*",
+    "@readtailor/reader-core": "workspace:*",
+    "@readtailor/storage": "workspace:*",
+    "drizzle-orm": "^0.44.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

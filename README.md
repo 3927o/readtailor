@@ -221,9 +221,9 @@ packages/
 
 docs/                 产品、数据契约、Agent 和架构文档
 design/               设计系统、UI kits 和交互原型
-tools/                EPUB 规范化、manifest 构建和校验工具
+tools/                Preset 导入、manifest 构建和书籍校验工具
 tests/                Python 工具与阅读契约测试
-fixtures/             开发用 EPUB 和预置书籍样例
+preset-books/         本地 preset EPUB 与已构建 package（整个目录被 Git ignore）
 ```
 
 ## 本地开发
@@ -346,47 +346,50 @@ GOOGLE_REDIRECT_URI=http://localhost:3001/v1/auth/google/callback
 
 Google Cloud Console 中的 authorized redirect URI 必须与 `GOOGLE_REDIRECT_URI` 完全一致。当前后端流程已经实现，但 Web 登录页尚未提供 Google 登录按钮。
 
-## 准备开发书籍
+## 准备书籍
 
-### 发布 fixture 书籍
+### 导入 preset 书籍
 
-下面的管理命令使用确定性本地规范化脚本发布开发 fixture，并把该共享书籍标记为预置书：
+Preset 原始文件和最终 package 统一放在 Git ignore 的 `preset-books/`。一本书一个目录，目录名必须与 EPUB 文件名一致：
 
-```bash
-pnpm book:ingest:fixture
+```text
+preset-books/
+└── <bookname>/
+    ├── <bookname>.epub
+    └── package/
+        ├── book.normalized.html
+        ├── reading_manifest.json
+        ├── book_profile.json
+        ├── metadata.json
+        ├── normalization_report.json
+        ├── validation_report.txt
+        ├── validation_report.json
+        └── assets/
 ```
 
-默认输入是 `fixtures/fixed_input.epub`，也可以传入其他路径：
+数据库 migration 和对象存储配置完成后，导入默认目录：
 
 ```bash
-pnpm book:ingest:fixture /absolute/path/to/book.epub
+pnpm preset:import
 ```
 
-命令要求数据库 migration 已完成，并已配置对象存储。重复执行会校验不可变对象的 SHA-256；内容完全一致时返回 `reused: true`。
-
-仓库也提供使用受控 normalizer 和审核后书籍画像发布书籍包的命令：
+也可以传入其他根目录：
 
 ```bash
-pnpm --filter @readtailor/worker ingest:preset \
-  fixtures/preset/nahan.epub \
-  tools/preset_profiles/nahan.book_profile.json
+pnpm preset:import /absolute/path/to/preset-books
 ```
 
-该命令会生成并发布书籍包，并把共享书籍标记为预置书。只有 `ready` 的预置书才会在用户完成画像时自动加入书架。
+工具先计算 EPUB SHA-256 并查询 `shared_books`。相同 SHA 已存在时会输出 book ID、状态和当前 `isPreset`，随后完全跳过，不上传对象、也不修改数据库。其他书籍会先完成全量 package 预检，全部通过后才按目录名顺序发布；package version 固定为 `nb-1.0-preset-v1`。
 
-导入新的预置书后，可以为此前已经完成画像的用户幂等补录：
-
-```bash
-pnpm --filter @readtailor/api preset-book:backfill
-```
-
-该命令不会复活用户已经删除的预置书；重复执行只会补充仍缺失的书架记录。
+导入只创建 `shared_books`、`book_packages` 和 `book_profiles`，不上传 EPUB，也不创建 source upload 或 normalization 记录。新注册用户会在创建用户的同一事务中获得当时所有 `isPreset=true` 且 `ready` 的书，初始状态为 `on_shelf`。既有用户不补录；进入书籍后仍走正常 Reading Setup，由用户自己的策略生成 Tailor 内容。
 
 ### 正式 Agent 规范化
 
 ```bash
 pnpm book:ingest:agent /absolute/path/to/book.epub
 ```
+
+EPUB 参数必须显式提供，没有默认 fixture。
 
 除数据库和对象存储外，还需要完整的规范化模型、书籍分析模型以及一个 sandbox provider：
 
@@ -445,7 +448,7 @@ MODEL_NAME
 | `pnpm test` | 依次运行 TypeScript 和 Python 测试 |
 | `pnpm build` | 构建所有可构建 workspace |
 | `pnpm check` | 类型检查、全部测试和生产构建 |
-| `pnpm book:ingest:fixture` | 发布开发 fixture 书籍包 |
+| `pnpm preset:import [directory]` | 校验并导入本地 preset 书籍 package |
 | `pnpm book:ingest:agent <epub>` | 通过 Agent 和远程 sandbox 规范化 EPUB |
 
 提交前运行：

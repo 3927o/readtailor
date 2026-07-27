@@ -11,6 +11,7 @@ export default defineConfig({
     include: [
       'apps/api/src/**/*.db.test.ts',
       'apps/worker/src/**/*.db.test.ts',
+      'tools/**/*.db.test.ts',
     ],
     setupFiles: ['apps/api/src/test/database/setup.ts'],
     globalSetup: ['apps/api/src/test/database/global-setup.ts'],
