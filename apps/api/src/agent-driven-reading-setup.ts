@@ -53,7 +53,7 @@ export function createAgentDrivenReadingSetupService(options: {
 }) {
   const store = createReadingSetupSessionStore({ db: options.db });
 
-  const getEligibleBook = async (userId: string, userBookId: string) => {
+  const getOwnedBook = async (userId: string, userBookId: string) => {
     const [row] = await options.db
       .select({ userBook: userBooks, sharedBook: sharedBooks })
       .from(userBooks)
@@ -67,6 +67,11 @@ export function createAgentDrivenReadingSetupService(options: {
       )
       .limit(1);
     if (!row) throw new AgentDrivenReadingSetupError('用户书籍不存在', 404);
+    return row;
+  };
+
+  const getEligibleBook = async (userId: string, userBookId: string) => {
+    const row = await getOwnedBook(userId, userBookId);
     if (row.sharedBook.status !== 'ready' || row.userBook.workflowStatus !== 'on_shelf') {
       throw new AgentDrivenReadingSetupError('该书当前不能进入阅读准备', 409);
     }
@@ -302,7 +307,7 @@ export function createAgentDrivenReadingSetupService(options: {
       sessionId: string,
     ): Promise<ReadingSetupSessionSnapshot> {
       const session = await requireOwnedSession(userId, sessionId);
-      await getEligibleBook(userId, session.userBookId);
+      await getOwnedBook(userId, session.userBookId);
       return snapshot(session);
     },
 
