@@ -1,3 +1,5 @@
+/** Owns authentication flows, session security, and new-user account initialization. */
+
 import {
   createHash,
   createHmac,
@@ -338,16 +340,16 @@ async function insertReadyPresetBooksForNewUser(
   tx: AuthTransaction,
   userId: string,
 ): Promise<void> {
-  const presetSelection = tx
-    .select({
-      userId: sql<string>`${userId}::uuid`.as('user_id'),
-      sharedBookId: sharedBooks.id,
-    })
+  const presets = await tx
+    .select({ sharedBookId: sharedBooks.id })
     .from(sharedBooks)
     .where(and(eq(sharedBooks.isPreset, true), eq(sharedBooks.status, 'ready')));
+
+  if (presets.length === 0) return;
+
   await tx
     .insert(userBooks)
-    .select(presetSelection)
+    .values(presets.map(({ sharedBookId }) => ({ userId, sharedBookId })))
     .onConflictDoNothing({ target: [userBooks.userId, userBooks.sharedBookId] });
 }
 
