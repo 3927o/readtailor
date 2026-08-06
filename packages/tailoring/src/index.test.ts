@@ -1,3 +1,4 @@
+// Covers the shared tailoring prompt, input contract, cache identity, and response parsing behavior.
 import { describe, expect, it, vi } from 'vitest';
 import {
   TAILORING_PROMPT_VERSION,
@@ -131,7 +132,7 @@ describe('generateTailoredContent', () => {
 });
 
 describe('buildTailoringPrompt', () => {
-  it('uses one versioned instruction template and includes all bounded inputs', () => {
+  it('uses one versioned instruction template with plain-text source blocks', () => {
     const trialPrompt = buildTailoringPrompt(trialInput());
     const formalPrompt = buildTailoringPrompt(formalInput());
 
@@ -141,9 +142,13 @@ describe('buildTailoringPrompt', () => {
       expect(prompt).toContain(`"promptVersion":"${TAILORING_PROMPT_VERSION}"`);
       expect(prompt).toContain('"profiles"');
       expect(prompt).toContain('"strategy"');
-      expect(prompt).toContain('"adjacentContext"');
-      expect(prompt).toContain('"originalNotes"');
-      expect(prompt).toContain('"structuredHtml"');
+      expect(prompt).toContain('"blocks"');
+      expect(prompt).toContain('"text"');
+      expect(prompt).not.toContain('"adjacentContext"');
+      expect(prompt).not.toContain('"originalNotes"');
+      expect(prompt).not.toContain('"structuredHtml"');
+      expect(prompt).not.toContain('"html"');
+      expect(prompt).not.toContain('<p>');
     }
     expect(trialPrompt).toContain('"generationScope":"trial"');
     expect(formalPrompt).toContain('"generationScope":"formal"');
@@ -285,13 +290,13 @@ describe('parseTailoringModelResponse', () => {
     ]);
   });
 
-  it('uses exact matching without trimming or normalization', () => {
+  it('keeps whitespace matching exact', () => {
     expectTailoringError(
       () =>
         parseTailoringModelResponse(
           JSON.stringify({
             guide: null,
-            annotations: [{ blockIndex: 2, quote: ' 语言', content: 'No fuzzy match.' }],
+            annotations: [{ blockIndex: 2, quote: ' 语言', content: 'No whitespace match.' }],
             afterReading: null,
           }),
           formalInput(),
@@ -300,7 +305,92 @@ describe('parseTailoringModelResponse', () => {
     );
   });
 
-  it('rejects a missing, ambiguous, or out-of-source quote', () => {
+  it('falls back to position-preserving punctuation normalization', () => {
+    const input = formalInput();
+    input.source.blocks[1] = {
+      blockIndex: 2,
+      kind: 'p',
+      text: '“语言”—世界',
+      utf16Length: 7,
+      html: '<p>“语言”—世界</p>',
+    };
+
+    const result = parseTailoringModelResponse(
+      JSON.stringify({
+        guide: null,
+        annotations: [{ blockIndex: 2, quote: '"语言"-世界', content: 'Normalized.' }],
+        afterReading: null,
+      }),
+      input,
+    );
+
+    expect(result.annotations).toEqual([
+      {
+        range: {
+          start: { blockIndex: 2, offset: 0 },
+          end: { blockIndex: 2, offset: 7 },
+        },
+        content: 'Normalized.',
+      },
+    ]);
+  });
+
+  it('prefers an exact occurrence over an earlier normalized occurrence', () => {
+    const input = formalInput();
+    input.source.blocks[1] = {
+      blockIndex: 2,
+      kind: 'p',
+      text: '“语言”与"语言"',
+      utf16Length: 9,
+      html: '<p>“语言”与"语言"</p>',
+    };
+
+    const result = parseTailoringModelResponse(
+      JSON.stringify({
+        guide: null,
+        annotations: [{ blockIndex: 2, quote: '"语言"', content: 'Exact first.' }],
+        afterReading: null,
+      }),
+      input,
+    );
+
+    expect(result.annotations[0]?.range).toEqual({
+      start: { blockIndex: 2, offset: 5 },
+      end: { blockIndex: 2, offset: 9 },
+    });
+  });
+
+  it('uses the first occurrence when a quote appears multiple times in a block', () => {
+    const input = formalInput();
+    input.source.blocks[1] = {
+      blockIndex: 2,
+      kind: 'p',
+      text: '语言与语言',
+      utf16Length: 5,
+      html: '<p>语言与语言</p>',
+    };
+
+    const result = parseTailoringModelResponse(
+      JSON.stringify({
+        guide: null,
+        annotations: [{ blockIndex: 2, quote: '语言', content: 'First occurrence.' }],
+        afterReading: null,
+      }),
+      input,
+    );
+
+    expect(result.annotations).toEqual([
+      {
+        range: {
+          start: { blockIndex: 2, offset: 0 },
+          end: { blockIndex: 2, offset: 2 },
+        },
+        content: 'First occurrence.',
+      },
+    ]);
+  });
+
+  it('rejects a missing or out-of-source quote', () => {
     const missing = formalInput();
     expectTailoringError(
       () =>
@@ -311,27 +401,6 @@ describe('parseTailoringModelResponse', () => {
             afterReading: null,
           }),
           missing,
-        ),
-      'invalid_anchor',
-    );
-
-    const ambiguous = formalInput();
-    ambiguous.source.blocks[1] = {
-      blockIndex: 2,
-      kind: 'p',
-      text: '语言与语言',
-      utf16Length: 5,
-      html: '<p>语言与语言</p>',
-    };
-    expectTailoringError(
-      () =>
-        parseTailoringModelResponse(
-          JSON.stringify({
-            guide: null,
-            annotations: [{ blockIndex: 2, quote: '语言', content: 'Ambiguous.' }],
-            afterReading: null,
-          }),
-          ambiguous,
         ),
       'invalid_anchor',
     );
@@ -428,15 +497,25 @@ describe('createTailoringCacheKey', () => {
       'model config',
       (input: TrialGenerationInput) => (input.model.configVersion = 'temperature-0-v2'),
     ],
-    [
-      'prompt source',
-      (input: TrialGenerationInput) => (input.source.previousContext = 'different context'),
-    ],
+    ['prompt source', (input: TrialGenerationInput) => (input.source.blocks[0]!.text = '乙😀语言和世界')],
   ])('changes when %s changes', (_, mutate) => {
     const original = trialInput();
     const changed = trialInput();
     mutate(changed);
     expect(createTailoringCacheKey(changed)).not.toBe(createTailoringCacheKey(original));
+  });
+
+  it.each([
+    ['structured HTML', (input: TrialGenerationInput) => (input.source.structuredHtml = '<p>changed</p>')],
+    ['block HTML', (input: TrialGenerationInput) => (input.source.blocks[0]!.html = '<p>changed</p>')],
+    ['original notes', (input: TrialGenerationInput) => (input.source.originalNotes = ['changed'])],
+    ['previous context', (input: TrialGenerationInput) => (input.source.previousContext = 'changed')],
+    ['next context', (input: TrialGenerationInput) => (input.source.nextContext = 'changed')],
+  ])('ignores excluded %s when building the cache key', (_, mutate) => {
+    const original = trialInput();
+    const changed = trialInput();
+    mutate(changed);
+    expect(createTailoringCacheKey(changed)).toBe(createTailoringCacheKey(original));
   });
 
   it('isolates trial and formal namespaces', () => {

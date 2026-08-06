@@ -1,3 +1,5 @@
+// Validates model JSON and resolves returned quotes to canonical source ranges.
+import { blockRangeContains } from '@readtailor/reader-core';
 import {
   TailoringError,
   type GenerationBlock,
@@ -17,6 +19,22 @@ interface RawOutput {
   guide: string | null;
   annotations: RawAnnotation[];
   afterReading: string | null;
+}
+
+function normalizeAnchorText(value: string): string {
+  return value
+    .replace(/[‘’‚‛＇]/g, "'")
+    .replace(/[“”„‟＂]/g, '"')
+    .replace(/[‐‑‒–—―−﹣－]/g, '-')
+    .replace(/[\u00a0\u2007\u202f\u3000]/g, ' ');
+}
+
+function findAnchorStart(blockText: string, quote: string): number {
+  const exactStart = blockText.indexOf(quote);
+  if (exactStart >= 0) return exactStart;
+
+  // Every replacement is one UTF-16 code unit, so the normalized index maps back to source directly.
+  return normalizeAnchorText(blockText).indexOf(normalizeAnchorText(quote));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -114,17 +132,11 @@ function resolveAnnotation(
     );
   }
 
-  const start = block.text.indexOf(annotation.quote);
+  const start = findAnchorStart(block.text, annotation.quote);
   if (start < 0) {
     throw new TailoringError(
       'invalid_anchor',
-      `annotations[${index}].quote does not exactly match block ${annotation.blockIndex}`,
-    );
-  }
-  if (block.text.indexOf(annotation.quote, start + 1) >= 0) {
-    throw new TailoringError(
-      'invalid_anchor',
-      `annotations[${index}].quote is not unique in block ${annotation.blockIndex}`,
+      `annotations[${index}].quote does not match block ${annotation.blockIndex} exactly or after conservative normalization`,
     );
   }
 
@@ -173,4 +185,3 @@ export function parseTailoringModelResponse(
   }
   return result;
 }
-import { blockRangeContains } from '@readtailor/reader-core';
