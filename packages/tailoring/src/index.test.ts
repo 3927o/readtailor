@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   TAILORING_PROMPT_VERSION,
+  TAILORING_MAX_OUTPUT_TOKENS,
   TailoringError,
   buildTailoringPrompt,
   createTailoringCacheKey,
@@ -116,6 +117,7 @@ describe('generateTailoredContent', () => {
       prompt: expect.stringContaining(`"promptVersion":"${TAILORING_PROMPT_VERSION}"`),
       model: input.model,
       responseFormat: 'json',
+      maxTokens: TAILORING_MAX_OUTPUT_TOKENS,
     });
   });
 

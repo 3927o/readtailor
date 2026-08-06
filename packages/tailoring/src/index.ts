@@ -1,3 +1,4 @@
+// Exposes the shared tailoring generation pipeline and its public contracts.
 export { createTailoringCacheKey } from './cache';
 export { parseTailoringModelResponse } from './parser';
 export { buildTailoringPrompt, TAILORING_PROMPT_VERSION } from './prompt';
@@ -40,6 +41,8 @@ import type {
   TailoringModelClient,
 } from './types';
 
+export const TAILORING_MAX_OUTPUT_TOKENS = 8192;
+
 export async function generateTailoredContent(
   input: TailoringGenerationInput,
   modelClient: TailoringModelClient,
@@ -49,6 +52,7 @@ export async function generateTailoredContent(
     prompt,
     model: input.model,
     responseFormat: 'json',
+    maxTokens: TAILORING_MAX_OUTPUT_TOKENS,
   });
   return parseTailoringModelResponse(response, input);
 }

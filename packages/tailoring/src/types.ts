@@ -1,3 +1,4 @@
+// Defines the shared data contracts for tailoring generation, model calls, and parsed results.
 import type { BlockRange, CanonicalReadingBlock } from '@readtailor/reader-core';
 
 export type GenerationScope = 'trial' | 'formal';
@@ -80,6 +81,7 @@ export interface ModelGenerationRequest {
   prompt: string;
   model: ModelConfiguration;
   responseFormat: 'json';
+  maxTokens: number;
 }
 
 export interface TailoringModelClient {

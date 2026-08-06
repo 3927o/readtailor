@@ -3,7 +3,7 @@ import { stableStringify } from './serialization';
 import { TailoringError, type TailoringGenerationInput } from './types';
 import { validateGenerationInput } from './validation';
 
-export const TAILORING_PROMPT_VERSION = 'tailoring-content-2.1';
+export const TAILORING_PROMPT_VERSION = 'tailoring-content-2.2';
 
 const SYSTEM_INSTRUCTIONS = `你是 ReadTailor 的阅读内容生成器。你只处理输入给出的原文范围，不得补写、改写或复制大段原文。根据同一套质量标准生成导读、精确裁读注和节后助读；没有价值的项目返回 null 或空数组。严格遵循 strategy.value 中各段的 enabled 开关：guide.enabled 为 false 时 guide 必须为 null，annotations.enabled 为 false 时 annotations 必须为空数组，afterReading.enabled 为 false 时 afterReading 必须为 null；启用的段落按其 objectives / focuses / exclusions 组织内容。
 

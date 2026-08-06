@@ -46,7 +46,7 @@ function createTailoringClient(engine: ModelEngine): TailoringModelClient {
       }
       let content = '';
       for await (const event of engine.streamChat(request.prompt, {
-        maxTokens: 4096,
+        maxTokens: request.maxTokens,
         responseFormat: request.responseFormat,
       })) {
         if (event.type === 'content') content += event.text;
